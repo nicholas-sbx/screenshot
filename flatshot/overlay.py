@@ -321,14 +321,15 @@ class Overlay(QWidget):
         self._pill(p, label, QPointF(r.left() + 8, r.top() + 8), bg=C.ACCENT, fg=C.INK)
 
     def _paint_codes(self, p: QPainter):
+        """A padded rounded box around each detected code (under its card)."""
+        p.save()
+        pen = QPen(C.CODE, 2)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(C.CODE_SOFT)
         for _, poly in self.codes:
-            path = QPainterPath()
-            path.addPolygon(poly)
-            path.closeSubpath()
-            p.fillPath(path, C.CODE_SOFT)
-            pen = QPen(C.CODE, 2.5)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            p.strokePath(path, pen)
+            p.drawRoundedRect(poly.boundingRect().adjusted(-8, -8, 8, 8), 8, 8)
+        p.restore()
 
     def _paint_selection(self, p: QPainter, r: QRectF):
         p.setPen(QPen(C.ACCENT, 2))

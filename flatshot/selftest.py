@@ -2,6 +2,7 @@
 package. Builds a fake desktop with a QR code, runs the overlay on it,
 draws, renders and scans. Set FLATSHOT_SELFTEST_OUT=dir to keep images."""
 
+import json
 import os
 import sys
 
@@ -128,6 +129,31 @@ def run() -> int:
     ov.cursor_pos = at(700, 600)
     if out_dir:
         ov.grab().save(str(Path(out_dir) / "overlay-region.png"))
+    # Window detection: hover highlights the topmost window, a click captures it.
+    # Fake KWin report (global logical coords, bottom to top): the text
+    # window and the QR card of the fake desktop.
+    from flatshot.windows import parse
+
+    def lg(x, y, w, h):
+        return [round(x / dpr), round(y / dpr), round(w / dpr), round(h / dpr)]
+
+    found = parse(json.dumps([lg(120, 140, 820, 560) + ["Notes — Kate", "kate"],
+                              lg(1060, 240, 225, 225) + ["QR card", "viewer"]]))
+    assert [w.title for w in found] == ["QR card", "Notes — Kate"], found
+    ctl._windows_found(found)
+    assert len(ov.windows) == 2
+    ov.cursor_pos = at(1180, 450)
+    ov._update_hover()
+    assert ov.hover_window and ov.hover_window[1].title == "QR card", ov.hover_window
+    ov.cursor_pos = at(600, 600)
+    ov._update_hover()
+    assert ov.hover_window and ov.hover_window[1].title == "Notes — Kate", ov.hover_window
+    if out_dir:
+        ov.grab().save(str(Path(out_dir) / "overlay-window.png"))
+    ov.cursor_pos = at(1500, 900)
+    ov._update_hover()
+    assert ov.hover_window is None
+
     if QR_IMAGE is not None:
         n = ctl.code_count()
         ctl.dismiss_code(ov, ov.codes[0][0])
@@ -135,26 +161,6 @@ def run() -> int:
         key(Qt.Key.Key_Q, "q")
         key(Qt.Key.Key_Q, "q")
         assert ctl.code_count() == n - 1, "a dismissed code came back"
-
-    # Window detection: hover highlights the topmost window, a click captures it.
-    from flatshot.windows import parse
-
-    found = parse('[[100,120,600,400,"Back","a"],[300,200,400,300,"Front window","b"]]')
-    assert [w.title for w in found] == ["Front window", "Back"], found
-    ctl._windows_found(found)
-    assert len(ov.windows) == 2
-    ov.cursor_pos = QPointF(350, 250)
-    ov._update_hover()
-    assert ov.hover_window and ov.hover_window[1].title == "Front window", ov.hover_window
-    if out_dir:
-        ov.grab().save(str(Path(out_dir) / "overlay-window.png"))
-    ov.cursor_pos = QPointF(150, 150)
-    ov._update_hover()
-    assert ov.hover_window and ov.hover_window[1].title == "Back"
-    ov.cursor_pos = QPointF(5, 5)
-    ov._update_hover()
-    assert ov.hover_window is None
-    ov.windows = []
 
     for tool, a, b in [("arrow", (200, 760), (420, 640)), ("rect", (150, 170), (700, 240)),
                        ("pixelate", (160, 330), (560, 400)), ("marker", (160, 460), (600, 460)),
