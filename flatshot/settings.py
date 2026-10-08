@@ -3,8 +3,8 @@ Changes are saved as they're made and apply from the next capture."""
 
 from flatshot import __version__, autostart, config, output, theme
 from flatshot.qt import (
-    QAbstractButton, QApplication, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon, QKeySequence, QLabel,
-    QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, QStackedWidget, Qt, QVBoxLayout,
+    QAbstractButton, QApplication, QColor, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon,
+    QKeySequence, QLabel, QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, QStackedWidget, Qt, QVBoxLayout,
     QWidget, Signal, keyval,
 )
 from flatshot.shortcuts import ACTIONS, GlobalShortcuts
@@ -77,46 +77,80 @@ class Toggle(QAbstractButton):
 
 
 class Segmented(QWidget):
-    changed = Signal(str)
+    """A row of options, one selected. ``dots`` maps an option to (outer,
+    inner) colours for a small dot before its label (the theme picker)."""
 
-    def __init__(self, options: list[tuple[str, str]], value: str, parent=None):
+    changed = Signal(str)
+    PAD = 3  # between the frame and the cells
+    GAP = 2  # between cells
+
+    def __init__(self, options: list[tuple[str, str]], value: str, dots: dict | None = None, parent=None):
         super().__init__(parent)
         self.options = options  # (value, label)
         self.value = value
-        self._font = font(12, QFont.Weight.Medium)
-        fm = QFontMetrics(self._font)
-        self._widths = [fm.horizontalAdvance(label) + 22 for _, label in options]
-        self.setFixedSize(sum(self._widths) + 4, 28)
+        self.dots = dots or {}
+        self._font = font(13, QFont.Weight.Medium)
+        self._bold = font(13, QFont.Weight.DemiBold)
+        fm = QFontMetrics(self._bold)
+        self._widths = [fm.horizontalAdvance(label) + 32 + (20 if key in self.dots else 0)
+                        for key, label in options]
+        self.setFixedSize(sum(self._widths) + self.GAP * (len(options) - 1) + 2 * self.PAD, 34)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._hover = -1
 
     def _cells(self):
-        x = 2.0
+        x = float(self.PAD)
         for w in self._widths:
-            yield QRectF(x, 2, w, self.height() - 4)
-            x += w
+            yield QRectF(x, self.PAD, w, self.height() - 2 * self.PAD)
+            x += w + self.GAP
+
+    def _index_at(self, pos) -> int:
+        return next((i for i, r in enumerate(self._cells()) if r.contains(pos)), -1)
+
+    def mouseMoveEvent(self, event):
+        hover = self._index_at(event.position())
+        if hover != self._hover:
+            self._hover = hover
+            self.update()
+
+    def leaveEvent(self, event):
+        self._hover = -1
+        self.update()
 
     def mousePressEvent(self, event):
-        for r, (value, _) in zip(self._cells(), self.options):
-            if r.contains(event.position()) and value != self.value:
-                self.value = value
-                self.update()
-                self.changed.emit(value)
+        i = self._index_at(event.position())
+        if i >= 0 and self.options[i][0] != self.value:
+            self.value = self.options[i][0]
+            self.update()
+            self.changed.emit(self.value)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(C.LINE, 1))
         p.setBrush(C.INK)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
-        p.setFont(self._font)
-        for r, (value, label) in zip(self._cells(), self.options):
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        for i, (r, (value, label)) in enumerate(zip(self._cells(), self.options)):
             selected = value == self.value
-            if selected:
+            if selected or i == self._hover:
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(C.HOVER)
-                p.drawRoundedRect(r, 4, 4)
-            p.setPen(C.TEXT if selected else C.MUTED)
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                p.setBrush(C.HOVER if selected else C.RAISED)
+                p.drawRoundedRect(r, 6, 6)
+            text = QRectF(r)
+            if value in self.dots:
+                outer, inner = self.dots[value]
+                dot = QRectF(r.left() + 13, r.center().y() - 6, 12, 12)
+                p.setPen(QPen(C.LINE, 1))
+                p.setBrush(outer)
+                p.drawEllipse(dot)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(inner)
+                p.drawEllipse(dot.adjusted(3, 3, -3, -3))
+                text.setLeft(r.left() + 18)
+            p.setFont(self._bold if selected else self._font)
+            p.setPen(C.TEXT if selected else (C.SOFT if i == self._hover else C.MUTED))
+            p.drawText(text, Qt.AlignmentFlag.AlignCenter, label)
 
 
 class Slider(QWidget):
@@ -506,10 +540,16 @@ class SettingsWindow(QWidget):
     def _general(self):
         card = self._card()
         look = Segmented([(key, t[0]) for key, t in theme.THEMES.items()],
-                         self.cfg.theme if self.cfg.theme in theme.THEMES else "ember")
+                         self.cfg.theme if self.cfg.theme in theme.THEMES else "ember",
+                         dots={key: (QColor(t[2]), QColor(t[9])) for key, t in theme.THEMES.items()})
         look.changed.connect(self._set_theme)
-        card.add(Row("Theme", look, "Colours of the toolbar, the settings and the other panels. "
-                                    "Your drawing colours stay the same."))
+        picker = QWidget()
+        line = QHBoxLayout(picker)
+        line.setContentsMargins(0, 2, 0, 0)
+        line.addWidget(look)
+        line.addStretch(1)
+        card.add(Row("Theme", None, "For the toolbar, the settings and the other panels. "
+                                    "Your drawing colours stay the same.", below=picker))
         start = Toggle(autostart.enabled())
         start.toggled.connect(autostart.set_enabled)
         card.add(Row("Start at login", start, "Keeps Flatshot in the system tray so shortcuts work."))
