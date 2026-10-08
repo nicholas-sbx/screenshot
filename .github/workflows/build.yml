@@ -1,17 +1,19 @@
-# Test + package on every push and PR. When the version in
-# flatshot/__init__.py changes on the default branch (i.e. there is no
-# v<version> tag yet), the packages are published as a GitHub release.
+# Runs only for release commits: a push to main that changes
+# flatshot/__init__.py (where __version__ lives). Tests, packages and
+# install checks must all pass; then, if there is no v<version> tag yet,
+# the packages are published as a GitHub release. "Run workflow" in the
+# Actions tab runs it on demand.
 name: build
 
 on:
   push:
-    branches: ["**"]
-  pull_request:
+    branches: [main]
+    paths: [flatshot/__init__.py]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   NFPM_VERSION: "2.43.0"
@@ -31,8 +33,7 @@ jobs:
           version=$(sed -nE 's/^__version__ = "(.*)"/\1/p' flatshot/__init__.py)
           [ -n "$version" ] || { echo "::error::no __version__ in flatshot/__init__.py"; exit 1; }
           release=false
-          if [ "$GITHUB_EVENT_NAME" != pull_request ] \
-             && [ "$GITHUB_REF" = "refs/heads/${{ github.event.repository.default_branch }}" ] \
+          if [ "$GITHUB_REF" = "refs/heads/${{ github.event.repository.default_branch }}" ] \
              && ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
             release=true
           fi

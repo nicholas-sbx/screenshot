@@ -159,7 +159,19 @@ Building packages locally:
 
 ## Releasing
 
-Bump `__version__` in `flatshot/__init__.py` and push to the default branch. The `build` workflow notices that there is no `v<version>` tag yet. It builds the `.deb`, `.rpm`, Arch package and AppImage, install-tests them on Ubuntu 24.04, Debian 12 and 13, Fedora and Arch, then publishes the GitHub release with checksums. Pushes that don't change the version still build and test everything. They just don't release.
+CI runs only for release commits. To release:
+
+1. Bump `__version__` in `flatshot/__init__.py`.
+2. Push to `main`.
+
+The `build` workflow then:
+
+1. Runs every test.
+2. Builds the `.deb`, `.rpm`, Arch package and AppImage.
+3. Install-tests the packages on Ubuntu 24.04, Debian 12 and 13, Fedora and Arch.
+4. If there is no `v<version>` tag yet, publishes the GitHub release with checksums.
+
+Other commits don't trigger CI. To run the whole pipeline on demand, use **Actions → build → Run workflow**.
 
 ## Known limitations
 
