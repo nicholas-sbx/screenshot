@@ -594,6 +594,15 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
         mouse(ov, "move", 300, 210)
         mouse(ov, "release", 300, 210)
 
+        problem = screencast.problem("mp4")
+        if problem is not None:
+            # Without a recorder, Enter says what's missing instead of counting down.
+            key(s, ov, Qt.Key.Key_Return)
+            assert s.countdown is None and s.hint == problem and ov.rec_rect is not None, (s.countdown, s.hint)
+            print(f"self-test: record tool ok; recording skipped ({problem})")
+            s.cancel()
+            return
+
         # Countdown: Esc cancels it, Enter starts it again.
         key(s, ov, Qt.Key.Key_Return)
         assert s.countdown == 1 and not ov.panel.isVisibleTo(ov) and not bar.isVisibleTo(ov)
@@ -602,10 +611,6 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
         key(s, ov, Qt.Key.Key_Escape)
         assert s.countdown is None and ov.rec_rect is not None and ov.panel.isVisibleTo(ov)
 
-        if screencast.problem("mp4") is not None:
-            print(f"self-test: record tool ok; recording skipped ({screencast.problem('mp4')})")
-            s.cancel()
-            return
         key(s, ov, Qt.Key.Key_Return)
         assert wait(lambda: recording.current() is not None and recording.current().state == "recording"), \
             "recording never started"
