@@ -14,27 +14,8 @@ from pathlib import Path
 from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPointF, QRectF, Qt
 
 TEST_URL = "https://github.com/nicholas-sbx/screenshot"
-QR_IMAGE: QImage | None = None
-
-
-def _qr_image(text: str) -> QImage | None:
-    from flatshot import scanner
-
-    if not scanner.available():
-        return None
-    zx = scanner.zxingcpp
-    try:
-        if hasattr(zx, "create_barcode"):  # zxing-cpp >= 2.3
-            bitmap = zx.create_barcode(text, zx.BarcodeFormat.QRCode).to_image(scale=5)
-        else:
-            bitmap = zx.write_barcode(zx.BarcodeFormat.QRCode, text, 180, 180)
-        view = memoryview(bitmap)
-        h, w = view.shape
-        data = view.tobytes()
-    except Exception as e:  # noqa: BLE001
-        print(f"self-test: cannot generate a QR code ({e}); skipping scan check")
-        return None
-    return QImage(data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+TEST_EAN = "4006381333931"
+ASSETS = Path(__file__).with_name("assets")
 
 
 def _fake_desktop(w=1600, h=1000) -> QImage:
@@ -57,16 +38,18 @@ def _fake_desktop(w=1600, h=1000) -> QImage:
     p.setFont(f)
     for i in range(8):
         p.drawText(QPointF(170, 280 + i * 34), f"Line {i + 1}: lorem ipsum dolor sit amet, consectetur")
-    qr = QR_IMAGE
-    if qr is not None:
-        p.fillRect(QRectF(1060, 240, qr.width() + 40, qr.height() + 40), QColor("white"))
-        p.drawImage(1080, 260, qr)
+    # Fixed fixtures, so scanning is tested even where codes can't be generated.
+    qr = QImage(str(ASSETS / "selftest-qr.png"))
+    p.fillRect(QRectF(1060, 240, qr.width() + 40, qr.height() + 40), QColor("white"))
+    p.drawImage(1080, 260, qr)
+    ean = QImage(str(ASSETS / "selftest-ean13.png"))
+    p.fillRect(QRectF(1060, 600, ean.width() + 40, ean.height() + 40), QColor("white"))
+    p.drawImage(1080, 620, ean)
     p.end()
     return img
 
 
 def run() -> int:
-    global QR_IMAGE
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     tmp = Path(tempfile.mkdtemp(prefix="flatshot-selftest-"))
     os.environ["XDG_CONFIG_HOME"] = str(tmp / "config")  # never touch the real settings
@@ -75,7 +58,6 @@ def run() -> int:
     from flatshot.session import Request, Session
 
     app = appmod.make_app()
-    QR_IMAGE = _qr_image(TEST_URL)
     out_dir = os.environ.get("FLATSHOT_SELFTEST_OUT")
     if out_dir:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -112,17 +94,22 @@ def run() -> int:
         ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(k), mods, text))
 
     codes = scanner.scan(desktop)
-    if QR_IMAGE is not None:
-        assert any(c.text == TEST_URL for c in codes), f"QR code not found: {codes}"
+    which = scanner.backend()
+    expected = os.environ.get("FLATSHOT_EXPECT_SCANNER")
+    if expected:
+        assert which == expected, f"scanner backend is {which}, expected {expected}"
+    if which is not None:
+        texts = sorted(c.text for c in codes)
+        assert texts == sorted([TEST_URL, TEST_EAN]), f"{which} found {texts}"
         ctl._codes_found(codes)
         assert ov.chips and ov.chips[0].isVisibleTo(ov), "no code chip was shown"
         key(Qt.Key.Key_Q, "q")
         assert not ctl.codes_visible and not ov.chips[0].isVisibleTo(ov)
         key(Qt.Key.Key_Q, "q")
         assert ctl.codes_visible and ov.chips[0].isVisibleTo(ov)
-        print(f"self-test: scanner found {len(codes)} code(s)")
+        print(f"self-test: {which} found {len(codes)} codes (QR + EAN-13)")
     else:
-        print("self-test: zxing-cpp unavailable, scan check skipped")
+        print("self-test: no barcode scanner installed, scan check skipped")
 
     dpr = ov.dpr()
 
@@ -148,7 +135,7 @@ def run() -> int:
     ov.cursor_pos = at(1180, 450)
     ov._update_hover()
     assert ov.hover_window and ov.hover_window[1].title == "QR card", ov.hover_window
-    ov.cursor_pos = at(600, 600)
+    ov.cursor_pos = at(300, 600)
     ov._update_hover()
     assert ov.hover_window and ov.hover_window[1].title == "Notes — Kate", ov.hover_window
     if out_dir:
@@ -157,7 +144,7 @@ def run() -> int:
     ov._update_hover()
     assert ov.hover_window is None
 
-    if QR_IMAGE is not None:
+    if which is not None:
         n = ctl.code_count()
         ctl.dismiss_code(ov, ov.codes[0][0])
         assert ctl.code_count() == n - 1

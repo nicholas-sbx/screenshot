@@ -76,13 +76,16 @@ jobs:
         if: matrix.binding == 'pyqt6'
         run: |
           sudo apt-get install -y -q --no-install-recommends python3-pyqt6 python3-zxing-cpp python3-jeepney \
-            qt6-wayland
+            qt6-wayland libzbar0
           echo "PY=/usr/bin/python3" >> "$GITHUB_ENV"
           echo "FLATSHOT_QT=pyqt6" >> "$GITHUB_ENV"
       - name: Compile
         run: $PY -m compileall -q flatshot
       - name: Self-test (offscreen)
         run: QT_QPA_PLATFORM=offscreen FLATSHOT_SELFTEST_OUT=shots $PY -m flatshot --self-test
+      - name: Self-test with the zbar scanner
+        if: matrix.binding == 'pyqt6'
+        run: QT_QPA_PLATFORM=offscreen FLATSHOT_SCANNER=zbar FLATSHOT_EXPECT_SCANNER=zbar $PY -m flatshot --self-test
       - name: Self-test (Wayland, headless weston)
         run: |
           export XDG_RUNTIME_DIR=$(mktemp -d)
@@ -196,6 +199,7 @@ jobs:
             install: dnf install -y ./dist/*.rpm
           - image: archlinux:latest
             install: pacman -Syu --noconfirm && pacman -U --noconfirm ./dist/*.pkg.tar.zst
+            scanner: zbar  # the Arch package scans with zbar (a hard dependency)
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -206,6 +210,8 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: ${{ matrix.install }}
       - name: Self-test installed package
+        env:
+          FLATSHOT_EXPECT_SCANNER: ${{ matrix.scanner }}
         run: |
           command -v flatshot
           flatshot --version
@@ -236,3 +242,55 @@ jobs:
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: dist/*
+
+  pacman-repo:
+    # A pacman repository on the fixed "pacman" release, updated each release:
+    #   [flatshot]
+    #   SigLevel = Optional TrustAll
+    #   Server = https://github.com/nicholas-sbx/screenshot/releases/download/pacman
+    needs: [version, release]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: archlinux:latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: Build the repository database
+        run: |
+          mkdir repo
+          cp dist/*.pkg.tar.zst repo/
+          cd repo
+          repo-add flatshot.db.tar.gz ./*.pkg.tar.zst
+          # Release assets can't be symlinks: ship real copies under the names pacman asks for.
+          rm flatshot.db flatshot.files
+          cp flatshot.db.tar.gz flatshot.db
+          cp flatshot.files.tar.gz flatshot.files
+          ls -l
+      - name: Install from the repository with pacman
+        run: |
+          printf '\n[flatshot]\nSigLevel = Optional TrustAll\nServer = file://%s/repo\n' "$PWD" >> /etc/pacman.conf
+          pacman -Syu --noconfirm flatshot
+          flatshot --version
+          QT_QPA_PLATFORM=offscreen FLATSHOT_EXPECT_SCANNER=zbar flatshot --self-test
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pacman
+          name: Pacman repository
+          prerelease: true
+          make_latest: false
+          body: |
+            Flatshot's pacman repository. Add this to `/etc/pacman.conf`:
+
+            ```ini
+            [flatshot]
+            SigLevel = Optional TrustAll
+            Server = https://github.com/nicholas-sbx/screenshot/releases/download/pacman
+            ```
+
+            Then `sudo pacman -Sy flatshot`. New versions arrive with `pacman -Syu`.
+          files: repo/*

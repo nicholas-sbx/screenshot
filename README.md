@@ -22,7 +22,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder** and **Annotate** buttons.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate (for hiding secrets) and numbered counters. It has 7 colours, 3 stroke sizes, and undo/redo.
-- **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
+- **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
 - A **loupe** shows pixel coordinates and the hex colour under the cursor, and a size label shows the selection's real pixel size.
 - **Multi-monitor and HiDPI aware.** Output is saved at full native resolution with annotations drawn in at that resolution.
@@ -36,9 +36,28 @@ Grab a package from the [latest release](https://github.com/nicholas-sbx/screens
 | Any (self-contained) | `Flatshot-*-x86_64.AppImage` | `chmod +x Flatshot-*.AppImage && ./Flatshot-*.AppImage` |
 | Debian 12+, Ubuntu 24.04+, KDE neon | `flatshot_*_all.deb` | `sudo apt install ./flatshot_*_all.deb` |
 | Fedora / openSUSE | `flatshot-*.noarch.rpm` | `sudo dnf install ./flatshot-*.noarch.rpm` |
-| Arch / Manjaro / EndeavourOS | `flatshot-*-any.pkg.tar.zst` | `sudo pacman -U flatshot-*-any.pkg.tar.zst` |
+| Arch / Manjaro / EndeavourOS | `flatshot-*-any.pkg.tar.zst` | `sudo pacman -U flatshot-*-any.pkg.tar.zst`, or use the pacman repo below |
 
 The native packages use your distro's **PyQt6**. The AppImage bundles Python, **PySide6** and zxing-cpp. You can also install from source with `pipx install .`.
+
+### Arch: pacman repository
+
+Each release also updates a pacman repository. Add it to `/etc/pacman.conf`:
+
+```ini
+[flatshot]
+SigLevel = Optional TrustAll
+Server = https://github.com/nicholas-sbx/screenshot/releases/download/pacman
+```
+
+Then install with `sudo pacman -Sy flatshot`, and future versions come with your normal `pacman -Syu`. The repository is a GitHub release, so it is reachable only while this GitHub repo is public. The packages are not signed yet, hence `SigLevel = Optional TrustAll`.
+
+**QR codes and barcodes** need one of two scanners:
+
+- **zxing-cpp** (`python3-zxing-cpp`; bundled in the AppImage) reads every format.
+- **zbar** reads QR codes and the common 1D barcodes. It's in every distro's main repositories (`zbar` on Arch, `libzbar0` on Debian/Ubuntu, `zbar-libs` on Fedora) and needs no Python package. The Arch package depends on it.
+
+Flatshot uses zxing-cpp when it's installed and zbar otherwise.
 
 **Runtime helpers.** On Wayland an app can't read the screen itself, so Flatshot asks a trusted tool:
 
@@ -170,6 +189,7 @@ The `build` workflow then:
 2. Builds the `.deb`, `.rpm`, Arch package and AppImage.
 3. Install-tests the packages on Ubuntu 24.04, Debian 12 and 13, Fedora and Arch.
 4. If there is no `v<version>` tag yet, publishes the GitHub release with checksums.
+5. Updates the pacman repository on the `pacman` release, after installing Flatshot from it with pacman as a check.
 
 Other commits don't trigger CI. To run the whole pipeline on demand, use **Actions → build → Run workflow**.
 

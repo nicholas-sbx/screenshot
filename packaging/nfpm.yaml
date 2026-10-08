@@ -39,7 +39,7 @@ overrides:
       - python3-pyqt6
       - python3-jeepney
     recommends:
-      - python3-zxing-cpp
+      - python3-zxing-cpp | libzbar0
       - qt6-wayland
       - wl-clipboard
       - libnotify-bin
@@ -51,7 +51,7 @@ overrides:
       - python3-pyqt6
       - python3-jeepney
     recommends:
-      - python3-zxing-cpp
+      - (python3-zxing-cpp or zbar-libs)
       - qt6-qtwayland
       - wl-clipboard
       - libnotify
@@ -60,3 +60,4 @@ overrides:
       - python
       - python-pyqt6
       - python-jeepney
+      - zbar
