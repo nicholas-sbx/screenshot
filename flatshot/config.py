@@ -40,6 +40,7 @@ class Config:
     run_command: str = ""  # shell command, {path} is replaced by the quoted file path
     # Capture
     dim_opacity: int = 60  # screen shading in %, 0 turns it off
+    detect_windows: bool = True  # hover + click a window to capture it (KDE)
     scan_codes: bool = True
     show_codes: bool = True
     toolbar_follows_mouse: bool = True

@@ -12,6 +12,7 @@ from flatshot.widgets import CodeChip, Toolbar
 HINTS = {
     "region": "Drag to capture  ·  Click for whole screen  ·  Esc to cancel",
     "codes": "Drag to capture  ·  Q hides detected codes  ·  Esc to cancel",
+    "windows": "Drag to capture  ·  Click a window to capture it  ·  Esc to cancel",
     "text": "Click to place text  ·  Enter to finish  ·  R to capture",
 }
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
@@ -32,6 +33,8 @@ class Overlay(QWidget):
         self.sel_rect: QRectF | None = None
         self.cursor_pos: QPointF | None = None
         self.codes: list[tuple[object, QPolygonF]] = []
+        self.windows: list[tuple[QRectF, object]] = []  # topmost first
+        self.hover_window: tuple[QRectF, object] | None = None
         self.chips: list[CodeChip] = []
         self.toolbar: Toolbar | None = None
 
@@ -98,6 +101,26 @@ class Overlay(QWidget):
             self.chips.append(chip)
         self._place_floating()
 
+    def set_windows(self, found):
+        """Window bounds from KWin (global logical coords) on this screen."""
+        g = self.target_screen.geometry()
+        bounds = QRectF(0, 0, g.width(), g.height())
+        self.windows = []
+        for w in found:
+            r = QRectF(w.rect.translated(-g.topLeft())).intersected(bounds)
+            if r.width() >= 8 and r.height() >= 8:
+                self.windows.append((r, w))
+        self._update_hover()
+
+    def _update_hover(self):
+        hover = None
+        if (self.ctl.tool == "region" and self.sel_rect is None and self.cursor_pos is not None
+                and not self._over_floating()):
+            hover = next((item for item in self.windows if item[0].contains(self.cursor_pos)), None)
+        if hover is not self.hover_window:
+            self.hover_window = hover
+            self.update()
+
     def dismiss_code(self, code):
         for i, (c, _) in enumerate(self.codes):
             if c is code:
@@ -114,6 +137,8 @@ class Overlay(QWidget):
             chip.setVisible(show_chips)
         if self.toolbar:
             self.toolbar.refresh()
+        if self.cursor_pos is not None:
+            self._update_hover()
         self.update_cursor()
         self.update()
 
@@ -199,8 +224,11 @@ class Overlay(QWidget):
         self.ctl.activate(self)
         if self.sel_origin is not None:
             self.sel_rect = QRectF(self.sel_origin, pos).normalized().intersected(QRectF(self.rect()))
+            self.hover_window = None
         elif self.active is not None:
             self.active.extend(pos, bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+        else:
+            self._update_hover()
         self.update()
 
     def mouseReleaseEvent(self, event):
@@ -210,7 +238,10 @@ class Overlay(QWidget):
             rect = self.sel_rect
             self.sel_origin = self.sel_rect = None
             if rect is None or rect.width() < 3 or rect.height() < 3:
-                rect = None  # a click captures the whole screen
+                # A click captures the window under the pointer, else the screen.
+                self.cursor_pos = event.position()
+                self._update_hover()
+                rect = self.hover_window[0] if self.hover_window else None
             self.ctl.capture(self, rect)
         elif self.active is not None:
             shape, self.active = self.active, None
@@ -223,6 +254,7 @@ class Overlay(QWidget):
 
     def leaveEvent(self, event):
         self.cursor_pos = None
+        self.hover_window = None
         self.update()
 
     def keyPressEvent(self, event):
@@ -247,12 +279,17 @@ class Overlay(QWidget):
         if region:
             dim = QPainterPath()
             dim.addRect(QRectF(self.rect()))
-            if self.sel_rect is not None:
+            focus = self.sel_rect if self.sel_rect is not None else (
+                self.hover_window[0] if self.hover_window else None)
+            if focus is not None:
                 hole = QPainterPath()
-                hole.addRect(self.sel_rect)
+                hole.addRect(focus)
                 dim = dim.subtracted(hole)
             if self.ctl.dim.alpha():
                 p.fillPath(dim, self.ctl.dim)
+            if self.sel_rect is None and self.hover_window:
+                self._paint_window(p, *self.hover_window)
+            # Codes sit above window highlights.
             if self.sel_rect is None and self.ctl.codes_visible:
                 self._paint_codes(p)
         if self.sel_rect is not None:
@@ -264,11 +301,24 @@ class Overlay(QWidget):
         if self.sel_rect is None and self is self.ctl.pointer_overlay:
             self._paint_hint(p)
 
-    def _loupe_allowed(self) -> bool:
+    def _over_floating(self, margin: int = 0) -> bool:
         pt = self.cursor_pos.toPoint()
         floating = [self.toolbar] if self.toolbar else []
-        return not any(w.isVisible() and w.geometry().adjusted(-24, -24, 24, 24).contains(pt)
-                       for w in floating + self.chips)
+        return any(w.isVisible() and w.geometry().adjusted(-margin, -margin, margin, margin).contains(pt)
+                   for w in floating + self.chips)
+
+    def _loupe_allowed(self) -> bool:
+        return not self._over_floating(24)
+
+    def _paint_window(self, p: QPainter, r: QRectF, window):
+        p.setPen(QPen(C.ACCENT, 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(r.adjusted(1, 1, -1, -1))
+        dpr = self.dpr()
+        title = window.title if len(window.title) <= 48 else window.title[:47] + "…"
+        label = f"{title}  ·  {round(r.width() * dpr)} × {round(r.height() * dpr)}" if title else \
+            f"{round(r.width() * dpr)} × {round(r.height() * dpr)}"
+        self._pill(p, label, QPointF(r.left() + 8, r.top() + 8), bg=C.ACCENT, fg=C.INK)
 
     def _paint_codes(self, p: QPainter):
         for _, poly in self.codes:
@@ -323,7 +373,11 @@ class Overlay(QWidget):
         self._pill(p, f"{px}, {py}   {color}", QPointF(x, y + size + 6), mono=True)
 
     def _paint_hint(self, p: QPainter):
-        tool = "codes" if self.ctl.tool == "region" and self.codes and self.ctl.codes_visible else self.ctl.tool
+        tool = self.ctl.tool
+        if tool == "region" and self.codes and self.ctl.codes_visible:
+            tool = "codes"
+        elif tool == "region" and self.windows:
+            tool = "windows"
         text = self.ctl.hint or HINTS.get(tool, DRAW_HINT)
         fm = QFontMetricsF(font(12, QFont.Weight.Medium))
         x = (self.width() - fm.horizontalAdvance(text)) / 2 - 14

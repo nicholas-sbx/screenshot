@@ -469,6 +469,8 @@ class SettingsWindow(QWidget):
 
         self._toggle("toolbar_follows_mouse", "Toolbar follows the mouse",
                      "Show the toolbar on the monitor the pointer is on.")
+        self._toggle("detect_windows", "Detect windows",
+                     "Hover a window and click to capture just that window (KDE Plasma).")
         self._toggle("scan_codes", "Scan for QR codes and barcodes")
         self._toggle("show_codes", "Show detected codes", "Toggle them while capturing with Q or the toolbar.")
 

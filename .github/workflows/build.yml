@@ -52,17 +52,18 @@ jobs:
       - name: System libraries
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 weston
+          sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 weston \
+            xvfb dbus-x11 dunst libkf5globalaccel-bin
       - name: PySide6 from PyPI
         if: matrix.binding == 'pyside6'
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install -q PySide6-Essentials zxing-cpp
+          .venv/bin/pip install -q PySide6-Essentials zxing-cpp jeepney
           echo "PY=$PWD/.venv/bin/python" >> "$GITHUB_ENV"
       - name: PyQt6 from Ubuntu
         if: matrix.binding == 'pyqt6'
         run: |
-          sudo apt-get install -y -q python3-pyqt6 python3-zxing-cpp
+          sudo apt-get install -y -q python3-pyqt6 python3-zxing-cpp python3-jeepney
           echo "PY=/usr/bin/python3" >> "$GITHUB_ENV"
           echo "FLATSHOT_QT=pyqt6" >> "$GITHUB_ENV"
       - name: Compile
@@ -75,10 +76,40 @@ jobs:
           weston --backend=headless --socket=wl-ci --width=1920 --height=1080 &
           sleep 2
           WAYLAND_DISPLAY=wl-ci QT_QPA_PLATFORM=wayland timeout 120 $PY -m flatshot --self-test
+      - name: KDE shortcuts, notifications and tray (kglobalaccel + dunst)
+        run: timeout 300 tests/desktop_services.sh $PY
       - uses: actions/upload-artifact@v4
         with:
           name: screenshots-${{ matrix.binding }}
           path: shots/
+
+  layer-shell:
+    # The overlay as a wlr-layer-shell surface (no KWin window animations),
+    # checked on Sway with Debian's PyQt6 + LayerShellQt.
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -q
+          apt-get install -y -q python3-pyqt6 python3-jeepney python3-zxing-cpp qt6-wayland sway fonts-dejavu-core
+          pkgs=$(apt-cache search --names-only 'layer-?shell-?qt|layershellqt' | awk '{print $1}' | grep -v -- '-dev$' || true)
+          echo "LayerShellQt packages: $pkgs"
+          apt-get install -y -q $pkgs
+      - name: Self-test on Sway (headless) as a layer-shell overlay
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d) && chmod 700 "$XDG_RUNTIME_DIR"
+          WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /dev/null > sway.log 2>&1 &
+          for i in $(seq 50); do ls "$XDG_RUNTIME_DIR" | grep -q '^wayland-[0-9]*$' && break; sleep 0.2; done
+          export WAYLAND_DISPLAY=$(ls "$XDG_RUNTIME_DIR" | grep '^wayland-[0-9]*$' | head -n1)
+          echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+          QT_QPA_PLATFORM=wayland FLATSHOT_QT=pyqt6 FLATSHOT_LAYER_SHELL=1 FLATSHOT_EXPECT_LAYER_SHELL=1 \
+            timeout 120 python3 -m flatshot --self-test
+      - if: failure()
+        run: cat sway.log || true
 
   packages:
     needs: [version, test]
@@ -160,7 +191,7 @@ jobs:
           QT_QPA_PLATFORM=offscreen flatshot --self-test
 
   release:
-    needs: [version, packages, appimage, install]
+    needs: [version, packages, appimage, install, layer-shell]
     if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-24.04
     permissions:

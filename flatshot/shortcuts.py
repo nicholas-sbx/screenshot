@@ -62,9 +62,8 @@ class GlobalShortcuts(QObject):
         self.error = ""
         self._listener = None
 
-    @staticmethod
-    def supported() -> bool:
-        return dbus.available() and dbus.has_owner(SERVICE)
+    def supported(self) -> bool:
+        return dbus.available() and (dbus.has_owner(SERVICE) or self._activatable())
 
     def _call(self, method, sig, *args):
         return dbus.call(SERVICE, PATH, IFACE, method, sig, *args)
@@ -150,11 +149,11 @@ class GlobalShortcuts(QObject):
             hits = self._call("getGlobalShortcutsByKey", "i", keys[0])[0]
         except dbus.DBusError:
             return ""
-        # KGlobalShortcutInfo: (contextUnique, contextFriendly, componentUnique,
-        #                       componentFriendly, uniqueName, friendlyName, keys, defaultKeys)
+        # KGlobalShortcutInfo on the wire: (uniqueName, friendlyName, componentUnique,
+        #   componentFriendly, contextUnique, contextFriendly, keys, defaultKeys)
         for hit in hits:
-            if (hit[2], hit[4]) != (COMPONENT, action):
-                return f"{hit[3]} › {hit[5]}"
+            if (hit[2], hit[0]) != (COMPONENT, action):
+                return f"{hit[3]} › {hit[1]}"
         return ""
 
     def block(self, blocked: bool) -> None:

@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from flatshot import capture, config, output, scanner, shapes, theme
+from flatshot import capture, config, output, scanner, shapes, theme, windows
 from flatshot.notify import Notifier
 from flatshot.overlay import Overlay
 from flatshot.qt import (
@@ -56,6 +56,8 @@ class Session:
         self.hint: str | None = None
         self.scanner = scanner.Scanner()
         self.scanner.finished.connect(self._codes_found)
+        self.window_finder: windows.WindowFinder | None = None
+        self._windows: list | None = None
         self.done = False
 
     @property
@@ -65,6 +67,12 @@ class Session:
     # -- startup -----------------------------------------------------------
 
     def start(self):
+        if self.cfg.detect_windows and not (self.request.image or self.request.full):
+            # Ask KWin for window bounds now, while the windows are as captured.
+            self.window_finder = windows.WindowFinder()
+            self.window_finder.found.connect(self._windows_found)
+            if not self.window_finder.start():
+                self.window_finder = None
         try:
             if self.request.image:
                 image = QImage(self.request.image)
@@ -115,6 +123,16 @@ class Session:
         self._sync_toolbars()
         for o in self.overlays:
             o.show_on_screen()
+        if self._windows is not None:  # KWin answered before the overlays existed
+            self._windows_found(self._windows)
+
+    def _windows_found(self, found):
+        self._windows = found
+        if self.done:
+            return
+        for o in self.overlays:
+            o.set_windows(found)
+        self.refresh()
 
     def _codes_found(self, codes):
         if self.done:
@@ -279,6 +297,9 @@ class Session:
 
     def _close_overlays(self):
         self.done = True
+        if self.window_finder:
+            self.window_finder.stop()
+            self.window_finder = None
         for o in self.overlays:
             o.hide()
             o.deleteLater()

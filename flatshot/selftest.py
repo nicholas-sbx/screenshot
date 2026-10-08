@@ -7,6 +7,7 @@ import sys
 
 from flatshot import qt
 import tempfile
+import time
 from pathlib import Path
 
 from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPointF, QRectF, Qt
@@ -94,6 +95,11 @@ def run() -> int:
     assert ctl.dim.alpha() == round(45 * 2.55)
     if os.environ.get("FLATSHOT_EXPECT_LAYER_SHELL") == "1":
         assert getattr(ov, "_layer_shell", None) is not None, "overlay is not a layer-shell surface"
+        for _ in range(100):  # wait for the compositor's configure
+            if ov.windowHandle().isExposed():
+                break
+            app.processEvents()
+            time.sleep(0.02)
         assert ov.windowHandle().isExposed(), "layer-shell overlay was never mapped"
         print("self-test: overlay is a layer-shell surface")
 
@@ -129,6 +135,26 @@ def run() -> int:
         key(Qt.Key.Key_Q, "q")
         key(Qt.Key.Key_Q, "q")
         assert ctl.code_count() == n - 1, "a dismissed code came back"
+
+    # Window detection: hover highlights the topmost window, a click captures it.
+    from flatshot.windows import parse
+
+    found = parse('[[100,120,600,400,"Back","a"],[300,200,400,300,"Front window","b"]]')
+    assert [w.title for w in found] == ["Front window", "Back"], found
+    ctl._windows_found(found)
+    assert len(ov.windows) == 2
+    ov.cursor_pos = QPointF(350, 250)
+    ov._update_hover()
+    assert ov.hover_window and ov.hover_window[1].title == "Front window", ov.hover_window
+    if out_dir:
+        ov.grab().save(str(Path(out_dir) / "overlay-window.png"))
+    ov.cursor_pos = QPointF(150, 150)
+    ov._update_hover()
+    assert ov.hover_window and ov.hover_window[1].title == "Back"
+    ov.cursor_pos = QPointF(5, 5)
+    ov._update_hover()
+    assert ov.hover_window is None
+    ov.windows = []
 
     for tool, a, b in [("arrow", (200, 760), (420, 640)), ("rect", (150, 170), (700, 240)),
                        ("pixelate", (160, 330), (560, 400)), ("marker", (160, 460), (600, 460)),

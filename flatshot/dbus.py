@@ -2,6 +2,7 @@
 exact regardless of the Qt binding. Optional: without jeepney, KDE
 shortcuts are unavailable and notifications fall back to notify-send."""
 
+import socket
 import threading
 
 from flatshot.qt import QObject, Signal
@@ -65,14 +66,18 @@ def has_owner(name: str) -> bool:
 
 
 class SignalListener(QObject):
-    """Receives bus signals on a private connection in a background thread
-    and re-emits them on the Qt main thread as (interface, member, body)."""
+    """Receives bus signals (matching ``rules``) and method calls addressed
+    to this connection on a private connection in a background thread, and
+    re-emits them on the Qt main thread as (interface, member, body).
+    Method calls are answered with an empty reply."""
 
     received = Signal(str, str, tuple)
 
     def __init__(self, rules: list[dict]):
         super().__init__()
         self.rules = rules
+        self.unique_name = ""
+        self._conn = None
 
     def start(self) -> bool:
         if open_dbus_connection is None:
@@ -83,19 +88,36 @@ class SignalListener(QObject):
                 conn.send_and_get_reply(message_bus.AddMatch(MatchRule(type="signal", **rule)), timeout=3)
         except Exception:  # noqa: BLE001
             return False
+        self._conn = conn
+        self.unique_name = conn.unique_name
         threading.Thread(target=self._loop, args=(conn,), daemon=True).start()
         return True
 
+    def stop(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.sock.shutdown(socket.SHUT_RDWR)  # unblocks receive() in the thread
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _loop(self, conn):
-        from jeepney import HeaderFields, MessageType
+        from jeepney import HeaderFields, MessageType, new_method_return
 
         while True:
             try:
                 msg = conn.receive()
-            except Exception:  # noqa: BLE001 — bus went away
+            except Exception:  # noqa: BLE001 — bus went away or stop()
                 return
-            if msg.header.message_type != MessageType.signal:
+            kind = msg.header.message_type
+            if kind not in (MessageType.signal, MessageType.method_call):
                 continue
+            if kind == MessageType.method_call:
+                try:
+                    conn.send(new_method_return(msg))
+                except Exception:  # noqa: BLE001
+                    pass
             fields = msg.header.fields
             self.received.emit(fields.get(HeaderFields.interface, ""), fields.get(HeaderFields.member, ""),
                                tuple(msg.body))

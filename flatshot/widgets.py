@@ -1,7 +1,7 @@
 """Custom-painted controls. Nothing here uses the Qt style for drawing."""
 
 from flatshot.qt import (
-    QAbstractButton, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QRectF, QSize, Qt, QWidget,
+    QAbstractButton, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QRectF, Qt, QWidget,
 )
 
 from flatshot import icons
@@ -268,74 +268,45 @@ class Toolbar(_Draggable):
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
 
 
-class PillButton(_Button):
-    def __init__(self, ctl, icon: str, label: str, hint: str, primary=False, parent=None):
-        super().__init__(ctl, hint, parent)
-        self.icon = icon
-        self.label = label
-        self.primary = primary
-        self._font = font(12, QFont.Weight.DemiBold)
-        width = QFontMetrics(self._font).horizontalAdvance(label)
-        self.setFixedSize(QSize(width + 40, 30))
-
-    def paintEvent(self, event):
-        p = self._painter()
-        hot = self.underMouse() or self.isDown()
-        if self.primary:
-            bg, fg = (C.TEXT, C.INK) if hot else (C.CODE, C.INK)
-        else:
-            bg, fg = (C.HOVER, C.TEXT) if hot else (C.RAISED, C.SOFT)
-        p.setBrush(bg)
-        p.drawRoundedRect(QRectF(self.rect()), 8, 8)
-        icons.paint(p, self.icon, QRectF(9, 7, 16, 16), fg)
-        p.setPen(fg)
-        p.setFont(self._font)
-        p.drawText(QRectF(29, 0, self.width() - 29, self.height()), Qt.AlignmentFlag.AlignVCenter, self.label)
-
-
 class CodeChip(_Draggable):
-    """Floating card over a detected QR code / barcode with Copy and Open."""
+    """Slim card over a detected QR code / barcode: the decoded text plus
+    copy, open (links only) and dismiss."""
 
-    MAX_CHARS = 34
+    MAX_CHARS = 30
 
     def __init__(self, ctl, code, parent):
         super().__init__(parent)
         self.code = code
-        self._title = font(11, QFont.Weight.Bold)
-        self._body = font(12, QFont.Weight.Medium, mono=True)
+        self._font = font(12, QFont.Weight.Medium, mono=True)
         text = " ".join(code.text.split())
         self.preview = text if len(text) <= self.MAX_CHARS else text[: self.MAX_CHARS - 1] + "…"
-        self.kind = "Link" if code.is_link else code.kind
+        full = code.text if len(code.text) < 200 else code.text[:199] + "…"
 
         row = QHBoxLayout(self)
-        text_width = max(QFontMetrics(self._body).horizontalAdvance(self.preview),
-                         QFontMetrics(self._title).horizontalAdvance(self.kind.upper()))
-        row.setContentsMargins(14 + text_width + 14, 8, 8, 8)
-        row.setSpacing(6)
-        full = code.text if len(code.text) < 200 else code.text[:199] + "…"
-        copy = PillButton(ctl, "copy", "Copy", f"Copy  ·  {full}", primary=not code.is_link, parent=self)
-        copy.clicked.connect(lambda: ctl.copy_code(code))
-        row.addWidget(copy)
+        text_width = QFontMetrics(self._font).horizontalAdvance(self.preview)
+        row.setContentsMargins(22 + text_width + 8, 3, 3, 3)
+        row.setSpacing(0)
+        buttons = [("copy", f"Copy  ·  {full}", lambda: ctl.copy_code(code))]
         if code.is_link:
-            opener = PillButton(ctl, "open", "Open", f"Open  ·  {full}", primary=True, parent=self)
-            opener.clicked.connect(lambda: ctl.open_code(code))
-            row.addWidget(opener)
-        dismiss = IconButton(ctl, "close", "Dismiss this code", self, size=26)
-        dismiss.clicked.connect(lambda: ctl.dismiss_code(parent, code))
-        row.addWidget(dismiss)
+            buttons.append(("open", f"Open  ·  {full}", lambda: ctl.open_code(code)))
+        buttons.append(("close", "Dismiss this code", lambda: ctl.dismiss_code(parent, code)))
+        for icon, hint, slot in buttons:
+            b = IconButton(ctl, icon, hint, self, size=24)
+            b.clicked.connect(slot)
+            row.addWidget(b)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.adjustSize()
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(C.CODE, 1.5))
+        p.setPen(QPen(C.LINE, 1))
         p.setBrush(C.BASE)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.75, 0.75, -0.75, -0.75), 12, 12)
-        h = self.height()
-        p.setPen(C.CODE)
-        p.setFont(self._title)
-        p.drawText(QRectF(14, 0, self.width(), h / 2 + 1), Qt.AlignmentFlag.AlignBottom, self.kind.upper())
-        p.setPen(C.TEXT)
-        p.setFont(self._body)
-        p.drawText(QRectF(14, h / 2 + 1, self.width(), h / 2), Qt.AlignmentFlag.AlignTop, self.preview)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(C.CODE)
+        mid = self.height() / 2
+        p.drawRoundedRect(QRectF(10, mid - 3, 6, 6), 2, 2)
+        p.setPen(C.SOFT)
+        p.setFont(self._font)
+        p.drawText(QRectF(22, 0, self.width(), self.height()), Qt.AlignmentFlag.AlignVCenter, self.preview)
