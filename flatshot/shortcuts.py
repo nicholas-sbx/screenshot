@@ -84,9 +84,18 @@ class GlobalShortcuts(QObject):
         if not dbus.available():
             self.error = "python jeepney module is missing"
             return False
-        if not dbus.has_owner(SERVICE) and not self._activatable():
-            self.error = "KDE global shortcut service is not running"
-            return False
+        if not dbus.has_owner(SERVICE):
+            if not self._activatable():
+                self.error = "KDE global shortcut service is not running"
+                return False
+            # Start it and wait: cold D-Bus activation (e.g. right at login)
+            # can take far longer than an ordinary call's timeout.
+            try:
+                dbus.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                          "StartServiceByName", "su", SERVICE, 0, timeout=20)
+            except dbus.DBusError as e:
+                self.error = f"could not start the KDE global shortcut service: {e}"
+                return False
         try:
             for action, (_, default) in ACTIONS.items():
                 self._call("doRegister", "as", _action_id(action))
