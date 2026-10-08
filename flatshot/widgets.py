@@ -284,7 +284,7 @@ class CodeChip(_Draggable):
 
         row = QHBoxLayout(self)
         text_width = QFontMetrics(self._font).horizontalAdvance(self.preview)
-        row.setContentsMargins(22 + text_width + 8, 3, 3, 3)
+        row.setContentsMargins(10 + text_width + 8, 3, 3, 3)
         row.setSpacing(0)
         buttons = [("copy", f"Copy  ·  {full}", lambda: ctl.copy_code(code))]
         if code.is_link:
@@ -303,10 +303,6 @@ class CodeChip(_Draggable):
         p.setPen(QPen(C.LINE, 1))
         p.setBrush(C.BASE)
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(C.CODE)
-        mid = self.height() / 2
-        p.drawRoundedRect(QRectF(10, mid - 3, 6, 6), 2, 2)
         p.setPen(C.SOFT)
         p.setFont(self._font)
-        p.drawText(QRectF(22, 0, self.width(), self.height()), Qt.AlignmentFlag.AlignVCenter, self.preview)
+        p.drawText(QRectF(10, 0, self.width(), self.height()), Qt.AlignmentFlag.AlignVCenter, self.preview)
