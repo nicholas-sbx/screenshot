@@ -21,8 +21,8 @@ from pathlib import Path
 from flatshot import config, output, screencast, windows
 from flatshot.notify import Notifier
 from flatshot.qt import (
-    QFont, QGuiApplication, QHBoxLayout, QImage, QObject, QPainter, QPen, QPointF, QRect, QRectF, QSize, Qt,
-    QTimer, QWidget, Signal,
+    QFont, QGuiApplication, QHBoxLayout, QImage, QObject, QPainter, QPainterPath, QPen, QRect, QRectF, QRegion,
+    QSize, Qt, QTimer, QWidget, Signal,
 )
 from flatshot.screencast import Options, RecordError, Target
 from flatshot.theme import C, REC, font
@@ -30,6 +30,8 @@ from flatshot.widgets import IconButton
 
 STOP_TIMEOUT_S = 10  # for a recorder to finish its file after being asked to stop
 FRAME_GAP = 6  # between the recorded area and the corner marks
+MARK = 20  # length of a corner mark's arms
+MARK_WIDTH = 3
 
 _current: "Recording | None" = None
 _when_idle: list = []
@@ -103,7 +105,7 @@ class Recording(QObject):
         self._poll.setInterval(150)
         self._poll.timeout.connect(self._check)
         self.bar: RecordingBar | None = None
-        self.frame: RegionFrame | None = None
+        self.marks: list[CornerMark] = []
         self._saved.connect(self._deliver)
 
     # -- control -----------------------------------------------------------
@@ -316,7 +318,8 @@ class Recording(QObject):
     def _notify(self, path: Path, copied: bool):
         seconds = screencast.duration(str(path))
         length = clock(round(seconds * 1000) if seconds is not None else self._recorded_ms)
-        bits = [path.name, length, f"{path.stat().st_size / 1e6:.1f} MB"]
+        size = path.stat().st_size
+        bits = [path.name, length, f"{size / 1e6:.1f} MB" if size >= 1e6 else f"{max(1, round(size / 1e3))} KB"]
         if copied:
             bits.append("path copied" if self.cfg.clipboard == "path" else "copied to clipboard")
         actions = {}
@@ -419,15 +422,23 @@ class Recording(QObject):
             else:
                 self.bar.show()
         if _can_place() and _frame_fits(area, screen):
-            self.frame = RegionFrame()
-            _place(self.frame, area.adjusted(-FRAME_GAP - 4, -FRAME_GAP - 4, FRAME_GAP + 4, FRAME_GAP + 4))
+            # Four small windows wholly outside the area: nothing Flatshot
+            # shows can end up in the video, compositor or not.
+            out = area.adjusted(-FRAME_GAP - MARK_WIDTH, -FRAME_GAP - MARK_WIDTH,
+                                FRAME_GAP + MARK_WIDTH, FRAME_GAP + MARK_WIDTH)
+            for corner, (x, y) in {"tl": (out.left(), out.top()), "tr": (out.right() - MARK + 1, out.top()),
+                                   "bl": (out.left(), out.bottom() - MARK + 1),
+                                   "br": (out.right() - MARK + 1, out.bottom() - MARK + 1)}.items():
+                mark = CornerMark(corner)
+                self.marks.append(mark)
+                _place(mark, QRect(x, y, MARK, MARK))
 
     def _hide_controls(self):
-        for w in (self.bar, self.frame):
+        for w in [self.bar] + self.marks:
             if w is not None:
                 w.hide()
                 w.deleteLater()
-        self.bar = self.frame = None
+        self.bar, self.marks = None, []
 
 
 def _bar_spot(area: QRect, screen: QRect, size: QSize) -> QRect | None:
@@ -533,6 +544,11 @@ class RecordingBar(_Floating):
         self._tick.timeout.connect(self.clock.update)
         self._tick.start()
         self.adjustSize()
+        if QGuiApplication.platformName() == "xcb":
+            # Without a compositor X11 has no translucency: cut the corners.
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), self.height() / 2, self.height() / 2)
+            self.setMask(QRegion(path.toFillPolygon().toPolygon()))
         self.refresh()
 
     def refresh(self):
@@ -556,21 +572,25 @@ class RecordingBar(_Floating):
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
 
 
-class RegionFrame(_Floating):
-    """Corner marks just outside the recorded area; clicks pass through."""
+class CornerMark(_Floating):
+    """One red L at a corner of the recorded area, just outside it. Shaped
+    with a mask, so it looks right without a compositor too, and clicks
+    pass through."""
 
-    def __init__(self):
-        super().__init__("Flatshot recording area", Qt.WindowType.WindowTransparentForInput)
+    def __init__(self, corner: str):
+        super().__init__(f"Flatshot recording area {corner}", Qt.WindowType.WindowTransparentForInput)
+        self.corner = corner
+        self.setFixedSize(MARK, MARK)
+        w = MARK_WIDTH
+        x = 0 if "l" in corner else MARK - w
+        y = 0 if "t" in corner else MARK - w
+        self.arms = [QRect(0, y, MARK, w), QRect(x, 0, w, MARK)]
+        shape = QRegion()
+        for arm in self.arms:
+            shape = shape.united(QRegion(arm))
+        self.setMask(shape)
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(REC, 3)
-        pen.setCapStyle(Qt.PenCapStyle.SquareCap)
-        p.setPen(pen)
-        r = QRectF(self.rect()).adjusted(2.5, 2.5, -2.5, -2.5)
-        arm = min(18.0, r.width() / 3, r.height() / 3)
-        for corner, dx, dy in ((r.topLeft(), 1, 1), (r.topRight(), -1, 1),
-                               (r.bottomLeft(), 1, -1), (r.bottomRight(), -1, -1)):
-            p.drawLine(corner, corner + QPointF(dx * arm, 0))
-            p.drawLine(corner, corner + QPointF(0, dy * arm))
+        for arm in self.arms:
+            p.fillRect(arm, REC)

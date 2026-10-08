@@ -612,7 +612,10 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
         rec = recording.current()
         assert not s.overlays and rec.bar is not None and rec.bar.isVisible(), "no recording controls"
         if recording._can_place():  # (not on Wayland without KWin)
-            assert rec.frame is not None, "no frame around the area"
+            assert len(rec.marks) == 4, "no corner marks around the area"
+            area = rec.target.rect
+            assert not any(m.mask().translated(m.pos()).intersects(area) for m in rec.marks), \
+                "a corner mark covers the area"
             assert rec.bar.geometry().top() > rec.target.rect.bottom(), "bar over the recorded area"
         wait(lambda: False, 1.0)
         if out_dir:
