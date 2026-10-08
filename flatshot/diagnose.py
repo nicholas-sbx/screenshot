@@ -20,7 +20,7 @@ def info() -> dict:
         "Qt": qt.QT_VERSION,
         "platform": QGuiApplication.platformName(),
         "desktop": os.environ.get("XDG_CURRENT_DESKTOP", ""),
-        "layer-shell overlay": "yes" if layer else f"no: {layershell.status}",
+        "layer-shell overlay": f"yes (scope {layershell.SCOPE})" if layer else f"no: {layershell.status}",
         "last overlay": layershell.last_overlay,
         "KWin capture helper": capture.kwin_helper() or "not installed",
     }

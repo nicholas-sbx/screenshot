@@ -91,6 +91,8 @@ def run() -> int:
             app.processEvents()
             time.sleep(0.02)
         assert ov.windowHandle().isExposed(), "layer-shell overlay was never mapped"
+        # KWin animates layer surfaces whose scope it doesn't know (as Normal windows).
+        assert ov._layer_shell.property("scope") == layershell.SCOPE, ov._layer_shell.property("scope")
         print("self-test: overlay is a layer-shell surface")
 
     # Codes: found, toggled with Q, dismissed with ×; toggling never revives a dismissed one.
