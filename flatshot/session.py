@@ -88,7 +88,8 @@ class Session:
             return
         self._build_overlays(image)
         if self.cfg.scan_codes and self.request.scan:
-            self.scanner.start(image)
+            # Let the overlay reach the screen before scanning competes for CPU.
+            QTimer.singleShot(60, lambda: None if self.done else self.scanner.start(image))
 
     def _build_overlays(self, image: QImage):
         if self.request.image:

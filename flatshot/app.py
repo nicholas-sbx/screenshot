@@ -32,6 +32,13 @@ def parse_args(argv):
 def make_app() -> QApplication:
     # Opt out of the desktop's Qt style, palette and fonts before Qt starts.
     os.environ.pop("QT_STYLE_OVERRIDE", None)
+    # Everything is software-painted; skip Qt Wayland's EGL setup, which can
+    # cost hundreds of milliseconds on the first window (= the first capture).
+    if "QT_WAYLAND_CLIENT_BUFFER_INTEGRATION" not in os.environ:
+        os.environ["QT_WAYLAND_CLIENT_BUFFER_INTEGRATION"] = "none"
+        rules = os.environ.get("QT_LOGGING_RULES", "")
+        # ... and don't warn that "none" isn't a real integration.
+        os.environ["QT_LOGGING_RULES"] = ";".join(filter(None, [rules, "qt.qpa.wayland.warning=false"]))
     QApplication.setDesktopSettingsAware(False)
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv[:1])

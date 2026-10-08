@@ -183,11 +183,17 @@ def available() -> bool:
     return backend() is not None
 
 
+_scan_lock = threading.Lock()
+
+
 def scan(image: QImage) -> list[Code]:
     which = backend()
     if which is None or image.isNull():
         return []
-    return _scan_zxing(image) if which == "zxing" else _scan_zbar(image)
+    # One scan at a time: some zxing-cpp builds import modules lazily on the
+    # first call, and two first calls in parallel deadlock in the import lock.
+    with _scan_lock:
+        return _scan_zxing(image) if which == "zxing" else _scan_zbar(image)
 
 
 class Scanner(QObject):

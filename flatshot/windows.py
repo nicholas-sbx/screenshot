@@ -93,6 +93,15 @@ class WindowFinder(QObject):
         return dbus.available() and dbus.has_owner(KWIN)
 
     def start(self) -> bool:
+        """Kick off the query in the background; ``found`` fires later."""
+        if not dbus.available():
+            return False
+        import threading
+
+        threading.Thread(target=self._start, daemon=True).start()
+        return True
+
+    def _start(self) -> bool:
         if not self.supported():
             return False
         self._listener = dbus.SignalListener([])

@@ -48,6 +48,7 @@ overrides:
     recommends:
       - python3-zxing-cpp | libzbar0
       - qt6-wayland
+      - qt6-image-formats-plugins
       - wl-clipboard
       - libnotify-bin
     suggests:
@@ -61,6 +62,7 @@ overrides:
     recommends:
       - (python3-zxing-cpp or zbar-libs)
       - qt6-qtwayland
+      - qt6-qtimageformats
       - wl-clipboard
       - libnotify
   archlinux:

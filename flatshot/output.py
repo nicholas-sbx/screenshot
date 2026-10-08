@@ -4,12 +4,13 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from flatshot.qt import QBuffer, QByteArray, QGuiApplication, QImage, QIODevice, QMimeData
+from flatshot.qt import QBuffer, QByteArray, QGuiApplication, QImage, QImageWriter, QIODevice, QMimeData
 
 from flatshot.config import Config
 
@@ -41,13 +42,42 @@ def _unique(path: Path) -> Path:
     return candidate
 
 
+# (config value, label, Qt writer name, lossy)
+FORMATS = [
+    ("png", "PNG", "png", False),
+    ("jpg", "JPEG", "jpeg", True),
+    ("webp", "WebP", "webp", True),
+    ("avif", "AVIF", "avif", True),
+    ("jxl", "JPEG XL", "jxl", True),
+]
+
+
+def writable_formats() -> list[tuple[str, str, str, bool]]:
+    """The FORMATS this Qt can actually write (WebP/AVIF/JXL need plugins)."""
+    have = {bytes(f).decode().lower() for f in QImageWriter.supportedImageFormats()}
+    return [f for f in FORMATS if f[2] in have]
+
+
+def _format(key: str) -> tuple[str, str, str, bool]:
+    for f in writable_formats():
+        if f[0] == key:
+            return f
+    if key != "png":
+        print(f"flatshot: can't write {key} here (missing Qt image plugin?), saving PNG", file=sys.stderr)
+    return FORMATS[0]
+
+
 def save(image: QImage, cfg: Config, explicit: str | None = None) -> Path:
     if explicit:
         path = Path(explicit).expanduser()
+        ext = path.suffix.lower().lstrip(".")
+        fmt = _format("jpg" if ext == "jpeg" else ext) if ext else FORMATS[0]
     else:
-        path = _unique(Path(cfg.save_dir) / datetime.now().strftime(cfg.filename))
+        fmt = _format(cfg.format)
+        path = _unique(Path(cfg.save_dir) / f"{datetime.now().strftime(cfg.filename)}.{fmt[0]}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not image.save(str(path)):
+    quality = cfg.quality if fmt[3] else -1
+    if not image.save(str(path), fmt[2], quality):
         raise OSError(f"could not write {path}")
     return path
 

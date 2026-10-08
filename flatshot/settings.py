@@ -1,10 +1,11 @@
-"""Settings window. Every control is custom-painted in the Flatshot style;
-changes are saved immediately and apply from the next capture."""
+"""Settings window: a sidebar of pages, each a stack of quiet grouped cards.
+Changes are saved as they're made and apply from the next capture."""
 
 from flatshot import __version__, autostart, config, output
 from flatshot.qt import (
     QAbstractButton, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon, QKeySequence, QLabel,
-    QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, Qt, QVBoxLayout, QWidget, Signal, keyval,
+    QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, QStackedWidget, Qt, QVBoxLayout,
+    QWidget, Signal, keyval,
 )
 from flatshot.shortcuts import ACTIONS, GlobalShortcuts
 from flatshot.theme import C, ICON_PATH, font
@@ -12,47 +13,52 @@ from flatshot.theme import C, ICON_PATH, font
 MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in
                  ("Control", "Shift", "Alt", "Meta", "AltGr", "Super_L", "Super_R", "Hyper_L", "Hyper_R")}
 
-
-def _css(c):
-    return c.name()
-
-
 STYLE = f"""
-QWidget#page {{ background: {_css(C.BASE)}; }}
-QLabel {{ color: {_css(C.TEXT)}; background: transparent; }}
-QLabel[role="desc"] {{ color: {_css(C.MUTED)}; font-size: 12px; }}
-QLabel[role="error"] {{ color: {_css(C.ACCENT)}; font-size: 12px; }}
-QLabel[role="section"] {{ color: {_css(C.ACCENT)}; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; }}
-QLabel[role="title"] {{ font-size: 20px; font-weight: 700; }}
+QWidget#window, QWidget#page {{ background: {C.BASE.name()}; }}
+QLabel {{ color: {C.TEXT.name()}; background: transparent; font-size: 13px; font-weight: 400; }}
+QLabel[role="hint"] {{ color: {C.MUTED.name()}; font-size: 12px; }}
+QLabel[role="error"] {{ color: {C.ACCENT.name()}; font-size: 12px; }}
+QLabel[role="group"] {{ color: {C.MUTED.name()}; font-size: 12px; }}
+QLabel[role="title"] {{ font-size: 18px; font-weight: 600; }}
 QLineEdit, QComboBox {{
-    background: {_css(C.RAISED)}; color: {_css(C.TEXT)}; border: 1px solid {_css(C.LINE)};
-    border-radius: 8px; padding: 7px 10px; font-size: 13px;
-    selection-background-color: {_css(C.ACCENT)}; selection-color: {_css(C.INK)};
+    background: {C.INK.name()}; color: {C.TEXT.name()}; border: 1px solid {C.LINE.name()};
+    border-radius: 6px; padding: 6px 9px; font-size: 13px; font-weight: 400;
+    selection-background-color: {C.HOVER.name()}; selection-color: {C.TEXT.name()};
 }}
-QLineEdit:focus, QComboBox:focus {{ border-color: {_css(C.ACCENT)}; }}
-QLineEdit:disabled {{ color: {_css(C.MUTED)}; background: {_css(C.BASE)}; }}
-QComboBox {{ padding-right: 30px; }}
-QComboBox::drop-down {{ border: none; width: 28px; }}
+QLineEdit:focus, QComboBox:focus {{ border-color: {C.MUTED.name()}; }}
+QLineEdit:disabled {{ color: {C.MUTED.name()}; }}
+QComboBox {{ padding-right: 28px; }}
+QComboBox::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
 QComboBox QAbstractItemView {{
-    background: {_css(C.RAISED)}; color: {_css(C.TEXT)}; border: 1px solid {_css(C.LINE)};
-    padding: 4px; outline: 0; selection-background-color: {_css(C.HOVER)}; selection-color: {_css(C.TEXT)};
+    background: {C.RAISED.name()}; color: {C.TEXT.name()}; border: 1px solid {C.LINE.name()};
+    padding: 4px; outline: 0; selection-background-color: {C.HOVER.name()}; selection-color: {C.TEXT.name()};
 }}
-QScrollArea {{ border: none; background: {_css(C.BASE)}; }}
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 6px 2px; }}
-QScrollBar::handle:vertical {{ background: {_css(C.LINE)}; border-radius: 3px; min-height: 32px; }}
-QScrollBar::handle:vertical:hover {{ background: {_css(C.MUTED)}; }}
+QScrollArea {{ border: none; background: {C.BASE.name()}; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 4px 2px; }}
+QScrollBar::handle:vertical {{ background: {C.LINE.name()}; border-radius: 2px; min-height: 32px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
 """
 
+
+def _label(text: str, role: str | None = None, wrap=False) -> QLabel:
+    label = QLabel(text)
+    if role:
+        label.setProperty("role", role)
+    label.setWordWrap(wrap)
+    label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+    return label
+
+
+# -- controls ------------------------------------------------------------------
 
 class Toggle(QAbstractButton):
     def __init__(self, on: bool, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
         self.setChecked(on)
-        self.setFixedSize(44, 24)
+        self.setFixedSize(34, 20)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
 
@@ -62,10 +68,10 @@ class Toggle(QAbstractButton):
         p.setPen(Qt.PenStyle.NoPen)
         on = self.isChecked()
         p.setBrush(C.ACCENT if on else C.LINE)
-        p.drawRoundedRect(QRectF(self.rect()), 8, 8)
-        p.setBrush(C.INK if on else C.SOFT)
-        x = self.width() - 21 if on else 3
-        p.drawRoundedRect(QRectF(x, 3, 18, 18), 6, 6)
+        p.drawRoundedRect(QRectF(self.rect()), 10, 10)
+        p.setBrush(C.TEXT)
+        x = self.width() - 18 if on else 2
+        p.drawEllipse(QRectF(x, 2, 16, 16))
 
 
 class Segmented(QWidget):
@@ -75,76 +81,69 @@ class Segmented(QWidget):
         super().__init__(parent)
         self.options = options  # (value, label)
         self.value = value
-        self._font = font(12, QFont.Weight.DemiBold)
+        self._font = font(12, QFont.Weight.Medium)
         fm = QFontMetrics(self._font)
-        self._widths = [fm.horizontalAdvance(label) + 26 for _, label in options]
-        self.setFixedSize(sum(self._widths) + 8, 34)
+        self._widths = [fm.horizontalAdvance(label) + 22 for _, label in options]
+        self.setFixedSize(sum(self._widths) + 4, 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMouseTracking(True)
-        self._hover = -1
 
     def _cells(self):
-        x = 4.0
+        x = 2.0
         for w in self._widths:
-            yield QRectF(x, 4, w, self.height() - 8)
+            yield QRectF(x, 2, w, self.height() - 4)
             x += w
 
-    def _index_at(self, pos):
-        return next((i for i, r in enumerate(self._cells()) if r.contains(pos)), -1)
-
-    def mouseMoveEvent(self, event):
-        self._hover = self._index_at(event.position())
-        self.update()
-
-    def leaveEvent(self, event):
-        self._hover = -1
-        self.update()
-
     def mousePressEvent(self, event):
-        i = self._index_at(event.position())
-        if i >= 0 and self.options[i][0] != self.value:
-            self.value = self.options[i][0]
-            self.update()
-            self.changed.emit(self.value)
+        for r, (value, _) in zip(self._cells(), self.options):
+            if r.contains(event.position()) and value != self.value:
+                self.value = value
+                self.update()
+                self.changed.emit(value)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(C.RAISED)
-        p.drawRoundedRect(QRectF(self.rect()), 10, 10)
+        p.setPen(QPen(C.LINE, 1))
+        p.setBrush(C.INK)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
         p.setFont(self._font)
-        for i, (r, (value, label)) in enumerate(zip(self._cells(), self.options)):
+        for r, (value, label) in zip(self._cells(), self.options):
             selected = value == self.value
-            if selected or i == self._hover:
+            if selected:
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(C.ACCENT if selected else C.HOVER)
-                p.drawRoundedRect(r, 7, 7)
-            p.setPen(C.INK if selected else C.SOFT)
+                p.setBrush(C.HOVER)
+                p.drawRoundedRect(r, 4, 4)
+            p.setPen(C.TEXT if selected else C.MUTED)
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
 
 
 class Slider(QWidget):
     changed = Signal(int)
 
-    def __init__(self, value: int, maximum: int, step: int, parent=None):
+    def __init__(self, value: int, minimum: int, maximum: int, step: int, parent=None):
         super().__init__(parent)
-        self.value, self.maximum, self.step = value, maximum, step
-        self.setFixedSize(200, 28)
+        self.value, self.minimum, self.maximum, self.step = value, minimum, maximum, step
+        self.setFixedSize(180, 24)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
 
     def _track(self) -> QRectF:
-        return QRectF(9, self.height() / 2 - 3, self.width() - 18, 6)
+        return QRectF(7, self.height() / 2 - 2, self.width() - 14, 4)
 
-    def _set_from(self, x: float):
+    def _x(self, value) -> float:
         t = self._track()
-        raw = (x - t.left()) / t.width() * self.maximum
-        value = int(max(0, min(self.maximum, round(raw / self.step) * self.step)))
+        return t.left() + t.width() * (value - self.minimum) / (self.maximum - self.minimum)
+
+    def _set(self, value: int):
+        value = int(max(self.minimum, min(self.maximum, round(value / self.step) * self.step)))
         if value != self.value:
             self.value = value
             self.update()
             self.changed.emit(value)
+
+    def _set_from(self, x: float):
+        t = self._track()
+        self._set(self.minimum + (x - t.left()) / t.width() * (self.maximum - self.minimum))
 
     def mousePressEvent(self, event):
         self._set_from(event.position().x())
@@ -156,9 +155,9 @@ class Slider(QWidget):
     def keyPressEvent(self, event):
         k = keyval(event.key())
         if k in (keyval(Qt.Key.Key_Left), keyval(Qt.Key.Key_Down)):
-            self._set_from(self._track().left() + (self.value - self.step) / self.maximum * self._track().width())
+            self._set(self.value - self.step)
         elif k in (keyval(Qt.Key.Key_Right), keyval(Qt.Key.Key_Up)):
-            self._set_from(self._track().left() + (self.value + self.step) / self.maximum * self._track().width())
+            self._set(self.value + self.step)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -166,12 +165,33 @@ class Slider(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         t = self._track()
         p.setBrush(C.LINE)
-        p.drawRoundedRect(t, 3, 3)
-        x = t.left() + t.width() * self.value / self.maximum
-        p.setBrush(C.ACCENT)
-        p.drawRoundedRect(QRectF(t.left(), t.top(), x - t.left(), t.height()), 3, 3)
+        p.drawRoundedRect(t, 2, 2)
+        x = self._x(self.value)
+        p.setBrush(C.SOFT)
+        p.drawRoundedRect(QRectF(t.left(), t.top(), x - t.left(), t.height()), 2, 2)
         p.setBrush(C.TEXT)
-        p.drawRoundedRect(QRectF(x - 8, self.height() / 2 - 8, 16, 16), 5, 5)
+        p.drawEllipse(QRectF(x - 7, self.height() / 2 - 7, 14, 14))
+
+
+class ValueSlider(QWidget):
+    """A Slider with its value printed beside it."""
+
+    changed = Signal(int)
+
+    def __init__(self, value, minimum, maximum, step, fmt, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        self.slider = Slider(value, minimum, maximum, step)
+        self.label = _label("", "hint")
+        self.label.setFixedWidth(34)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._fmt = fmt
+        self.label.setText(fmt(value))
+        self.slider.changed.connect(lambda v: (self.label.setText(fmt(v)), self.changed.emit(v)))
+        row.addWidget(self.slider)
+        row.addWidget(self.label)
 
 
 class ShortcutField(QWidget):
@@ -185,14 +205,13 @@ class ShortcutField(QWidget):
         self.recording = False
         self.on_record = on_record  # called with True/False around recording
         self.setEnabled(enabled)
-        self.setFixedSize(220, 34)
+        self.setFixedSize(200, 30)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.setMouseTracking(True)
-        self._font = font(13, QFont.Weight.DemiBold)
+        self._font = font(13, QFont.Weight.Medium)
 
     def _clear_rect(self) -> QRectF:
-        return QRectF(self.width() - 30, 5, 24, 24)
+        return QRectF(self.width() - 26, 4, 22, 22)
 
     def set_sequence(self, sequence: str):
         self.sequence = sequence
@@ -234,34 +253,32 @@ class ShortcutField(QWidget):
             self._stop()
             self.chosen.emit("")
             return
-        combo = event.keyCombination()
-        text = QKeySequence(combo).toString(QKeySequence.SequenceFormat.PortableText)
+        text = QKeySequence(event.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText)
         self._stop()
         self.chosen.emit(text)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(C.ACCENT if self.recording else C.LINE, 1.2))
-        p.setBrush(C.RAISED if self.isEnabled() else C.BASE)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.6, 0.6, -0.6, -0.6), 8, 8)
+        p.setPen(QPen(C.MUTED if self.recording else C.LINE, 1))
+        p.setBrush(C.INK)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
         p.setFont(self._font)
-        text_rect = QRectF(12, 0, self.width() - 44, self.height())
+        text_rect = QRectF(10, 0, self.width() - 36, self.height())
         if self.recording:
-            p.setPen(C.ACCENT)
-            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, "Press keys…  (Esc cancels)")
+            p.setPen(C.SOFT)
+            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, "Press a shortcut…")
         elif self.sequence:
             p.setPen(C.TEXT)
-            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, QKeySequence(self.sequence).toString(
-                QKeySequence.SequenceFormat.NativeText))
-            r = self._clear_rect()
-            p.setPen(QPen(C.MUTED, 1.6))
-            c = r.center()
-            p.drawLine(c + QPointF(-4, -4), c + QPointF(4, 4))
-            p.drawLine(c + QPointF(4, -4), c + QPointF(-4, 4))
+            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter,
+                       QKeySequence(self.sequence).toString(QKeySequence.SequenceFormat.NativeText))
+            c = self._clear_rect().center()
+            p.setPen(QPen(C.MUTED, 1.4))
+            p.drawLine(c + QPointF(-3.5, -3.5), c + QPointF(3.5, 3.5))
+            p.drawLine(c + QPointF(3.5, -3.5), c + QPointF(-3.5, 3.5))
         else:
             p.setPen(C.MUTED)
-            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, "Not set — click to record")
+            p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter, "None")
 
 
 class Combo(QComboBox):
@@ -269,18 +286,17 @@ class Combo(QComboBox):
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(C.SOFT, 1.6))
-        c = QPointF(self.width() - 16, self.height() / 2)
-        p.drawPolyline(QPolygonF([c + QPointF(-4, -2), c + QPointF(0, 2), c + QPointF(4, -2)]))
+        p.setPen(QPen(C.MUTED, 1.4))
+        c = QPointF(self.width() - 14, self.height() / 2)
+        p.drawPolyline(QPolygonF([c + QPointF(-3.5, -1.5), c + QPointF(0, 2), c + QPointF(3.5, -1.5)]))
 
 
-class TextButton(QAbstractButton):
-    def __init__(self, text: str, primary=False, parent=None):
+class Button(QAbstractButton):
+    def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self.setText(text)
-        self.primary = primary
-        self._font = font(12, QFont.Weight.DemiBold)
-        self.setFixedSize(QFontMetrics(self._font).horizontalAdvance(text) + 30, 34)
+        self._font = font(12, QFont.Weight.Medium)
+        self.setFixedSize(QFontMetrics(self._font).horizontalAdvance(text) + 24, 30)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def enterEvent(self, event):
@@ -292,28 +308,99 @@ class TextButton(QAbstractButton):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        hot = self.underMouse()
-        if self.primary:
-            p.setBrush(C.TEXT if hot else C.ACCENT)
-            fg = C.INK
-        else:
-            p.setBrush(C.HOVER if hot else C.RAISED)
-            fg = C.TEXT
-        p.drawRoundedRect(QRectF(self.rect()), 8, 8)
-        p.setPen(fg)
+        p.setPen(QPen(C.LINE, 1))
+        p.setBrush(C.HOVER if self.underMouse() and self.isEnabled() else C.RAISED)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        p.setPen(C.TEXT if self.isEnabled() else C.MUTED)
         p.setFont(self._font)
         p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.text())
 
 
-def _label(text: str, role: str | None = None, wrap=False) -> QLabel:
-    label = QLabel(text)
-    if role:
-        label.setProperty("role", role)
-    label.setWordWrap(wrap)
-    label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-    return label
+class NavItem(QAbstractButton):
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setText(text)
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setFixedHeight(32)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._font = font(13, QFont.Weight.Medium)
 
+    def enterEvent(self, event):
+        self.update()
+
+    def leaveEvent(self, event):
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        if self.isChecked() or self.underMouse():
+            p.setBrush(C.RAISED if self.isChecked() else C.BASE)
+            p.drawRoundedRect(QRectF(self.rect()), 6, 6)
+        p.setPen(C.TEXT if self.isChecked() else C.MUTED)
+        p.setFont(self._font)
+        p.drawText(QRectF(self.rect()).adjusted(12, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, self.text())
+
+
+class Card(QWidget):
+    """A rounded group of rows separated by hairlines."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.col = QVBoxLayout(self)
+        self.col.setContentsMargins(0, 0, 0, 0)
+        self.col.setSpacing(0)
+        self.rows: list[QWidget] = []
+
+    def add(self, row: QWidget) -> QWidget:
+        self.rows.append(row)
+        self.col.addWidget(row)
+        return row
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(C.LINE, 1))
+        p.setBrush(C.RAISED)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        p.setPen(QPen(C.LINE, 1))
+        visible = [r for r in self.rows if r.isVisible()]
+        for row in visible[1:]:
+            y = row.geometry().top() + 0.5
+            p.drawLine(QPointF(14, y), QPointF(self.width() - 14, y))
+
+
+class Row(QWidget):
+    """Title (+ optional hint) on the left, a control on the right, and an
+    optional full-width widget underneath."""
+
+    def __init__(self, title: str, control: QWidget | None = None, hint: str = "", below: QWidget | None = None):
+        super().__init__()
+        col = QVBoxLayout(self)
+        col.setContentsMargins(14, 10, 14, 10)
+        col.setSpacing(8)
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        text.addWidget(_label(title))
+        if hint:
+            text.addWidget(_label(hint, "hint", wrap=True))
+        top.addLayout(text, 1)
+        if control is not None:
+            top.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        col.addLayout(top)
+        self.error = _label("", "error", wrap=True)
+        self.error.hide()
+        col.addWidget(self.error)
+        if below is not None:
+            col.addWidget(below)
+        self.setMinimumHeight(48)
+
+
+# -- window -------------------------------------------------------------------
 
 class SettingsWindow(QWidget):
     closed = Signal()
@@ -327,75 +414,73 @@ class SettingsWindow(QWidget):
         self.shortcuts = shortcuts
         self.setWindowTitle("Flatshot Settings")
         self.setWindowIcon(QIcon(ICON_PATH))
-        self.setObjectName("page")
+        self.setObjectName("window")
         self.setStyleSheet(STYLE)
-        self.resize(640, 760)
-        self.setMinimumWidth(560)
+        self.resize(760, 560)
+        self.setMinimumSize(640, 440)
 
-        scroll = QScrollArea(self)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        nav = QWidget()
+        nav.setFixedWidth(184)
+        nav.setAutoFillBackground(True)
+        nav_col = QVBoxLayout(nav)
+        nav_col.setContentsMargins(12, 18, 12, 14)
+        nav_col.setSpacing(2)
+        self.stack = QStackedWidget()
+        root.addWidget(nav)
+        root.addWidget(self.stack, 1)
+        nav.setStyleSheet(f"background: {C.INK.name()};")
+
+        pages = [("General", self._general), ("Capture", self._capture),
+                 ("After capture", self._after), ("Shortcuts", self._shortcuts)]
+        self.nav_items = []
+        for i, (name, build) in enumerate(pages):
+            item = NavItem(name)
+            item.clicked.connect(lambda _=False, i=i: self.stack.setCurrentIndex(i))
+            nav_col.addWidget(item)
+            self.nav_items.append(item)
+            self.stack.addWidget(self._page(name, build))
+        nav_col.addStretch(1)
+        nav_col.addWidget(_label(f"Flatshot {__version__}", "hint"))
+        self.nav_items[0].setChecked(True)
+
+        self.shortcuts.changed.connect(self._reload_shortcuts)
+
+    def _page(self, title: str, build) -> QWidget:
+        scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         page = QWidget()
         page.setObjectName("page")
+        self._col = QVBoxLayout(page)
+        self._col.setContentsMargins(28, 22, 28, 24)
+        self._col.setSpacing(8)
+        self._col.addWidget(_label(title, "title"))
+        self._col.addSpacing(6)
+        build()
+        self._col.addStretch(1)
         scroll.setWidget(page)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        return scroll
 
-        self.col = QVBoxLayout(page)
-        self.col.setContentsMargins(32, 28, 32, 28)
-        self.col.setSpacing(6)
-
-        head = QHBoxLayout()
-        title = _label("Flatshot", "title")
-        head.addWidget(title)
-        head.addStretch(1)
-        head.addWidget(_label(f"v{__version__}", "desc"))
-        self.col.addLayout(head)
-        self.col.addWidget(_label("Changes are saved right away and apply from the next capture.", "desc"))
-
-        self._shortcuts_section()
-        self._capture_section()
-        self._after_section()
-        self._general_section()
-        self.col.addStretch(1)
-
-        self.shortcuts.changed.connect(self._reload_shortcuts)
-
-    # -- layout helpers ------------------------------------------------------
-
-    def _section(self, name: str):
-        self.col.addSpacing(22)
-        self.col.addWidget(_label(name.upper(), "section"))
-        self.col.addSpacing(4)
-
-    def _row(self, title: str, control: QWidget | None, desc: str = "") -> QVBoxLayout:
-        box = QVBoxLayout()
-        box.setSpacing(2)
-        row = QHBoxLayout()
-        row.setSpacing(16)
-        text = QVBoxLayout()
-        text.setSpacing(2)
-        text.addWidget(_label(title))
-        if desc:
-            text.addWidget(_label(desc, "desc", wrap=True))
-        row.addLayout(text, 1)
-        if control is not None:
-            row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
-        box.addLayout(row)
-        self.col.addSpacing(10)
-        self.col.addLayout(box)
-        return box
+    def _card(self, heading: str = "") -> Card:
+        if heading:
+            self._col.addSpacing(8)
+            self._col.addWidget(_label(heading, "group"))
+        card = Card()
+        self._col.addWidget(card)
+        return card
 
     def _save(self, **changes):
         for key, value in changes.items():
             setattr(self.cfg, key, value)
         self.cfg.save()
 
-    def _toggle(self, key: str, title: str, desc: str = "") -> Toggle:
+    def _toggle(self, key: str) -> Toggle:
         t = Toggle(getattr(self.cfg, key))
         t.toggled.connect(lambda on: self._save(**{key: on}))
-        self._row(title, t, desc)
         return t
 
     def _line(self, key: str, placeholder: str = "") -> QLineEdit:
@@ -404,97 +489,61 @@ class SettingsWindow(QWidget):
         edit.editingFinished.connect(lambda: self._save(**{key: edit.text().strip()}))
         return edit
 
-    # -- sections ------------------------------------------------------------
+    # -- pages ---------------------------------------------------------------
 
-    def _shortcuts_section(self):
-        self._section("Shortcuts")
-        supported = self.shortcuts.active or self.shortcuts.start()
-        self.shortcut_fields = {}
-        self.shortcut_errors = {}
-        for action, (label, _) in ACTIONS.items():
-            field = ShortcutField(self.shortcuts.get(action) if supported else "", supported,
-                                  on_record=self.shortcuts.block)
-            field.chosen.connect(lambda seq, a=action: self._assign(a, seq))
-            box = self._row(label, field)
-            error = _label("", "error", wrap=True)
-            error.hide()
-            box.addWidget(error)
-            self.shortcut_fields[action] = field
-            self.shortcut_errors[action] = error
-        if supported:
-            self.col.addWidget(_label("Also editable in System Settings → Keyboard → Shortcuts → Flatshot. "
-                                      "Shortcuts work while Flatshot runs in the tray.", "desc", wrap=True))
-        else:
-            self.col.addWidget(_label(
-                "Global shortcuts need KDE Plasma (" + (self.shortcuts.error or "unavailable") + "). "
-                "On other desktops, bind the command  flatshot  in your keyboard settings.", "error", wrap=True))
+    def _general(self):
+        card = self._card()
+        start = Toggle(autostart.enabled())
+        start.toggled.connect(autostart.set_enabled)
+        card.add(Row("Start at login", start, "Keeps Flatshot in the system tray so shortcuts work."))
+        open_config = Button("Open")
 
-    def _assign(self, action: str, sequence: str):
-        error = self.shortcut_errors[action]
-        owner = self.shortcuts.owner_of(sequence, action) if sequence else ""
-        if owner:
-            error.setText(f"{sequence} is already used by {owner}. Free it in System Settings → Shortcuts first.")
-            error.show()
-            return
-        ok, now = self.shortcuts.assign(action, sequence)
-        self.shortcut_fields[action].set_sequence(now if ok else self.shortcuts.get(action))
-        error.setVisible(not ok)
-        if not ok:
-            error.setText(f"KDE refused {sequence or 'clearing the shortcut'}. It may be reserved by the system.")
+        def open_folder():
+            folder = config.config_path().parent
+            folder.mkdir(parents=True, exist_ok=True)
+            output.open_file(folder)
 
-    def _reload_shortcuts(self):
-        for action, field in self.shortcut_fields.items():
-            if not field.recording:
-                field.set_sequence(self.shortcuts.get(action))
+        open_config.clicked.connect(open_folder)
+        card.add(Row("Configuration folder", open_config, str(config.config_path().parent)))
 
-    def _capture_section(self):
-        self._section("Capture")
-        shade = QWidget()
-        row = QHBoxLayout(shade)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(12)
-        slider = Slider(self.cfg.dim_opacity, 90, 5)
-        value = _label("", "desc")
-        value.setFixedWidth(36)
+    def _capture(self):
+        card = self._card()
+        shade = ValueSlider(self.cfg.dim_opacity, 0, 90, 5, lambda v: f"{v}%" if v else "Off")
+        shade.changed.connect(lambda v: self._save(dim_opacity=v))
+        card.add(Row("Screen shading", shade))
+        card.add(Row("Toolbar follows the mouse", self._toggle("toolbar_follows_mouse"),
+                     "Show the toolbar on the monitor the pointer is on."))
+        card.add(Row("Detect windows", self._toggle("detect_windows"),
+                     "Hover a window and click to capture just that window. KDE Plasma."))
 
-        def shown(v):
-            value.setText(f"{v}%" if v else "Off")
+        card = self._card("QR codes and barcodes")
+        card.add(Row("Scan the screen", self._toggle("scan_codes")))
+        card.add(Row("Show results", self._toggle("show_codes"), "Press Q while capturing to show or hide them."))
 
-        shown(self.cfg.dim_opacity)
-        slider.changed.connect(shown)
-        slider.changed.connect(lambda v: self._save(dim_opacity=v))
-        row.addWidget(slider)
-        row.addWidget(value)
-        self._row("Screen shading", shade, "How much the frozen screen is darkened outside your selection.")
-
-        self._toggle("toolbar_follows_mouse", "Toolbar follows the mouse",
-                     "Show the toolbar on the monitor the pointer is on.")
-        self._toggle("detect_windows", "Detect windows",
-                     "Hover a window and click to capture just that window (KDE Plasma).")
-        self._toggle("scan_codes", "Scan for QR codes and barcodes")
-        self._toggle("show_codes", "Show detected codes", "Toggle them while capturing with Q or the toolbar.")
-
+        card = self._card("Advanced")
         combo = Combo()
-        labels = {"auto": "Automatic", "kwin": "KWin direct (KDE, fastest)", "spectacle": "Spectacle (KDE)", "grim": "grim (wlroots)",
-                  "gnome-screenshot": "GNOME Screenshot", "qt": "Qt (X11 only)"}
+        labels = {"auto": "Automatic", "kwin": "KWin", "spectacle": "Spectacle", "grim": "grim",
+                  "gnome-screenshot": "GNOME Screenshot", "qt": "Qt (X11)"}
         for key in config.BACKENDS:
             combo.addItem(labels[key], key)
         combo.setCurrentIndex(config.BACKENDS.index(self.cfg.backend))
-        combo.setFixedWidth(200)
+        combo.setFixedWidth(180)
         combo.currentIndexChanged.connect(lambda i: self._save(backend=config.BACKENDS[i]))
-        self._row("Capture helper", combo, "Wayland apps can't read the screen themselves.")
+        card.add(Row("Capture method", combo))
 
-    def _after_section(self):
-        self._section("After capture")
-        save = self._toggle("save_to_disk", "Save to folder")
-        folder_row = QHBoxLayout()
-        folder_row.setSpacing(8)
+    def _after(self):
+        card = self._card("Save")
+        save = self._toggle("save_to_disk")
+        card.add(Row("Save to a folder", save))
         folder = self._line("save_dir")
-        browse = TextButton("Browse…")
-        folder_row.addWidget(folder, 1)
-        folder_row.addWidget(browse)
-        self.col.addSpacing(6)
-        self.col.addLayout(folder_row)
+        browse = Button("Choose…")
+        folder_box = QWidget()
+        fb = QHBoxLayout(folder_box)
+        fb.setContentsMargins(0, 0, 0, 0)
+        fb.setSpacing(8)
+        fb.addWidget(folder, 1)
+        fb.addWidget(browse)
+        card.add(Row("Folder", None, below=folder_box))
 
         def pick():
             path = QFileDialog.getExistingDirectory(self, "Screenshot folder", folder.text())
@@ -503,65 +552,93 @@ class SettingsWindow(QWidget):
                 self._save(save_dir=path)
 
         browse.clicked.connect(pick)
+        card.add(Row("File name", None, "Date and time codes: %Y %m %d %H %M %S. The extension is added for you.",
+                     below=self._line("filename")))
+
+        formats = output.writable_formats()
+        if self.cfg.format not in [f[0] for f in formats]:
+            self.cfg.format = "png"
+        fmt = Segmented([(f[0], f[1]) for f in formats], self.cfg.format)
+        card.add(Row("Format", fmt))
+        quality = ValueSlider(self.cfg.quality, 10, 100, 5, str)
+        quality.changed.connect(lambda v: self._save(quality=v))
+        quality_row = card.add(Row("Quality", quality, "Higher is sharper and larger."))
+        lossy = {f[0] for f in formats if f[3]}
+
+        def format_changed(value):
+            self._save(format=value)
+            quality_row.setVisible(value in lossy)
+            card.update()
+
+        fmt.changed.connect(format_changed)
+        quality_row.setVisible(self.cfg.format in lossy)
 
         def sync(on):
-            folder.setEnabled(on)
-            browse.setEnabled(on)
+            for w in (folder, browse):
+                w.setEnabled(on)
 
         save.toggled.connect(sync)
         sync(self.cfg.save_to_disk)
 
-        self._row("File name", None, "strftime pattern: %Y year, %m month, %d day, %H-%M-%S time.")
-        self.col.addSpacing(6)
-        self.col.addWidget(self._line("filename"))
-
+        card = self._card("Then")
         clip = Segmented([("image", "Image"), ("path", "File path"), ("none", "Nothing")], self.cfg.clipboard)
         clip.changed.connect(lambda v: self._save(clipboard=v))
-        self._row("Copy to clipboard", clip)
-
-        self._toggle("notify", "Show a notification", "With Open, Show in folder and Annotate buttons.")
-
+        card.add(Row("Copy to clipboard", clip))
+        card.add(Row("Show a notification", self._toggle("notify")))
         then = Segmented([("none", "Nothing"), ("image", "Image"), ("folder", "Folder")], self.cfg.open_after)
         then.changed.connect(lambda v: self._save(open_after=v))
-        self._row("Then open", then)
+        card.add(Row("Open", then))
+        card.add(Row("Run a command", None, "{path} is replaced with the image file.",
+                     below=self._line("run_command", "curl -F file=@{path} https://example.com/upload")))
 
-        self._row("Run a command", None, "Runs after every capture. {path} is replaced by the image file "
-                                         "(also in $FLATSHOT_PATH). Leave empty for none.")
-        self.col.addSpacing(6)
-        self.col.addWidget(self._line("run_command", "e.g.  curl -F file=@{path} https://example.com/upload"))
+    def _shortcuts(self):
+        supported = self.shortcuts.active or self.shortcuts.start()
+        card = self._card()
+        self.shortcut_fields = {}
+        self.shortcut_rows = {}
+        for action, (label, _) in ACTIONS.items():
+            field = ShortcutField(self.shortcuts.get(action) if supported else "", supported,
+                                  on_record=self.shortcuts.block)
+            field.chosen.connect(lambda seq, a=action: self._assign(a, seq))
+            self.shortcut_fields[action] = field
+            self.shortcut_rows[action] = card.add(Row(label, field))
+        if supported:
+            note = "These are KDE global shortcuts; they also appear in System Settings → Shortcuts → Flatshot."
+        else:
+            note = ("Global shortcuts need KDE Plasma (" + (self.shortcuts.error or "unavailable") + "). "
+                    "Elsewhere, bind the command  flatshot  in your desktop's keyboard settings.")
+        self._col.addWidget(_label(note, "hint", wrap=True))
 
-    def _general_section(self):
-        self._section("General")
-        start = Toggle(autostart.enabled())
-        start.toggled.connect(autostart.set_enabled)
-        self._row("Start at login", start, "Runs Flatshot in the system tray so shortcuts work.")
+    def _assign(self, action: str, sequence: str):
+        error = self.shortcut_rows[action].error
+        owner = self.shortcuts.owner_of(sequence, action) if sequence else ""
+        if owner:
+            error.setText(f"{sequence} is already used by {owner}.")
+            error.show()
+            return
+        ok, now = self.shortcuts.assign(action, sequence)
+        self.shortcut_fields[action].set_sequence(now if ok else self.shortcuts.get(action))
+        error.setVisible(not ok)
+        if not ok:
+            error.setText(f"KDE didn't accept {sequence or 'clearing the shortcut'}.")
 
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-        open_config = TextButton("Open config folder")
-        def open_folder():
-            folder = config.config_path().parent
-            folder.mkdir(parents=True, exist_ok=True)
-            output.open_file(folder)
+    def _reload_shortcuts(self):
+        for action, field in self.shortcut_fields.items():
+            if not field.recording:
+                field.set_sequence(self.shortcuts.get(action))
 
-        open_config.clicked.connect(open_folder)
-        footer.addWidget(open_config)
-        footer.addStretch(1)
-        done = TextButton("Done", primary=True)
-        done.clicked.connect(self.close)
-        footer.addWidget(done)
-        self.col.addSpacing(26)
-        self.col.addLayout(footer)
+    def show_page(self, index: int):
+        self.nav_items[index].setChecked(True)
+        self.stack.setCurrentIndex(index)
 
     def closeEvent(self, event):
         for field in self.shortcut_fields.values():
             field._stop()
-        # Text fields save on editingFinished; flush the focused one too.
         focused = self.focusWidget()
         if isinstance(focused, QLineEdit):
-            focused.editingFinished.emit()
+            focused.editingFinished.emit()  # flush the field being edited
         super().closeEvent(event)
         self.closed.emit()
 
     def sizeHint(self):
-        return QSize(640, 760)
+        return QSize(760, 560)

@@ -23,6 +23,7 @@ def _default_dir() -> str:
     return str(Path(pictures or Path.home() / "Pictures") / "Screenshots")
 
 
+FORMAT_EXTENSIONS = ("png", "jpg", "jpeg", "webp", "avif", "jxl")
 CLIPBOARD = ("image", "path", "none")
 OPEN_AFTER = ("none", "image", "folder")
 BACKENDS = ("auto", "kwin", "spectacle", "grim", "gnome-screenshot", "qt")
@@ -33,7 +34,9 @@ class Config:
     # After capture
     save_to_disk: bool = True
     save_dir: str = ""
-    filename: str = "Screenshot_%Y-%m-%d_%H-%M-%S.png"
+    filename: str = "Screenshot_%Y-%m-%d_%H-%M-%S"  # strftime pattern; the extension follows `format`
+    format: str = "png"  # png | jpg | webp | avif | jxl (when Qt can write it)
+    quality: int = 90  # 1-100, for lossy formats
     clipboard: str = "image"  # image | path | none
     notify: bool = True
     open_after: str = "none"  # none | image | folder
@@ -63,6 +66,14 @@ class Config:
         if self.backend not in BACKENDS:
             self.backend = "auto"
         self.dim_opacity = max(0, min(int(self.dim_opacity), 90))
+        self.quality = max(1, min(int(self.quality), 100))
+        self.format = str(self.format).lower().lstrip(".")
+        if self.format == "jpeg":
+            self.format = "jpg"
+        # Older configs kept the extension in the pattern; it now follows `format`.
+        stem, dot, ext = self.filename.rpartition(".")
+        if dot and stem and ext.lower() in FORMAT_EXTENSIONS:
+            self.filename = stem
 
     def needs_file(self) -> bool:
         return self.save_to_disk or self.clipboard == "path" or self.open_after != "none" or bool(self.run_command)

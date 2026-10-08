@@ -211,14 +211,17 @@ def run() -> int:
     from flatshot.shortcuts import GlobalShortcuts
 
     settings = SettingsWindow(config.load(), GlobalShortcuts())
-    settings.resize(640, 1500)
+    settings.resize(760, 600)
+    settings.show_page(2)  # After capture
     app.processEvents()
     if out_dir:
         settings.grab().save(str(Path(out_dir) / "settings.png"))
     toggles = settings.findChildren(Toggle)
     assert len(toggles) >= 6, len(toggles)
     before = config.load().notify
-    settings._save(notify=not before, dim_opacity=0)
+    settings._save(notify=not before, dim_opacity=0, format="jpg", quality=55)
+    jpg = output.save(QImage(str(src)), config.load())
+    assert jpg.suffix == ".jpg" and QImage(str(jpg)).width() == QImage(str(src)).width(), jpg
     reloaded = config.load()
     assert reloaded.notify is (not before) and reloaded.dim_opacity == 0, reloaded
     settings.close()

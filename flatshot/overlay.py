@@ -277,16 +277,22 @@ class Overlay(QWidget):
 
         region = self.ctl.tool == "region"
         if region:
-            dim = QPainterPath()
-            dim.addRect(QRectF(self.rect()))
             focus = self.sel_rect if self.sel_rect is not None else (
                 self.hover_window[0] if self.hover_window else None)
-            if focus is not None:
-                hole = QPainterPath()
-                hole.addRect(focus)
-                dim = dim.subtracted(hole)
             if self.ctl.dim.alpha():
-                p.fillPath(dim, self.ctl.dim)
+                # Plain rectangles around the hole: far cheaper than filling
+                # an anti-aliased path over the whole (possibly 4K) screen.
+                full = QRectF(self.rect())
+                if focus is None:
+                    p.fillRect(full, self.ctl.dim)
+                else:
+                    f = focus.intersected(full)
+                    for r in (QRectF(full.left(), full.top(), full.width(), f.top() - full.top()),
+                              QRectF(full.left(), f.bottom(), full.width(), full.bottom() - f.bottom()),
+                              QRectF(full.left(), f.top(), f.left() - full.left(), f.height()),
+                              QRectF(f.right(), f.top(), full.right() - f.right(), f.height())):
+                        if r.width() > 0 and r.height() > 0:
+                            p.fillRect(r, self.ctl.dim)
             if self.sel_rect is None and self.hover_window:
                 self._paint_window(p, *self.hover_window)
             # Codes sit above window highlights.

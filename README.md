@@ -18,6 +18,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Instant region capture**: drag and release to save to `~/Pictures/Screenshots` and copy to the clipboard.
 - **Window capture** (KDE): hover over where a window was when the screen froze and it lights up; click to capture just that window. Clicking empty desktop captures the whole monitor.
 - **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens).
+- **Save as PNG, JPEG, WebP, AVIF or JPEG XL**, with a quality slider for the lossy formats. WebP, AVIF and JPEG XL appear when Qt has the plugins: `qt6-imageformats` and `kimageformats`.
 - **After-capture actions** you choose in settings: save to a folder, copy the image or its path, show a notification, open the image or folder, or run your own command (for example an upload script).
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder** and **Annotate** buttons.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
@@ -42,15 +43,34 @@ The native packages use your distro's **PyQt6**. The AppImage bundles Python, **
 
 ### Arch: pacman repository
 
-Each release also updates a pacman repository. Add it to `/etc/pacman.conf`:
+Each release also publishes a pacman repository. Add it once, and Flatshot updates with the rest of your system.
 
-```ini
-[flatshot]
-SigLevel = Optional TrustAll
-Server = https://github.com/nicholas-sbx/screenshot/releases/download/pacman
-```
+1. Add the repository to the end of `/etc/pacman.conf`:
 
-Then install with `sudo pacman -Sy flatshot`, and future versions come with your normal `pacman -Syu`. The repository is a GitHub release, so it is reachable only while this GitHub repo is public. The packages are not signed yet, hence `SigLevel = Optional TrustAll`.
+   ```sh
+   sudo tee -a /etc/pacman.conf <<'EOF'
+
+   [flatshot]
+   SigLevel = Optional TrustAll
+   Server = https://github.com/nicholas-sbx/screenshot/releases/download/pacman
+   EOF
+   ```
+
+2. Refresh the package lists and install Flatshot:
+
+   ```sh
+   sudo pacman -Sy flatshot
+   ```
+
+3. From then on, `sudo pacman -Syu` picks up new Flatshot versions along with everything else.
+
+To remove the repository, delete the `[flatshot]` block from `/etc/pacman.conf`. You can then uninstall Flatshot with `sudo pacman -R flatshot`.
+
+Notes:
+
+- **The GitHub repository must be public for this to work.** The repository is hosted as a GitHub release, and pacman can't sign in to download from a private one.
+- **The packages aren't signed yet**, hence `SigLevel = Optional TrustAll`.
+- **AVIF and JPEG XL saving:** install `qt6-imageformats` and `kimageformats` (KDE Plasma already includes the latter). PNG and JPEG always work.
 
 **QR codes and barcodes** need one of two scanners:
 
@@ -116,7 +136,9 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 {
   "save_to_disk": true,
   "save_dir": "~/Pictures/Screenshots",
-  "filename": "Screenshot_%Y-%m-%d_%H-%M-%S.png",
+  "filename": "Screenshot_%Y-%m-%d_%H-%M-%S",
+  "format": "png",
+  "quality": 90,
   "clipboard": "image",
   "notify": true,
   "open_after": "none",
@@ -133,6 +155,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 }
 ```
 
+- `format`: `png`, `jpg`, `webp`, `avif` or `jxl`. `quality` (1–100) applies to the lossy formats, and the file extension follows the format.
 - `clipboard`: `image`, `path` or `none`.
 - `open_after`: `none`, `image` or `folder`.
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
