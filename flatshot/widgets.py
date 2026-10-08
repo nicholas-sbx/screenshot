@@ -46,11 +46,16 @@ class _Button(QAbstractButton):
 
 
 class IconButton(_Button):
-    def __init__(self, ctl, icon: str, hint: str, parent=None):
+    def __init__(self, ctl, icon: str, hint: str, parent=None, size: int = 36):
         super().__init__(ctl, hint, parent)
         self.icon = icon
         self.active = False
-        self.setFixedSize(36, 36)
+        self.toggled_on: bool | None = None  # set for on/off toggles
+        self.setFixedSize(size, size)
+
+    def set_toggle(self, on: bool, icon: str, hint: str):
+        self.toggled_on, self.icon, self.hint = on, icon, hint
+        self.update()
 
     def set_active(self, active: bool):
         if active != self.active:
@@ -64,6 +69,9 @@ class IconButton(_Button):
         if self.active:
             p.setBrush(C.ACCENT)
             fg = C.INK
+        elif self.toggled_on and not self.isDown():
+            p.setBrush(C.HOVER if self.underMouse() else C.RAISED)
+            fg = C.CODE
         elif self.isDown():
             p.setBrush(C.LINE)
             fg = C.TEXT
@@ -72,8 +80,10 @@ class IconButton(_Button):
             fg = C.TEXT
         else:
             p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(box, 9, 9)
-        icons.paint(p, self.icon, QRectF(8, 8, 20, 20), fg)
+        radius = min(9.0, box.width() / 2)
+        p.drawRoundedRect(box, radius, radius)
+        inset = self.width() * 0.22
+        icons.paint(p, self.icon, QRectF(self.rect()).adjusted(inset, inset, -inset, -inset), fg)
 
 
 class Swatch(_Button):
@@ -209,6 +219,10 @@ class Toolbar(_Draggable):
         row.addWidget(self.size_button)
         row.addWidget(Divider(self))
 
+        self.codes_button = IconButton(ctl, "codes", "", self)
+        self.codes_button.clicked.connect(ctl.toggle_codes)
+        row.addWidget(self.codes_button)
+
         for icon, hint, slot in [
             ("undo", "Undo  ·  Ctrl+Z", ctl.undo),
             ("redo", "Redo  ·  Ctrl+Shift+Z", ctl.redo),
@@ -234,6 +248,12 @@ class Toolbar(_Draggable):
         for s in self.swatches:
             s.set_selected(s.index == self.ctl.color_index)
         self.size_button.set_size(self.ctl.size)
+        n = self.ctl.code_count()
+        found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
+        if self.ctl.codes_visible:
+            self.codes_button.set_toggle(True, "codes", f"Hide QR / barcodes  ·  Q  ·  {found}")
+        else:
+            self.codes_button.set_toggle(False, "codes-off", f"Show QR / barcodes  ·  Q  ·  {found}")
 
     def place(self):
         bounds = self.parentWidget().rect()
@@ -300,6 +320,9 @@ class CodeChip(_Draggable):
             opener = PillButton(ctl, "open", "Open", f"Open  ·  {full}", primary=True, parent=self)
             opener.clicked.connect(lambda: ctl.open_code(code))
             row.addWidget(opener)
+        dismiss = IconButton(ctl, "close", "Dismiss this code", self, size=26)
+        dismiss.clicked.connect(lambda: ctl.dismiss_code(parent, code))
+        row.addWidget(dismiss)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.adjustSize()
 

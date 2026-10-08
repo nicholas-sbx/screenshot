@@ -14,6 +14,7 @@ for _name in _order:
             from PySide6.QtCore import *  # noqa: F401,F403
             from PySide6.QtGui import *  # noqa: F401,F403
             from PySide6.QtWidgets import *  # noqa: F401,F403
+            from PySide6.QtNetwork import QLocalServer, QLocalSocket  # noqa: F401
             from PySide6.QtCore import Signal, qVersion
 
             BINDING = f"PySide6 {_bver}"
@@ -21,6 +22,7 @@ for _name in _order:
             from PyQt6.QtCore import *  # noqa: F401,F403
             from PyQt6.QtGui import *  # noqa: F401,F403
             from PyQt6.QtWidgets import *  # noqa: F401,F403
+            from PyQt6.QtNetwork import QLocalServer, QLocalSocket  # noqa: F401
             from PyQt6.QtCore import PYQT_VERSION_STR, pyqtSignal as Signal, qVersion
 
             BINDING = f"PyQt6 {PYQT_VERSION_STR}"

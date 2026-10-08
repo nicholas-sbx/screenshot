@@ -66,30 +66,50 @@ def _fake_desktop(w=1600, h=1000) -> QImage:
 def run() -> int:
     global QR_IMAGE
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    tmp = Path(tempfile.mkdtemp(prefix="flatshot-selftest-"))
+    os.environ["XDG_CONFIG_HOME"] = str(tmp / "config")  # never touch the real settings
     from flatshot import app as appmod, config, output, scanner, shapes
+    from flatshot.notify import Notifier
+    from flatshot.session import Request, Session
 
     app = appmod.make_app()
     QR_IMAGE = _qr_image(TEST_URL)
     out_dir = os.environ.get("FLATSHOT_SELFTEST_OUT")
-    tmp = Path(tempfile.mkdtemp(prefix="flatshot-selftest-"))
+    if out_dir:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
     src = tmp / "desktop.png"
     desktop = _fake_desktop()
     assert desktop.save(str(src)), "could not write test image"
 
-    cfg = config.Config(save_dir=str(tmp), notify=False, copy_to_clipboard=False)
-    args = appmod.parse_args(["--image", str(src)])
-    ctl = appmod.Controller(app, cfg, args)
+    cfg = config.Config(save_dir=str(tmp / "shots"), notify=False, clipboard="none", dim_opacity=45)
+    finished = []
+    ctl = Session(cfg, Request(image=str(src)), Notifier(interactive=False),
+                  lambda code, holds: finished.append(code))
     ctl.start()
     assert ctl.overlays, "no overlay was created"
     ov = ctl.overlays[0]
     ov.resize(ov.base.deviceIndependentSize().toSize())
     app.processEvents()
+    assert ctl.toolbar_overlay is ov and ov.toolbar.isVisibleTo(ov), "toolbar not on the active monitor"
+    assert ctl.dim.alpha() == round(45 * 2.55)
+    if os.environ.get("FLATSHOT_EXPECT_LAYER_SHELL") == "1":
+        assert getattr(ov, "_layer_shell", None) is not None, "overlay is not a layer-shell surface"
+        assert ov.windowHandle().isExposed(), "layer-shell overlay was never mapped"
+        print("self-test: overlay is a layer-shell surface")
+
+    # Codes: found, toggled with Q, dismissed with ×; toggling never revives a dismissed one.
+    def key(k, text="", mods=Qt.KeyboardModifier.NoModifier):
+        ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(k), mods, text))
 
     codes = scanner.scan(desktop)
     if QR_IMAGE is not None:
         assert any(c.text == TEST_URL for c in codes), f"QR code not found: {codes}"
         ctl._codes_found(codes)
-        assert ov.chips, "no code chip was shown"
+        assert ov.chips and ov.chips[0].isVisibleTo(ov), "no code chip was shown"
+        key(Qt.Key.Key_Q, "q")
+        assert not ctl.codes_visible and not ov.chips[0].isVisibleTo(ov)
+        key(Qt.Key.Key_Q, "q")
+        assert ctl.codes_visible and ov.chips[0].isVisibleTo(ov)
         print(f"self-test: scanner found {len(codes)} code(s)")
     else:
         print("self-test: zxing-cpp unavailable, scan check skipped")
@@ -101,8 +121,14 @@ def run() -> int:
 
     ov.cursor_pos = at(700, 600)
     if out_dir:
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
         ov.grab().save(str(Path(out_dir) / "overlay-region.png"))
+    if QR_IMAGE is not None:
+        n = ctl.code_count()
+        ctl.dismiss_code(ov, ov.codes[0][0])
+        assert ctl.code_count() == n - 1
+        key(Qt.Key.Key_Q, "q")
+        key(Qt.Key.Key_Q, "q")
+        assert ctl.code_count() == n - 1, "a dismissed code came back"
 
     for tool, a, b in [("arrow", (200, 760), (420, 640)), ("rect", (150, 170), (700, 240)),
                        ("pixelate", (160, 330), (560, 400)), ("marker", (160, 460), (600, 460)),
@@ -122,9 +148,6 @@ def run() -> int:
     assert len(ov.annotations) == 7
 
     # Keyboard: tool hotkey, typing into a text box, Enter, Ctrl+Z.
-    def key(k, text="", mods=Qt.KeyboardModifier.NoModifier):
-        ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(k), mods, text))
-
     key(Qt.Key.Key_T, "t")
     assert ctl.tool == "text", ctl.tool
     ctl.begin_text(ov, shapes.Text(at(1000, 760), ctl.color, 1))
@@ -145,10 +168,35 @@ def run() -> int:
 
     region = ov.render(QRectF(at(100, 100), at(1000, 800)))
     assert abs(region.width() - 900) <= 2 and abs(region.height() - 700) <= 2, region.size()
-    saved = output.save(region, cfg)
-    assert saved.exists() and QImage(str(saved)).width() == region.width()
     if out_dir:
         region.save(str(Path(out_dir) / "result.png"))
-    ctl._hide_all()
+
+    # Full capture path: render, close the overlays, save, report back.
+    ctl.capture(ov, QRectF(at(100, 100), at(1000, 800)))
+    for _ in range(50):
+        app.processEvents()
+        if finished:
+            break
+    assert finished == [0], finished
+    saved = list((tmp / "shots").glob("*.png"))
+    assert len(saved) == 1 and QImage(str(saved[0])).width() == region.width(), saved
+
+    # Settings window: builds, renders, and writes the config file.
+    from flatshot.settings import SettingsWindow, Toggle
+    from flatshot.shortcuts import GlobalShortcuts
+
+    settings = SettingsWindow(config.load(), GlobalShortcuts())
+    settings.resize(640, 1500)
+    app.processEvents()
+    if out_dir:
+        settings.grab().save(str(Path(out_dir) / "settings.png"))
+    toggles = settings.findChildren(Toggle)
+    assert len(toggles) >= 6, len(toggles)
+    before = config.load().notify
+    settings._save(notify=not before, dim_opacity=0)
+    reloaded = config.load()
+    assert reloaded.notify is (not before) and reloaded.dim_opacity == 0, reloaded
+    settings.close()
+
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
     return 0

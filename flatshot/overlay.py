@@ -1,16 +1,17 @@
-"""One fullscreen window per monitor showing the frozen capture."""
+"""One fullscreen overlay per monitor showing the frozen capture."""
 
 from flatshot.qt import (
     QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen, QPixmap, QPoint, QPointF, QPolygonF,
     QRect, QRectF, Qt, QWidget,
 )
 
-from flatshot import shapes
+from flatshot import layershell, shapes
 from flatshot.theme import C, font
 from flatshot.widgets import CodeChip, Toolbar
 
 HINTS = {
     "region": "Drag to capture  ·  Click for whole screen  ·  Esc to cancel",
+    "codes": "Drag to capture  ·  Q hides detected codes  ·  Esc to cancel",
     "text": "Click to place text  ·  Enter to finish  ·  R to capture",
 }
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
@@ -43,19 +44,24 @@ class Overlay(QWidget):
     # -- window ------------------------------------------------------------
 
     def show_on_screen(self):
+        screen = self.target_screen
         if hasattr(self, "setScreen"):
-            self.setScreen(self.target_screen)
+            self.setScreen(screen)
+        self.setGeometry(screen.geometry())
+        if layershell.apply(self, screen):
+            # An overlay layer surface: no window animations, above panels.
+            self.show()
         else:
-            self.create()
-            self.windowHandle().setScreen(self.target_screen)
-        self.setGeometry(self.target_screen.geometry())
-        self.showFullScreen()
+            if not hasattr(self, "setScreen"):
+                self.create()
+                self.windowHandle().setScreen(screen)
+            self.showFullScreen()
         self.raise_()
         self.activateWindow()
 
     def add_toolbar(self):
         self.toolbar = Toolbar(self.ctl, self)
-        self.toolbar.show()
+        self.toolbar.hide()
         self._place_floating()
 
     def resizeEvent(self, event):
@@ -91,12 +97,19 @@ class Overlay(QWidget):
             chip = CodeChip(self.ctl, code, self)
             self.chips.append(chip)
         self._place_floating()
-        self.refresh()
+
+    def dismiss_code(self, code):
+        for i, (c, _) in enumerate(self.codes):
+            if c is code:
+                del self.codes[i]
+                self.chips.pop(i).deleteLater()
+                break
+        self.update()
 
     # -- state -------------------------------------------------------------
 
     def refresh(self):
-        show_chips = self.ctl.tool == "region" and self.sel_rect is None
+        show_chips = self.ctl.tool == "region" and self.sel_rect is None and self.ctl.codes_visible
         for chip in self.chips:
             chip.setVisible(show_chips)
         if self.toolbar:
@@ -131,9 +144,7 @@ class Overlay(QWidget):
     def cancel_gesture(self) -> bool:
         if self.sel_rect is not None or self.active is not None:
             self.sel_origin = self.sel_rect = self.active = None
-            if self.toolbar:
-                self.toolbar.show()
-            self.refresh()
+            self.ctl.refresh()
             return True
         return False
 
@@ -173,9 +184,7 @@ class Overlay(QWidget):
         if tool == "region":
             self.sel_origin = pos
             self.sel_rect = QRectF(pos, pos)
-            if self.toolbar:
-                self.toolbar.hide()
-            self.refresh()
+            self.ctl.refresh()
         elif tool == "text":
             self.ctl.begin_text(self, shapes.Text(pos, self.ctl.color, self.ctl.size))
         elif tool == "counter":
@@ -187,6 +196,7 @@ class Overlay(QWidget):
     def mouseMoveEvent(self, event):
         pos = event.position()
         self.cursor_pos = pos
+        self.ctl.activate(self)
         if self.sel_origin is not None:
             self.sel_rect = QRectF(self.sel_origin, pos).normalized().intersected(QRectF(self.rect()))
         elif self.active is not None:
@@ -207,6 +217,9 @@ class Overlay(QWidget):
             if shape.is_valid():
                 self.commit(shape)
             self.update()
+
+    def enterEvent(self, event):
+        self.ctl.activate(self)
 
     def leaveEvent(self, event):
         self.cursor_pos = None
@@ -238,8 +251,9 @@ class Overlay(QWidget):
                 hole = QPainterPath()
                 hole.addRect(self.sel_rect)
                 dim = dim.subtracted(hole)
-            p.fillPath(dim, C.DIM)
-            if self.sel_rect is None:
+            if self.ctl.dim.alpha():
+                p.fillPath(dim, self.ctl.dim)
+            if self.sel_rect is None and self.ctl.codes_visible:
                 self._paint_codes(p)
         if self.sel_rect is not None:
             self._paint_selection(p, self.sel_rect)
@@ -247,7 +261,7 @@ class Overlay(QWidget):
             self._paint_crosshair(p, self.cursor_pos)
         if region and self.cursor_pos is not None and self._loupe_allowed():
             self._paint_loupe(p, self.cursor_pos)
-        if self.sel_rect is None:
+        if self.sel_rect is None and self is self.ctl.pointer_overlay:
             self._paint_hint(p)
 
     def _loupe_allowed(self) -> bool:
@@ -309,7 +323,8 @@ class Overlay(QWidget):
         self._pill(p, f"{px}, {py}   {color}", QPointF(x, y + size + 6), mono=True)
 
     def _paint_hint(self, p: QPainter):
-        text = self.ctl.hint or HINTS.get(self.ctl.tool, DRAW_HINT)
+        tool = "codes" if self.ctl.tool == "region" and self.codes and self.ctl.codes_visible else self.ctl.tool
+        text = self.ctl.hint or HINTS.get(tool, DRAW_HINT)
         fm = QFontMetricsF(font(12, QFont.Weight.Medium))
         x = (self.width() - fm.horizontalAdvance(text)) / 2 - 14
         self._pill(p, text, QPointF(x, self.height() - 52))

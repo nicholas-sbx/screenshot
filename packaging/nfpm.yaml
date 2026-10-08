@@ -27,7 +27,7 @@ contents:
       mode: 0755
   - src: ./packaging/flatshot.desktop
     dst: /usr/share/applications/flatshot.desktop
-  - src: ./packaging/flatshot.svg
+  - src: ./flatshot/assets/flatshot.svg
     dst: /usr/share/icons/hicolor/scalable/apps/flatshot.svg
   - src: ./LICENSE
     dst: /usr/share/licenses/flatshot/LICENSE
@@ -37,6 +37,7 @@ overrides:
     depends:
       - python3 (>= 3.10)
       - python3-pyqt6
+      - python3-jeepney
     recommends:
       - python3-zxing-cpp
       - qt6-wayland
@@ -48,6 +49,7 @@ overrides:
     depends:
       - python3 >= 3.10
       - python3-pyqt6
+      - python3-jeepney
     recommends:
       - python3-zxing-cpp
       - qt6-qtwayland
@@ -57,3 +59,4 @@ overrides:
     depends:
       - python
       - python-pyqt6
+      - python-jeepney

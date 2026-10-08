@@ -12,6 +12,7 @@ requires-python = ">=3.10"
 dependencies = [
     "PySide6-Essentials>=6.5",
     "zxing-cpp>=2.2",
+    "jeepney>=0.7",
 ]
 
 [project.urls]
@@ -22,6 +23,9 @@ flatshot = "flatshot.app:main"
 
 [tool.setuptools]
 packages = ["flatshot"]
+
+[tool.setuptools.package-data]
+flatshot = ["assets/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "flatshot.__version__" }

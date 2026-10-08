@@ -112,6 +112,26 @@ def _close(p, c):
     p.drawPath(_path([(6.5, 6.5), (17.5, 17.5)], [(17.5, 6.5), (6.5, 17.5)]))
 
 
+def _codes(p, c):
+    for x, y in ((4, 4), (14, 4), (4, 14)):
+        p.drawRoundedRect(QRectF(x, y, 6, 6), 1.5, 1.5)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(c)
+    for x, y in ((15.5, 15.5), (18.5, 18.5), (15.5, 18.5), (18.5, 14), (6, 6), (16, 6), (6, 16)):
+        p.drawRect(QRectF(x - 1.1, y - 1.1, 2.2, 2.2))
+
+
+def _codes_off(p, c):
+    faded = QColor(c)
+    faded.setAlphaF(0.55)
+    pen = p.pen()
+    p.setPen(QPen(faded, pen.widthF()))
+    _codes(p, faded)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(pen)
+    p.drawLine(QPointF(4, 20), QPointF(20, 4))
+
+
 def _check(p, c):
     p.drawPath(_path([(5, 12.5), (10, 17.5), (19, 7)]))
 
@@ -121,6 +141,7 @@ _ICONS = {
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate,
     "counter": _counter, "undo": _undo, "redo": _redo, "screen": _screen,
     "copy": _copy, "open": _open, "close": _close, "check": _check,
+    "codes": _codes, "codes-off": _codes_off,
 }
 
 

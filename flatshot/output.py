@@ -1,8 +1,10 @@
 """Where a finished capture goes: disk, clipboard, notification."""
 
 import os
+import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +17,9 @@ from flatshot.config import Config
 @dataclass
 class Delivery:
     path: Path | None = None
+    saved: bool = False  # path is in the screenshot folder (not a temp file)
     copied: bool = False
+    size: tuple[int, int] = (0, 0)
     # True when the clipboard is held by this process and it must stay alive.
     holds_clipboard: bool = False
 
@@ -90,28 +94,63 @@ def copy_text(text: str) -> tuple[bool, bool]:
     return True, True
 
 
-def notify(title: str, body: str, icon: str = "camera-photo") -> None:
-    if shutil.which("notify-send") is None:
-        return
+def _spawn(argv: list[str], **kw) -> bool:
     try:
-        subprocess.Popen(["notify-send", "-a", "Flatshot", "-i", icon, title, body],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, **kw)
+        return True
     except OSError:
-        pass
+        return False
+
+
+def open_file(path: Path) -> bool:
+    return _spawn(["xdg-open", str(path)])
+
+
+def show_in_folder(path: Path) -> bool:
+    """Select the file in the file manager (Dolphin, Nautilus, ...)."""
+    from flatshot import dbus
+
+    try:
+        dbus.call("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1",
+                  "ShowItems", "ass", [path.resolve().as_uri()], "")
+        return True
+    except dbus.DBusError:
+        return _spawn(["xdg-open", str(path.parent)])
+
+
+def run_command(template: str, path: Path) -> bool:
+    """Run the user's after-capture command; {path} becomes the quoted file path."""
+    command = template.replace("{path}", shlex.quote(str(path)))
+    return _spawn(["/bin/sh", "-c", command], env={**os.environ, "FLATSHOT_PATH": str(path)})
+
+
+def _temp_path() -> Path:
+    base = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / "flatshot"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / datetime.now().strftime("Screenshot_%Y-%m-%d_%H-%M-%S.png")
 
 
 def deliver(image: QImage, cfg: Config, explicit: str | None = None) -> Delivery:
-    result = Delivery()
+    """Run the configured after-capture steps (except notifying)."""
+    result = Delivery(size=(image.width(), image.height()))
     if explicit or cfg.save_to_disk:
         result.path = save(image, cfg, explicit)
-    if cfg.copy_to_clipboard:
+        result.saved = True
+    elif cfg.needs_file():
+        # Clipboard-path, open or command need a file even when not keeping one.
+        result.path = _unique(_temp_path())
+        if not image.save(str(result.path)):
+            raise OSError(f"could not write {result.path}")
+    if cfg.clipboard == "image":
         result.copied, result.holds_clipboard = copy_image(image)
-    if cfg.notify:
-        size = f"{image.width()} × {image.height()}"
-        if result.path:
-            notify("Screenshot saved", f"{result.path.name} · {size}" + (" · copied" if result.copied else ""),
-                   str(result.path))
-        elif result.copied:
-            notify("Screenshot copied", size)
+    elif cfg.clipboard == "path" and result.path:
+        result.copied, result.holds_clipboard = copy_text(str(result.path))
+    if result.path:
+        if cfg.open_after == "image":
+            open_file(result.path)
+        elif cfg.open_after == "folder":
+            show_in_folder(result.path)
+        if cfg.run_command.strip():
+            run_command(cfg.run_command, result.path)
     return result

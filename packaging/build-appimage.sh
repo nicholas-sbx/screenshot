@@ -35,7 +35,7 @@ chmod +x "$WORK/python.AppImage" "$WORK/appimagetool"
 mv "$WORK/squashfs-root" "$APPDIR"
 PY="$APPDIR/opt/python$PYVER/bin/python$PYVER"
 
-"$PY" -m pip install --no-cache-dir --no-warn-script-location "PySide6-Essentials>=6.5" "zxing-cpp>=2.2"
+"$PY" -m pip install --no-cache-dir --no-warn-script-location "PySide6-Essentials>=6.5" "zxing-cpp>=2.2" "jeepney>=0.7"
 "$PY" -m pip install --no-cache-dir --no-warn-script-location --no-deps .
 
 # Trim parts of PySide6 a screenshot tool never loads.
@@ -61,8 +61,8 @@ chmod +x "$APPDIR/AppRun"
 mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp packaging/flatshot.desktop "$APPDIR/flatshot.desktop"
 cp packaging/flatshot.desktop "$APPDIR/usr/share/applications/flatshot.desktop"
-cp packaging/flatshot.png "$APPDIR/flatshot.png"
-cp packaging/flatshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/flatshot.png"
+cp flatshot/assets/flatshot.png "$APPDIR/flatshot.png"
+cp flatshot/assets/flatshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/flatshot.png"
 ln -sf flatshot.png "$APPDIR/.DirIcon"
 
 ARCH=$ARCH "$WORK/appimagetool" --no-appstream "$APPDIR" "$OUT"

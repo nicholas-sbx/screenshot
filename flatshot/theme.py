@@ -4,7 +4,11 @@ Nothing here reads from the desktop — the app opts out of the user's Qt
 style, palette and fonts so it looks the same everywhere.
 """
 
+from pathlib import Path
+
 from flatshot.qt import QColor, QFont, QPalette
+
+ICON_PATH = str(Path(__file__).with_name("assets") / "flatshot.png")
 
 
 class C:
