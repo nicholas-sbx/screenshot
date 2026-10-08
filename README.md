@@ -16,16 +16,20 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 ## Features
 
 - **Instant region capture**: drag and release to save to `~/Pictures/Screenshots` and copy to the clipboard.
-- **Window capture** (KDE): hover over where a window was when the screen froze and it lights up; click to capture just that window. Clicking empty desktop captures the whole monitor.
-- **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens).
+- **Window capture** (KDE): hover over where a window was when the screen freezes and it lights up; click to capture just that window. Clicking empty desktop captures the whole monitor.
+- **Instant captures, no selection needed**: the **active window**, the **current monitor** (the one under the pointer), **all screens**, or the **last region** you captured, each on its own shortcut. From scripts you can also capture an exact area with `--region WxH+X+Y`. Active-window capture works on KDE Plasma, Sway and Hyprland.
+- **Pin to screen**: pin a region as a small always-on-top window, for keeping a reference in view. Drag it to move, scroll to zoom, double-click or <kbd>Esc</kbd> to close, right-click to copy or save. Notifications have a **Pin** button too.
+- **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region), <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Print</kbd> (active window) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens). Current monitor, last region and pin have no default key; set one if you want it.
+- **Folder and file name templates**: build the path from the date, the window's app or title, the capture type, the size or a counter. For example, `~/Pictures/Screenshots/%Y-%m/{app}` sorts shots into a folder per month and app.
 - **Save as PNG, JPEG, WebP, AVIF or JPEG XL**, with a quality slider for the lossy formats. WebP, AVIF and JPEG XL appear when Qt has the plugins: `qt6-imageformats` and `kimageformats`.
 - **After-capture actions** you choose in settings: save to a folder, copy the image or its path, show a notification, open the image or folder, or run your own command (for example an upload script).
-- **Notifications** show a thumbnail of the capture with **Open**, **Show in folder** and **Annotate** buttons.
+- **Mouse pointer** can be included in instant captures (off by default).
+- **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate (for hiding secrets) and numbered counters. It has 7 colours, 3 stroke sizes, and undo/redo.
 - **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
-- A **loupe** shows pixel coordinates and the hex colour under the cursor, and a size label shows the selection's real pixel size.
+- A **loupe** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. A size label shows the selection's real pixel size.
 - **Multi-monitor and HiDPI aware.** Output is saved at full native resolution with annotations drawn in at that resolution.
 
 ## Install
@@ -103,6 +107,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | Drag | capture region (saved and copied) |
 | Click | capture the highlighted window, or the whole monitor |
 | <kbd>Q</kbd> | hide / show detected QR codes and barcodes |
+| <kbd>I</kbd> | copy the colour under the cursor (as `#RRGGBB`) and close |
 | <kbd>Enter</kbd> / <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>C</kbd> | capture whole monitor with your drawings |
 | <kbd>Esc</kbd> / right-click | cancel the current drag, or quit |
 | <kbd>R</kbd> | region tool (back to capture mode) |
@@ -118,15 +123,21 @@ Command line options:
 flatshot --tray          # run in the system tray (global shortcuts, notifications)
 flatshot                 # capture with the overlay (uses the tray app if it is running)
 flatshot --full          # capture every screen immediately, no UI
+flatshot --window        # capture the active window, no UI
+flatshot --monitor       # capture the monitor under the pointer, no UI
+flatshot --last-region   # capture the same area as last time, no UI
+flatshot --region 800x600+100+50   # capture this area (logical pixels), no UI
+flatshot --pin           # pick a region and pin it to the screen (combines with the above)
 flatshot --settings      # open settings
 flatshot --quit          # stop the tray app
 flatshot --delay 3       # wait 3 s first
-flatshot -o shot.png     # save to a specific file
+flatshot -o shot.png     # save to a specific file (the extension picks the format)
+flatshot -f -o - > a.png # write PNG to stdout
 flatshot -i image.png    # annotate an existing image (and scan it for codes)
 flatshot --no-copy / --no-save / --no-scan
 ```
 
-The saved path (or the decoded code text) is printed to stdout, which makes it easy to use in scripts.
+The saved path (or the decoded code text, or the picked colour) is printed to stdout, which makes it easy to use in scripts. Instant captures and `--pin` are handed to the tray app when it runs, like plain `flatshot`.
 
 ## Configuration
 
@@ -149,6 +160,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "show_codes": true,
   "toolbar_follows_mouse": true,
   "backend": "auto",
+  "include_pointer": false,
   "default_tool": "region",
   "default_color": 0,
   "default_size": 1
@@ -158,10 +170,23 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `format`: `png`, `jpg`, `webp`, `avif` or `jxl`. `quality` (1–100) applies to the lossy formats, and the file extension follows the format.
 - `clipboard`: `image`, `path` or `none`.
 - `open_after`: `none`, `image` or `folder`.
+- `save_dir` and `filename` are templates. Both take strftime codes (`%Y` year, `%m` month, `%d` day, `%H-%M-%S` time, ...) and these tokens:
+
+  | Token | Value |
+  |---|---|
+  | `{app}` | the captured window's app (like `firefox` or `org.kde.dolphin`). For other captures, the app that was active, when Flatshot can tell. |
+  | `{title}` | that window's title |
+  | `{mode}` | `region`, `window`, `monitor` or `desktop` |
+  | `{monitor}` | the monitor's name, like `DP-1` |
+  | `{w}`, `{h}` | the image size in pixels |
+  | `{n}` | a counter that goes up with every capture that uses it. `{n:4}` pads it to `0001` |
+
+  A `/` in `filename` makes subfolders. Slashes, control characters and leading dots are removed from token values, so a window title can never point outside the folder. The extension is added from `format`. `{app}` and `{title}` are known on KDE Plasma, Sway and Hyprland.
+- `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
 
-`flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file.
+`flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file. The last region and the `{n}` counter are kept in `~/.local/state/flatshot/state.json`.
 
 ## Palette: "Ember"
 
@@ -184,6 +209,7 @@ QT_QPA_PLATFORM=offscreen FLATSHOT_SELFTEST_OUT=shots .venv/bin/flatshot --self-
 The self-test builds a fake desktop with a QR code in it. It then exercises, without a display:
 
 - the overlay, scanner, window hit-testing and code show/hide/dismiss
+- the instant modes (window, monitor, all screens, last region, `--region`), file name templates, pinning and the colour picker
 - every drawing tool and the keyboard handling
 - the capture pipeline and the settings window
 
@@ -220,7 +246,9 @@ Other commits don't trigger CI. To run the whole pipeline on demand, use **Actio
 
 - The AppImage can't use the fast KWin capture helper: KWin authorizes the helper by its fixed install path, and an AppImage runs from a random temporary location. It uses Spectacle instead.
 - Skipping KWin's animations needs KDE's LayerShellQt library, which is built against your system Qt. The native packages use it. The AppImage bundles its own Qt, so it uses normal fullscreen windows and KWin animates them.
-- Window detection uses a KWin script, so it needs KWin (KDE Plasma). Other desktops get region and full-screen capture only.
+- Hover-and-click window detection uses a KWin script, so it needs KWin (KDE Plasma). Active-window capture also works on Sway and Hyprland. Elsewhere, "current monitor" uses the last pointer position Qt knows, which on Wayland may be stale.
+- Active-window capture is cut from a full-desktop grab, so anything covering the window (like an always-on-top window) shows up in it.
+- Pins stay on top and open where the region was captured on KDE (through a KWin script) and on X11. On other Wayland desktops they are normal windows.
 
 - On Wayland, capture depends on one of the helper tools above. The xdg-desktop-portal screenshot API is not used yet.
 - With mixed-DPI multi-monitor setups, each monitor's slice of the capture is mapped by its logical geometry. The output may be slightly soft on the lower-DPI screen.

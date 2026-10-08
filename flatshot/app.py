@@ -7,13 +7,22 @@ import sys
 
 from flatshot import __version__, config, ipc, theme
 from flatshot.qt import QApplication, QGuiApplication, QIcon, Qt, QTimer
+from flatshot.capture import parse_geometry
 
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(prog="flatshot", description="Region screenshots with a floating draw toolbar.")
     ap.add_argument("-d", "--delay", type=float, default=0, metavar="SEC", help="wait before capturing")
-    ap.add_argument("-f", "--full", action="store_true", help="capture every screen immediately, no UI")
-    ap.add_argument("-o", "--output", metavar="FILE", help="save to this file instead of the screenshot folder")
+    instant = ap.add_argument_group("instant captures (no UI)").add_mutually_exclusive_group()
+    instant.add_argument("-f", "--full", action="store_true", help="capture every screen")
+    instant.add_argument("-m", "--monitor", action="store_true", help="capture the monitor under the pointer")
+    instant.add_argument("-w", "--window", action="store_true", help="capture the active window")
+    instant.add_argument("-l", "--last-region", action="store_true",
+                         help="capture the region captured last time")
+    instant.add_argument("-r", "--region", metavar="WxH+X+Y", help="capture this area (logical pixels)")
+    ap.add_argument("--pin", action="store_true", help="pin the result to the screen instead of saving it")
+    ap.add_argument("-o", "--output", metavar="FILE",
+                    help="save to this file instead of the screenshot folder ('-' writes PNG to stdout)")
     ap.add_argument("-i", "--image", metavar="FILE", help="annotate an existing image instead of the screen")
     ap.add_argument("--backend", choices=list(config.BACKENDS),
                     help="screen capture helper (default: from settings, else auto)")
@@ -26,7 +35,24 @@ def parse_args(argv):
     ap.add_argument("--print-config", action="store_true", help="print the effective config and exit")
     ap.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version=f"flatshot {__version__}")
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    if args.region is not None and parse_geometry(args.region) is None:
+        ap.error(f"--region: expected WxH+X+Y (like 800x600+100+50), got {args.region!r}")
+    return args
+
+
+def _mode(args) -> str:
+    if args.full:
+        return "screens"
+    if args.monitor:
+        return "monitor"
+    if args.window:
+        return "window"
+    if args.last_region:
+        return "last"
+    if args.region:
+        return "rect"
+    return "region"
 
 
 def make_app() -> QApplication:
@@ -62,11 +88,14 @@ def _forwardable(args) -> str | None:
         return "settings"
     if args.tray:
         return "settings"  # already running: show something useful
-    cmd = "full" if args.full else "capture"
-    return f"{cmd} {args.delay:g}" if args.delay else cmd
+    mode = _mode(args)
+    if mode == "rect":
+        mode = f"rect:{args.region.strip()}"
+    return f"{mode} {args.delay:g}" + (" pin" if args.pin else "")
 
 
 def run_once(app, args) -> int:
+    from flatshot import pin
     from flatshot.notify import Notifier
     from flatshot.session import Request, Session
 
@@ -79,6 +108,9 @@ def run_once(app, args) -> int:
 
     def finished(code, holds_clipboard):
         state["code"] = code
+        if pin.open_count():
+            pin.when_all_closed(app.quit)  # stay up while something is pinned
+            return
         if not holds_clipboard:
             app.quit()
             return
@@ -87,8 +119,8 @@ def run_once(app, args) -> int:
         QGuiApplication.clipboard().dataChanged.connect(app.quit)
         QTimer.singleShot(10 * 60 * 1000, app.quit)
 
-    request = Request(full=args.full, image=args.image, output=args.output, backend=args.backend,
-                      scan=not args.no_scan)
+    request = Request(mode=_mode(args), rect=parse_geometry(args.region or ""), pin=args.pin, image=args.image,
+                      output=args.output, backend=args.backend, scan=not args.no_scan)
     session = Session(cfg, request, Notifier(interactive=False), finished)
     QTimer.singleShot(max(0, int(args.delay * 1000)), session.start)
     app.exec()

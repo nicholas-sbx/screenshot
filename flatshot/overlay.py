@@ -237,12 +237,13 @@ class Overlay(QWidget):
         if self.sel_origin is not None:
             rect = self.sel_rect
             self.sel_origin = self.sel_rect = None
+            window = None
             if rect is None or rect.width() < 3 or rect.height() < 3:
                 # A click captures the window under the pointer, else the screen.
                 self.cursor_pos = event.position()
                 self._update_hover()
-                rect = self.hover_window[0] if self.hover_window else None
-            self.ctl.capture(self, rect)
+                rect, window = self.hover_window if self.hover_window else (None, None)
+            self.ctl.capture(self, rect, window)
         elif self.active is not None:
             shape, self.active = self.active, None
             if shape.is_valid():

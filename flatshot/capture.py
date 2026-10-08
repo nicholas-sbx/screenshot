@@ -8,6 +8,7 @@ trip) and then ``spectacle``; ``grim`` on wlroots compositors;
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,23 @@ def virtual_geometry() -> QRect:
     for screen in QGuiApplication.screens():
         rect = rect.united(screen.geometry())
     return rect
+
+
+def parse_geometry(text: str) -> QRect | None:
+    """'WxH+X+Y' (as in Flameshot and X11 geometry) -> QRect, global logical px."""
+    m = re.fullmatch(r"\s*(\d+)x(\d+)([+-]\d+)([+-]\d+)\s*", text or "")
+    if not m:
+        return None
+    w, h, x, y = (int(v) for v in m.groups())
+    return QRect(x, y, w, h) if w > 0 and h > 0 else None
+
+
+def to_pixels(image: QImage, rect: QRect) -> QRect:
+    """A rect in global logical coordinates -> its pixels in a desktop grab."""
+    virt = virtual_geometry()
+    scale = image.width() / max(1, virt.width())
+    return QRect(round((rect.x() - virt.x()) * scale), round((rect.y() - virt.y()) * scale),
+                 round(rect.width() * scale), round(rect.height() * scale)).intersected(image.rect())
 
 
 def _run_tool(argv_for_path) -> QImage:
@@ -58,11 +76,11 @@ def kwin_helper() -> str | None:
     return None
 
 
-def _kwin() -> QImage:
+def _kwin(pointer: bool) -> QImage:
     helper = kwin_helper()
     if helper is None:
         raise CaptureError("flatshot-kwin-grab is not installed")
-    proc = subprocess.run([helper], stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+    proc = subprocess.run([helper] + (["--cursor"] if pointer else []), stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
     if proc.returncode != 0:
         raise CaptureError(proc.stderr.decode(errors="replace").strip() or f"exit {proc.returncode}")
     head, _, data = proc.stdout.partition(b"\n")
@@ -78,19 +96,20 @@ def _kwin() -> QImage:
     return image.copy()  # detach from `data`
 
 
-def _spectacle() -> QImage:
-    return _run_tool(lambda p: ["spectacle", "--background", "--nonotify", "--fullscreen", "--output", p])
+def _spectacle(pointer: bool) -> QImage:
+    extra = ["--pointer"] if pointer else []
+    return _run_tool(lambda p: ["spectacle", "--background", "--nonotify", "--fullscreen", *extra, "--output", p])
 
 
-def _grim() -> QImage:
-    return _run_tool(lambda p: ["grim", p])
+def _grim(pointer: bool) -> QImage:
+    return _run_tool(lambda p: ["grim", *(["-c"] if pointer else []), p])
 
 
-def _gnome_screenshot() -> QImage:
-    return _run_tool(lambda p: ["gnome-screenshot", "-f", p])
+def _gnome_screenshot(pointer: bool) -> QImage:
+    return _run_tool(lambda p: ["gnome-screenshot", *(["-p"] if pointer else []), "-f", p])
 
 
-def _qt() -> QImage:
+def _qt(pointer: bool) -> QImage:
     screens = QGuiApplication.screens()
     virt = virtual_geometry()
     dpr = max(s.devicePixelRatio() for s in screens)
@@ -127,7 +146,9 @@ def backend_order() -> list[str]:
     return ["grim", "spectacle", "gnome-screenshot"]
 
 
-def grab_desktop(preferred: str = "auto") -> QImage:
+def grab_desktop(preferred: str = "auto", pointer: bool = False) -> QImage:
+    """Every screen as one image; ``pointer`` draws the mouse pointer in
+    (where the helper supports it)."""
     order = backend_order() if preferred in ("", "auto") else [preferred]
     errors = []
     for name in order:
@@ -139,7 +160,7 @@ def grab_desktop(preferred: str = "auto") -> QImage:
                 errors.append(f"{name}: not installed")
                 continue
         try:
-            return fn()
+            return fn(pointer)
         except subprocess.CalledProcessError as e:
             detail = (e.stderr or b"").decode(errors="replace").strip().splitlines()
             errors.append(f"{name}: {detail[-1] if detail else e}")

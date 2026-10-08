@@ -56,6 +56,7 @@ def run() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     tmp = Path(tempfile.mkdtemp(prefix="flatshot-selftest-"))
     os.environ["XDG_CONFIG_HOME"] = str(tmp / "config")  # never touch the real settings
+    os.environ["XDG_STATE_HOME"] = str(tmp / "state")
     from flatshot import app as appmod, config, output, scanner, shapes
     from flatshot.notify import Notifier
     from flatshot.session import Request, Session
@@ -132,8 +133,8 @@ def run() -> int:
 
     found = parse(json.dumps([lg(120, 140, 820, 560) + ["Notes — Kate", "kate"],
                               lg(1060, 240, 225, 225) + ["QR card", "viewer"]]))
-    assert [w.title for w in found] == ["QR card", "Notes — Kate"], found
-    ctl._windows_found(found)
+    assert [w.title for w in found.windows] == ["QR card", "Notes — Kate"], found.windows
+    ctl._desktop_found(found)
     assert len(ov.windows) == 2
     ov.cursor_pos = at(1180, 450)
     ov._update_hover()
@@ -226,5 +227,143 @@ def run() -> int:
     assert reloaded.notify is (not before) and reloaded.dim_opacity == 0, reloaded
     settings.close()
 
+    _instant_and_extras(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
     return 0
+
+
+def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
+    """Instant capture modes, last region, file name templates, pinning and
+    the colour picker — without a real compositor (the grab and the window
+    query are stubbed)."""
+    from flatshot import capture, config, output, pin, windows
+    from flatshot.notify import Notifier
+    from flatshot.qt import QGuiApplication, QPoint, QRect
+    from flatshot.session import Request, Session
+
+    def wait(done):
+        for _ in range(200):
+            app.processEvents()
+            if done():
+                return
+            time.sleep(0.01)
+
+    # The parts of the KWin report the instant modes use.
+    report = windows.parse(json.dumps({
+        "windows": [[10, 20, 300, 200, "Notes", "kate"], [50, 60, 120, 80, "a/../b", "org.kde.dolphin"]],
+        "active": 1, "cursor": [5, 5]}))
+    assert report.active is not None and report.active.app == "org.kde.dolphin", report.active
+    assert report.windows[0].title == "a/../b" and report.cursor == QPoint(5, 5)
+    assert windows.parse("not json").windows == [] and windows.parse("[1]").windows == []
+
+    assert capture.parse_geometry("200x100+30+40") == QRect(30, 40, 200, 100)
+    assert capture.parse_geometry("10x10-5+0") == QRect(-5, 0, 10, 10)
+    assert capture.parse_geometry("0x10+0+0") is None and capture.parse_geometry("big") is None
+
+    # File name templates: strftime + tokens, subfolders, nothing escapes the folder.
+    shots = tmp / "templated"
+    cfg = config.Config(save_dir=str(shots / "%Y" / "{app}"), filename="{mode}/{title}_{n:3}_{w}x{h}",
+                        format="jpg", notify=False, clipboard="none", quality=70)
+    shot = output.Shot(mode="window", app="../../evil", title="../../../etc/passwd\x00\n")
+    path = output.target_path(cfg, shot, (64, 32), "jpg")
+    year = time.strftime("%Y")
+    assert path.parent.parent.parent == shots / year, path
+    assert ".." not in path.parts and path.is_relative_to(shots), path
+    assert path.name == "etc_passwd_001_64x32.jpg", path.name
+    second = output.target_path(cfg, shot, (1, 1), "jpg")
+    assert second.name.endswith("_002_1x1.jpg"), second.name
+    assert output.target_path(config.Config(save_dir=str(shots), filename="{app}/{title}"), output.Shot(),
+                              (1, 1)) == shots / "Screenshot.png"
+    assert output.base_folder(cfg) == shots
+    small = desktop.copy(0, 0, 64, 32)
+    saved = output.save(small, cfg, shot=shot)
+    assert saved.exists() and saved.suffix == ".jpg" and QImage(str(saved)).width() == 64, saved
+    png = output.save(small, config.Config(save_dir=str(shots), filename="plain.png"))
+    assert png.name == "plain.png" and not QImage(str(png)).isNull(), png
+    assert output.target_path(config.Config(save_dir=str(shots), filename="./"), output.Shot(), (1, 1)) \
+        == shots / "Screenshot.png"
+
+    # Instant modes, with the screen grab and the window query stubbed.
+    grabs = []
+
+    def fake_grab(preferred="auto", pointer=False):
+        grabs.append(pointer)
+        return desktop.copy()
+
+    real_grab, real_query, real_supported = capture.grab_desktop, windows.query_compositor, \
+        windows.WindowFinder.supported
+    capture.grab_desktop = fake_grab
+    windows.WindowFinder.supported = staticmethod(lambda: False)
+    screen = QGuiApplication.primaryScreen().geometry()
+    virt = capture.virtual_geometry()
+    scale = desktop.width() / virt.width()
+    active = windows.Window(QRect(screen.x() + 20, screen.y() + 30, 100, 60), "Doc — Editor", "editor")
+    query = {"desktop": windows.Desktop([active], active, screen.center())}
+    windows.query_compositor = lambda: query["desktop"]
+    out = tmp / "instant"
+    try:
+        def run(mode, rect=None, pin_it=False, **cfg_changes):
+            done = []
+            cfg = config.Config(save_dir=str(out), filename="{mode}-{app}-{n}", notify=False,
+                                clipboard="none", **cfg_changes)
+            session = Session(cfg, Request(mode=mode, rect=rect, pin=pin_it), Notifier(interactive=False),
+                              lambda code, holds: done.append(code))
+            session.start()
+            wait(lambda: done)
+            assert done, f"{mode}: never finished"
+            return done[0]
+
+        def newest():
+            return max(out.glob("*.png"), key=lambda p: p.stat().st_mtime_ns)
+
+        assert run("window", include_pointer=True) == 0 and grabs[-1] is True
+        img = QImage(str(newest()))
+        assert newest().name.startswith("window-editor-"), newest()
+        assert abs(img.width() - round(100 * scale)) <= 1 and abs(img.height() - round(60 * scale)) <= 1, img.size()
+
+        assert run("monitor") == 0 and grabs[-1] is False
+        img = QImage(str(newest()))
+        assert newest().name.startswith("monitor-editor-"), newest()
+        assert abs(img.width() - round(screen.width() * scale)) <= 1, img.size()
+
+        assert run("screens") == 0 and QImage(str(newest())).size() == desktop.size()
+
+        assert run("rect", QRect(screen.x() + 10, screen.y() + 10, 50, 40)) == 0
+        assert abs(QImage(str(newest())).width() - round(50 * scale)) <= 1
+        assert config.load_state()["last_region"] == [screen.x() + 10, screen.y() + 10, 50, 40]
+        config.update_state(last_region=[screen.x() + 4, screen.y() + 4, 30, 20])
+        assert run("last") == 0 and abs(QImage(str(newest())).height() - round(20 * scale)) <= 1
+
+        query["desktop"] = windows.Desktop()  # no active window known
+        assert run("window") == 2, "window capture without an active window should fail"
+        assert run("rect", QRect(virt.right() + 500, 0, 10, 10)) == 2, "off-screen region should fail"
+
+        # Pinning instead of saving.
+        before = len(list(out.glob("*.png")))
+        assert run("rect", QRect(screen.x(), screen.y(), 80, 50), pin_it=True) == 0
+        assert len(list(out.glob("*.png"))) == before, "a pinned capture was saved"
+        assert pin.open_count() == 1
+        pinned = pin._open[0]
+        app.processEvents()
+        if out_dir:
+            pinned.grab().save(str(Path(out_dir) / "pin.png"))
+        closed = []
+        pin.when_all_closed(lambda: closed.append(True))
+        pinned.close()
+        assert pin.open_count() == 0 and closed == [True]
+    finally:
+        capture.grab_desktop, windows.query_compositor = real_grab, real_query
+        windows.WindowFinder.supported = real_supported
+
+    # Colour picker: I copies the colour under the pointer and finishes.
+    src = tmp / "desktop.png"
+    done = []
+    ctl = Session(config.Config(save_dir=str(out), notify=False, clipboard="none"), Request(image=str(src), scan=False),
+                  Notifier(interactive=False), lambda code, holds: done.append(code))
+    ctl.start()
+    ov = ctl.overlays[0]
+    ov.cursor_pos = QPointF(1, 1)
+    ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(Qt.Key.Key_I), Qt.KeyboardModifier.NoModifier, "i"))
+    wait(lambda: done)
+    assert done == [0] and not ctl.overlays, done
+    print("self-test: instant modes, last region, templates, pin and colour picker ok")

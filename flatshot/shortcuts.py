@@ -18,7 +18,11 @@ FRIENDLY = "Flatshot"
 # action -> (label, default key sequence or "")
 ACTIONS = {
     "region": ("Capture region", "Ctrl+Print"),
+    "window": ("Capture active window", "Ctrl+Alt+Print"),
+    "monitor": ("Capture current monitor", ""),
     "screen": ("Capture all screens", "Ctrl+Shift+Print"),
+    "last": ("Capture last region", ""),
+    "pin": ("Pin region to screen", ""),
 }
 
 # KGlobalAccel::SetShortcutFlag

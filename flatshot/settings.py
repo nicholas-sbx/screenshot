@@ -520,6 +520,9 @@ class SettingsWindow(QWidget):
         card.add(Row("Scan the screen", self._toggle("scan_codes")))
         card.add(Row("Show results", self._toggle("show_codes"), "Press Q while capturing to show or hide them."))
 
+        card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
+                     "In instant captures: active window, monitor, all screens, last region."))
+
         card = self._card("Advanced")
         combo = Combo()
         labels = {"auto": "Automatic", "kwin": "KWin", "spectacle": "Spectacle", "grim": "grim",
@@ -552,7 +555,11 @@ class SettingsWindow(QWidget):
                 self._save(save_dir=path)
 
         browse.clicked.connect(pick)
-        card.add(Row("File name", None, "Date and time codes: %Y %m %d %H %M %S. The extension is added for you.",
+        card.add(Row("File name", None,
+                     "Date and time: %Y %m %d %H %M %S. Window: {app} {title}. Also {mode} (region, window, "
+                     "monitor, desktop), {monitor}, {w} {h} for the size and {n} for a counter ({n:4} pads it). "
+                     "A / makes subfolders, and the folder takes the same codes, like ~/Pictures/Screenshots/%Y-%m. "
+                     "The extension is added for you.",
                      below=self._line("filename")))
 
         formats = output.writable_formats()
@@ -584,7 +591,7 @@ class SettingsWindow(QWidget):
         clip = Segmented([("image", "Image"), ("path", "File path"), ("none", "Nothing")], self.cfg.clipboard)
         clip.changed.connect(lambda v: self._save(clipboard=v))
         card.add(Row("Copy to clipboard", clip))
-        card.add(Row("Show a notification", self._toggle("notify")))
+        card.add(Row("Show a notification", self._toggle("notify"), "With Open, Show in folder, Annotate and Pin."))
         then = Segmented([("none", "Nothing"), ("image", "Image"), ("folder", "Folder")], self.cfg.open_after)
         then.changed.connect(lambda v: self._save(open_after=v))
         card.add(Row("Open", then))

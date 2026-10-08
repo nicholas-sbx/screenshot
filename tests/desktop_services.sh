@@ -62,10 +62,28 @@ dbus.call(s.SERVICE, '/component/flatshot', s.COMPONENT_IFACE, 'invokeShortcut',
 sleep 2
 $PY -m flatshot --full   # forwarded to the tray over the local socket
 sleep 2
+$PY -m flatshot --monitor
+sleep 2
+$PY -m flatshot --region 200x100+10+20
+sleep 2
+$PY -c "from flatshot import dbus, shortcuts as s
+dbus.call(s.SERVICE, '/component/flatshot', s.COMPONENT_IFACE, 'invokeShortcut', 'ss', 'last', 'default')"
+sleep 2
 $PY -m flatshot --quit
 sleep 1
 cat "$SHOTS.log"
 count=$(ls "$SHOTS"/*.png 2>/dev/null | wc -l)
 echo "screenshots taken by the tray: $count"
-[ "$count" -eq 2 ] || { echo "FAIL: expected 2 screenshots"; exit 1; }
+[ "$count" -eq 5 ] || { echo "FAIL: expected 5 screenshots"; exit 1; }
+# --region and then "last region" both crop to the same 200x100 logical area.
+$PY - "$SHOTS" <<'PYEOF'
+import sys
+from pathlib import Path
+from flatshot.qt import QGuiApplication, QImage
+app = QGuiApplication(sys.argv[:1])
+shots = sorted(Path(sys.argv[1]).glob("*.png"), key=lambda p: p.stat().st_mtime_ns)
+sizes = [QImage(str(p)).size() for p in shots]
+print("sizes:", [(s.width(), s.height()) for s in sizes])
+assert sizes[-1] == sizes[-2] and sizes[-1].width() < 1500, "region / last region crop"
+PYEOF
 echo "tray end-to-end ok"

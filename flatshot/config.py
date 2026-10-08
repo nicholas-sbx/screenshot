@@ -18,6 +18,11 @@ def config_path() -> Path:
     return Path(base) / "flatshot" / "config.json"
 
 
+def state_path() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "flatshot" / "state.json"
+
+
 def _default_dir() -> str:
     pictures = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
     return str(Path(pictures or Path.home() / "Pictures") / "Screenshots")
@@ -48,6 +53,7 @@ class Config:
     show_codes: bool = True
     toolbar_follows_mouse: bool = True
     backend: str = "auto"  # see BACKENDS
+    include_pointer: bool = False  # draw the mouse pointer into instant (no-UI) captures
     default_tool: str = "region"
     default_color: int = 0
     default_size: int = 1
@@ -79,24 +85,43 @@ class Config:
         return self.save_to_disk or self.clipboard == "path" or self.open_after != "none" or bool(self.run_command)
 
     def save(self) -> None:
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {k: v for k, v in asdict(self).items() if v is not None}
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".config-", suffix=".json")
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
+        _write_json(config_path(), {k: v for k, v in asdict(self).items() if v is not None})
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        print(f"flatshot: ignoring {path}: {e}", file=sys.stderr)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_state() -> dict:
+    """Small bits Flatshot remembers between runs (last region, counter)."""
+    return _read_json(state_path())
+
+
+def update_state(**changes) -> None:
+    try:
+        _write_json(state_path(), {**load_state(), **changes})
+    except OSError as e:
+        print(f"flatshot: could not save {state_path()}: {e}", file=sys.stderr)
 
 
 def load() -> Config:
-    path = config_path()
-    data = {}
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError) as e:
-            print(f"flatshot: ignoring {path}: {e}", file=sys.stderr)
+    data = _read_json(config_path())
     known = {f.name for f in fields(Config)}
     return Config(**{k: v for k, v in data.items() if k in known})
 

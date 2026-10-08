@@ -8,6 +8,8 @@
  * is python), so this tiny helper does the call and Flatshot reads its
  * output. It skips Spectacle's startup and the PNG round trip.
  *
+ * Usage: flatshot-kwin-grab [--cursor]   (--cursor draws the mouse pointer in)
+ *
  * Output: one ASCII line "FLATSHOT-RAW <width> <height> <stride> <qimage-format>\n"
  * followed by stride * height bytes of pixel data.
  *
@@ -51,9 +53,10 @@ static int variant_uint(DBusMessageIter *variant, uint64_t *out)
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--version") == 0) {
-        puts("flatshot-kwin-grab 1");
+        puts("flatshot-kwin-grab 2");
         return 0;
     }
+    dbus_bool_t cursor = argc > 1 && strcmp(argv[1], "--cursor") == 0;
 
     DBusError err;
     dbus_error_init(&err);
@@ -74,7 +77,7 @@ int main(int argc, char **argv)
     dbus_message_iter_init_append(msg, &args);
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &dict);
     add_bool(&dict, "native-resolution", TRUE);
-    add_bool(&dict, "include-cursor", FALSE);
+    add_bool(&dict, "include-cursor", cursor);
     dbus_message_iter_close_container(&args, &dict);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_UNIX_FD, &fds[1]);
 
