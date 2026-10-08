@@ -1,0 +1,96 @@
+# Measures the Ubuntu 24.04 build's CPU and memory use on a GitHub runner.
+# Builds the .deb, installs it the way the install job does, then runs the
+# self-tests and an idle tray app under headless weston, sampling the process tree.
+name: perf
+
+on:
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner specs
+        run: |
+          mkdir -p perf
+          lscpu > perf/lscpu.txt
+          { free -h; echo; df -h /; } > perf/memory-disk.txt
+          {
+            echo "## Runner specs"
+            echo "- image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "- os: $(. /etc/os-release && echo "$PRETTY_NAME")"
+            echo "- kernel: $(uname -r)"
+            echo "- vCPUs: $(nproc)"
+            echo "- CPU: $(sed -nE 's/^Model name:\s*//p' perf/lscpu.txt)"
+            echo "- RAM: $(free -h | awk '/^Mem:/{print $2" total, "$7" available"}')"
+            echo "- disk /: $(df -h / | awk 'NR==2{print $2" total, "$4" free"}')"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the .deb
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libdbus-1-dev gcc pkg-config
+          curl -fsSL -o /tmp/nfpm.deb "https://github.com/goreleaser/nfpm/releases/download/v2.43.0/nfpm_2.43.0_amd64.deb"
+          sudo dpkg -i /tmp/nfpm.deb
+          ./packaging/build-packages.sh
+
+      - name: Install the .deb
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get install -y -q --no-install-recommends ./dist/*.deb weston dbus-bin dbus-x11
+          command -v weston dbus-run-session
+          flatshot --version
+          python3 -c "from PyQt6.QtCore import QT_VERSION_STR, PYQT_VERSION_STR; print('Qt', QT_VERSION_STR, 'PyQt6', PYQT_VERSION_STR)"
+          python3 -c "import zxingcpp; print('zxing-cpp', getattr(zxingcpp, '__version__', 'unknown'))" || true
+          { echo "- weston: $(weston --version 2>&1 | head -n1)"; echo "- flatshot: $(flatshot --version)"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start headless Wayland compositor
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d) && chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket=wl-perf --width=1920 --height=1080 > perf/weston.log 2>&1 &
+          for i in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-perf" ] && break; sleep 0.2; done
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=wl-perf" >> "$GITHUB_ENV"
+
+      - name: Self-test, offscreen
+        run: |
+          python3 tests/measure_resources.py --name selftest-offscreen --duration 300 -- \
+            env QT_QPA_PLATFORM=offscreen flatshot --self-test
+
+      - name: Self-test, Wayland
+        run: |
+          python3 tests/measure_resources.py --name selftest-wayland --duration 300 -- \
+            env QT_QPA_PLATFORM=wayland flatshot --self-test
+
+      - name: Tray app idle, 90 s
+        run: |
+          python3 tests/measure_resources.py --name tray-idle --duration 90 --expect-running -- \
+            env QT_QPA_PLATFORM=wayland dbus-run-session -- flatshot --tray
+
+      - name: Report
+        if: always()
+        run: |
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import glob, json
+          print("## Resource use (Ubuntu 24.04 .deb, headless weston)")
+          print()
+          print("CPU % is of one core: 100 = one full core busy. Peak RSS is the kernel high-water mark summed over the process tree.")
+          print()
+          print("| run | exit | wall s | CPU s | avg CPU % | second-half CPU % | peak RSS MB | final RSS MB | max procs |")
+          print("|---|---|---|---|---|---|---|---|---|")
+          for path in sorted(glob.glob("perf/*.json")):
+              r = json.load(open(path))
+              steady = "-" if r["second_half_cpu_percent"] is None else r["second_half_cpu_percent"]
+              print(f"| {r['name']} | {r['exit_code']} | {r['wall_seconds']} | {r['cpu_seconds']} | "
+                    f"{r['avg_cpu_percent']} | {steady} | {r['peak_rss_mb']} | {r['final_rss_mb']} | {r['max_processes']} |")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf
+          path: perf/
