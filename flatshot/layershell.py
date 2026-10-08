@@ -33,7 +33,7 @@ def _load():
     if _tried:
         return _lib
     _tried = True
-    for name in ("liblayershellqtinterface.so.6", ctypes.util.find_library("layershellqtinterface")):
+    for name in ("libLayerShellQtInterface.so.6", ctypes.util.find_library("LayerShellQtInterface")):
         if not name:
             continue
         try:

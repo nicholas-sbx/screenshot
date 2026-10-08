@@ -75,7 +75,8 @@ jobs:
       - name: PyQt6 from Ubuntu
         if: matrix.binding == 'pyqt6'
         run: |
-          sudo apt-get install -y -q --no-install-recommends python3-pyqt6 python3-zxing-cpp python3-jeepney
+          sudo apt-get install -y -q --no-install-recommends python3-pyqt6 python3-zxing-cpp python3-jeepney \
+            qt6-wayland
           echo "PY=/usr/bin/python3" >> "$GITHUB_ENV"
           echo "FLATSHOT_QT=pyqt6" >> "$GITHUB_ENV"
       - name: Compile
