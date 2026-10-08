@@ -46,7 +46,8 @@ overrides:
       - python3-jeepney
       - libdbus-1-3
     recommends:
-      - python3-zxing-cpp | libzbar0
+      - python3-zxing-cpp
+      - libzbar0
       - qt6-wayland
       - qt6-image-formats-plugins
       - wl-clipboard
@@ -60,7 +61,8 @@ overrides:
       - python3-jeepney
       - dbus-libs
     recommends:
-      - (python3-zxing-cpp or zbar-libs)
+      - python3-zxing-cpp
+      - zbar-libs
       - qt6-qtwayland
       - qt6-qtimageformats
       - wl-clipboard

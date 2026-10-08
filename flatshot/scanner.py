@@ -19,9 +19,10 @@ from flatshot.qt import QImage, QObject, QPointF, Signal
 try:
     import zxingcpp
 
-    # Raw-buffer input (what we pass) arrived in zxing-cpp 2.0; older
-    # bindings (e.g. Debian 12's 1.4) can't use it, so fall back to zbar.
-    if not hasattr(zxingcpp, "ContentType"):
+    # Need zxing-cpp >= 2.2 (TextMode arrived there): older bindings either
+    # can't take raw buffers or, like Debian 12's, abort on some barcodes.
+    # Those fall back to zbar.
+    if not hasattr(zxingcpp, "TextMode"):
         zxingcpp = None
 except ImportError:  # optional dependency
     zxingcpp = None
