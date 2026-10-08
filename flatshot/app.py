@@ -4,6 +4,7 @@ import argparse
 import os
 import signal
 import sys
+from pathlib import Path
 
 from flatshot import __version__, config, ipc, theme
 from flatshot.qt import QApplication, QGuiApplication, QIcon, Qt, QTimer
@@ -33,6 +34,8 @@ def parse_args(argv):
     ap.add_argument("--settings", action="store_true", help="open the settings window")
     ap.add_argument("--quit", action="store_true", help="stop the running tray app")
     ap.add_argument("--print-config", action="store_true", help="print the effective config and exit")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="show what this Flatshot and the running tray app use (Qt, layer-shell, helpers)")
     ap.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version=f"flatshot {__version__}")
     args = ap.parse_args(argv)
@@ -95,6 +98,30 @@ def _forwardable(args) -> str | None:
     return f"{mode} {args.delay:g}" + (" pin" if args.pin else "")
 
 
+def _replace_older_tray() -> None:
+    """After an upgrade the old tray app keeps running (and keeps handling
+    every capture). If the running one isn't this version from this
+    install, ask it to quit so this one takes over."""
+    import json
+    import time
+
+    reply = ipc.query("status")
+    if reply is None:
+        return  # none running
+    try:
+        info = json.loads(reply) if reply else {}
+    except ValueError:
+        info = {}
+    here = str(Path(__file__).resolve().parent)
+    if info.get("version") == __version__ and info.get("code") == here:
+        return  # the same Flatshot: just show its settings, as before
+    print(f"flatshot: replacing the running tray app ({info.get('version', 'older version')})", file=sys.stderr)
+    ipc.send("quit")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and ipc.query("status", 300) is not None:
+        time.sleep(0.1)
+
+
 def run_once(app, args) -> int:
     from flatshot import pin
     from flatshot.notify import Notifier
@@ -138,7 +165,14 @@ def main(argv=None) -> int:
     if args.print_config:
         print(config.dump(config.load()))
         return 0
+    if args.diagnose:
+        from flatshot import diagnose
 
+        print(diagnose.report())
+        return 0
+
+    if args.tray:
+        _replace_older_tray()
     command = _forwardable(args)
     if command and ipc.send(command):
         return 0  # the tray app took it

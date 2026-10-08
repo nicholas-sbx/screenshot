@@ -132,6 +132,7 @@ flatshot --region 800x600+100+50   # capture this area (logical pixels), no UI
 flatshot --pin           # pick a region and pin it to the screen (combines with the above)
 flatshot --settings      # open settings
 flatshot --quit          # stop the tray app
+flatshot --diagnose      # what this Flatshot and the running tray app use
 flatshot --delay 3       # wait 3 s first
 flatshot -o shot.png     # save to a specific file (the extension picks the format)
 flatshot -f -o - > a.png # write PNG to stdout
@@ -252,6 +253,16 @@ The `build` workflow then:
 5. Updates the pacman repository on the `pacman` release, after installing Flatshot from it with pacman as a check.
 
 Other commits don't trigger CI. To run the whole pipeline on demand, use **Actions → build → Run workflow**.
+
+## Troubleshooting
+
+**The overlay still fades or zooms in and out on KDE.** Run `flatshot --diagnose`. It shows what this Flatshot and the running tray app use, and why the overlay is or isn't a layer-shell surface. Common reasons:
+
+- An older tray app is still running and handles every capture. Since 0.3.4, starting Flatshot from the menu replaces an older tray app; before that, run `flatshot --quit` and start it again.
+- `flatshot` is a different install, such as `~/.local/bin/flatshot` from pipx or the AppImage. Those bundle their own Qt and can't use layer-shell. The `code` line shows which one runs.
+- `layer-shell-qt` or `qt6-wayland` is missing. The Arch package depends on both.
+
+When the overlay falls back to a normal window, the tray app also logs the reason (`journalctl --user -b | grep flatshot`).
 
 ## Known limitations
 

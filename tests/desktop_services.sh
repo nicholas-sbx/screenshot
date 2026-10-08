@@ -60,6 +60,8 @@ sleep 3
 $PY -c "from flatshot import dbus, shortcuts as s
 dbus.call(s.SERVICE, '/component/flatshot', s.COMPONENT_IFACE, 'invokeShortcut', 'ss', 'screen', 'default')"
 sleep 2
+$PY -m flatshot --diagnose | tee "$SHOTS.diag"
+grep -q "Tray app (handles" "$SHOTS.diag" || { echo "FAIL: --diagnose didn't reach the tray"; exit 1; }
 $PY -m flatshot --full   # forwarded to the tray over the local socket
 sleep 2
 $PY -m flatshot --monitor

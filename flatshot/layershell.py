@@ -23,6 +23,7 @@ KEYBOARD_EXCLUSIVE = 1
 _lib = None
 _tried = False
 status = "not tried"  # why the last apply() did or didn't use layer-shell
+last_overlay = "no capture yet"  # status after the most recent overlay was shown
 
 
 _load_error = ""
@@ -86,6 +87,14 @@ def _set(obj: QObject, ptr: int, prop: str, value, symbol: str | None = None, ct
 def apply(widget, screen) -> bool:
     """Make ``widget``'s window a fullscreen overlay layer on ``screen``.
     Must run before the widget is first shown."""
+    global last_overlay
+    try:
+        return _apply(widget, screen)
+    finally:
+        last_overlay = status
+
+
+def _apply(widget, screen) -> bool:
     global status
     if not available():
         return False

@@ -34,7 +34,9 @@ class TrayApp(QObject):
         self.app = app
         self.notifier = Notifier(interactive=True)
         self.shortcuts = GlobalShortcuts()
-        self.server = ipc.Server()
+        from flatshot import diagnose
+
+        self.server = ipc.Server(status=diagnose.info)
         self.session: Session | None = None
         self.settings = None
         self.tray: QSystemTrayIcon | None = None

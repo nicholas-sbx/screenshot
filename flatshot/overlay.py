@@ -1,7 +1,10 @@
 """One fullscreen overlay per monitor showing the frozen capture."""
 
+import os
+import sys
+
 from flatshot.qt import (
-    QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen, QPixmap, QPoint, QPointF, QPolygonF,
+    QColor, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap, QPoint, QPointF, QPolygonF,
     QRect, QRectF, Qt, QWidget,
 )
 
@@ -17,6 +20,18 @@ HINTS = {
 }
 PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  K to save instead"
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
+
+
+_fallback_reported = False
+
+
+def _report_fallback():
+    """Say once, on stderr (the journal for the tray), why KWin will animate the overlay."""
+    global _fallback_reported
+    if not _fallback_reported and "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower() \
+            and QGuiApplication.platformName().startswith("wayland"):
+        _fallback_reported = True
+        print(f"flatshot: overlay is a normal window, so KWin animates it: {layershell.status}", file=sys.stderr)
 
 
 class Overlay(QWidget):
@@ -56,6 +71,7 @@ class Overlay(QWidget):
             # An overlay layer surface: no window animations, above panels.
             self.show()
         else:
+            _report_fallback()
             if not hasattr(self, "setScreen"):
                 self.create()
                 self.windowHandle().setScreen(screen)

@@ -49,6 +49,7 @@ overrides:
       - python3-zxing-cpp
       - libzbar0
       - qt6-wayland
+      - liblayershellqtinterface6
       - qt6-image-formats-plugins
       - wl-clipboard
       - libnotify-bin
@@ -64,6 +65,7 @@ overrides:
       - python3-zxing-cpp
       - zbar-libs
       - qt6-qtwayland
+      - layer-shell-qt
       - qt6-qtimageformats
       - wl-clipboard
       - libnotify
@@ -74,3 +76,5 @@ overrides:
       - python-jeepney
       - zbar
       - dbus
+      - qt6-wayland  # without it Qt runs through XWayland
+      - layer-shell-qt  # overlay without KWin's open/close animations
