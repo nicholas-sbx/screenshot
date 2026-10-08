@@ -64,6 +64,7 @@ class Session:
         self.dim = QColor(theme.C.DIM)
         self.dim.setAlpha(round(cfg.dim_opacity * 2.55))
         self.codes_visible = cfg.show_codes
+        self.loupe_zoom = 8.0  # magnifier screen px per captured pixel; the wheel changes it
         self.pin_mode = request.pin  # the capture is pinned to the screen instead of saved
         self.overlays: list[Overlay] = []
         self.pointer_overlay: Overlay | None = None  # where the mouse is

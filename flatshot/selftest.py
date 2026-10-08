@@ -240,7 +240,7 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     query are stubbed)."""
     from flatshot import capture, config, output, pin, windows
     from flatshot.notify import Notifier
-    from flatshot.qt import QGuiApplication, QPoint, QRect
+    from flatshot.qt import QGuiApplication, QPoint, QRect, QWheelEvent
     from flatshot.session import Request, Session
 
     def wait(done):
@@ -425,7 +425,7 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     print(f"self-test: pin toggle and {len(theme.THEMES)} themes ok")
 
     # Magnifier / crosshair switches and size: each changes what's painted.
-    def overlay_with(**cfg_changes) -> QImage:
+    def overlay_with(zoom_steps=0, **cfg_changes) -> QImage:
         session = Session(config.Config(save_dir=str(tmp / "x"), notify=False, clipboard="none", **cfg_changes),
                           Request(image=str(src), scan=False), Notifier(interactive=False), lambda *a: None)
         session.start()
@@ -434,6 +434,10 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
         ov.toolbar.hide()
         ov.cursor_pos = QPointF(200, 200)
         session.pointer_overlay = None  # no hint pill
+        notch = QPoint(0, 120 if zoom_steps > 0 else -120)
+        for _ in range(abs(zoom_steps)):
+            ov.wheelEvent(QWheelEvent(ov.cursor_pos, ov.cursor_pos, QPoint(), notch, Qt.MouseButton.NoButton,
+                                      Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
         shot = ov.grab().toImage()
         session.cancel()
         app.processEvents()
@@ -444,8 +448,10 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     no_lines = overlay_with(show_crosshair=False)
     bare = overlay_with(show_loupe=False, show_crosshair=False)
     big = overlay_with(loupe_size=240)
-    variants = [both, no_loupe, no_lines, bare, big]
-    same = [(i, j) for i in range(5) for j in range(i + 1, 5) if variants[i] == variants[j]]
+    zoomed_in = overlay_with(zoom_steps=3)
+    zoomed_out = overlay_with(zoom_steps=-3)
+    variants = [both, no_loupe, no_lines, bare, big, zoomed_in, zoomed_out]
+    same = [(i, j) for i in range(len(variants)) for j in range(i + 1, len(variants)) if variants[i] == variants[j]]
     assert not same, f"magnifier / crosshair settings changed nothing: {same}"
     # Far from the pointer, with neither, the overlay is just the shaded screen.
     assert bare.pixel(600, 450) == no_loupe.pixel(600, 450)

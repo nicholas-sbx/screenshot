@@ -20,6 +20,7 @@ HINTS = {
 }
 PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  K to save instead"
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
+LOUPE_ZOOM = (3.0, 40.0)  # magnifier zoom range, screen px per captured pixel
 
 
 _fallback_reported = False
@@ -267,6 +268,14 @@ class Overlay(QWidget):
                 self.commit(shape)
             self.update()
 
+    def wheelEvent(self, event):
+        """Scrolling zooms the magnifier in (up) and out (down)."""
+        steps = event.angleDelta().y() / 120
+        if not steps or not (self.ctl.tool == "region" and self.ctl.cfg.show_loupe):
+            return
+        self.ctl.loupe_zoom = max(LOUPE_ZOOM[0], min(self.ctl.loupe_zoom * 1.25 ** steps, LOUPE_ZOOM[1]))
+        self.update()
+
     def enterEvent(self, event):
         self.ctl.activate(self)
 
@@ -379,7 +388,7 @@ class Overlay(QWidget):
 
     def _paint_loupe(self, p: QPainter, pos: QPointF):
         size = float(self.ctl.cfg.loupe_size)
-        cells = round(size / 8) | 1  # ~8 px per pixel, odd so one cell is the centre
+        cells = max(3, round(size / self.ctl.loupe_zoom) | 1)  # odd so one cell is the centre
         dpr = self.dpr()
         px, py = int(pos.x() * dpr), int(pos.y() * dpr)
         x = pos.x() + 24 if pos.x() + 24 + size < self.width() else pos.x() - 24 - size

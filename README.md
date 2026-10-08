@@ -192,7 +192,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 
   A `/` in `filename` makes subfolders. Slashes, control characters and leading dots are removed from token values, so a window title can never point outside the folder. The extension is added from `format`. `{app}` and `{title}` are known on KDE Plasma, Sway and Hyprland.
 - `sound`: play a sound after each capture. `sound_file` is the file to play; empty means the desktop's screenshot sound.
-- `show_loupe`, `loupe_size` (80–320, in logical pixels) and `show_crosshair`: the magnifier and the crosshair lines while selecting.
+- `show_loupe`, `loupe_size` (80–320, in logical pixels) and `show_crosshair`: the magnifier and the crosshair lines while selecting. Scroll while selecting to zoom the magnifier in or out.
 - `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
