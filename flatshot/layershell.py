@@ -20,13 +20,15 @@ LAYER_OVERLAY = 3
 ANCHOR_ALL = 1 | 2 | 4 | 8
 KEYBOARD_EXCLUSIVE = 1
 # KWin turns the scope (namespace) into a window type, and any scope it
-# doesn't know becomes a Normal window, which the Fade / Scale / Glide
-# open-close effects animate (Spectacle is exempted by name, not by being a
-# layer surface). "notification" is a type none of KWin's stock effects
-# animate (Fading Popups covers OSDs, splashes and popups), and every
-# KWin release with layer-shell knows it. Focus comes from
-# keyboardInteractivity, not the type.
-SCOPE = "notification"
+# doesn't know becomes a Normal window. Every type but one is animated by a
+# stock effect: Normal and Dialog by Fade / Scale / Glide (Spectacle is only
+# exempted by name), Notification and Critical Notification by Sliding
+# Notifications, OSD, splash and popups by Fading Popups, Dock by Sliding
+# Notifications too. A managed Utility window passes all of them, and every
+# Plasma 6 KWin knows the "utility" scope. Focus comes from
+# keyboardInteractivity, not the type. FLATSHOT_LAYER_SCOPE overrides it
+# (for trying another type without a new release).
+SCOPE = os.environ.get("FLATSHOT_LAYER_SCOPE") or "utility"
 
 _lib = None
 _tried = False
