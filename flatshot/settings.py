@@ -475,7 +475,7 @@ class SettingsWindow(QWidget):
         self._toggle("show_codes", "Show detected codes", "Toggle them while capturing with Q or the toolbar.")
 
         combo = Combo()
-        labels = {"auto": "Automatic", "spectacle": "Spectacle (KDE)", "grim": "grim (wlroots)",
+        labels = {"auto": "Automatic", "kwin": "KWin direct (KDE, fastest)", "spectacle": "Spectacle (KDE)", "grim": "grim (wlroots)",
                   "gnome-screenshot": "GNOME Screenshot", "qt": "Qt (X11 only)"}
         for key in config.BACKENDS:
             combo.addItem(labels[key], key)

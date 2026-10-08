@@ -311,14 +311,17 @@ class Overlay(QWidget):
         return not self._over_floating(24)
 
     def _paint_window(self, p: QPainter, r: QRectF, window):
-        p.setPen(QPen(C.ACCENT, 2))
+        """Quiet highlight: a thin translucent outline plus a small dark label."""
+        edge = QColor(C.TEXT)
+        edge.setAlpha(110)
+        p.setPen(QPen(edge, 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(r.adjusted(1, 1, -1, -1))
+        p.drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5))
         dpr = self.dpr()
-        title = window.title if len(window.title) <= 48 else window.title[:47] + "…"
-        label = f"{title}  ·  {round(r.width() * dpr)} × {round(r.height() * dpr)}" if title else \
-            f"{round(r.width() * dpr)} × {round(r.height() * dpr)}"
-        self._pill(p, label, QPointF(r.left() + 8, r.top() + 8), bg=C.ACCENT, fg=C.INK)
+        size = f"{round(r.width() * dpr)} × {round(r.height() * dpr)}"
+        title = window.title if len(window.title) <= 40 else window.title[:39] + "…"
+        self._pill(p, f"{title}  ·  {size}" if title else size, QPointF(r.left() + 8, r.top() + 8),
+                   small=True)
 
     def _paint_codes(self, p: QPainter):
         """A padded rounded box around each detected code (under its card)."""
@@ -384,17 +387,18 @@ class Overlay(QWidget):
         x = (self.width() - fm.horizontalAdvance(text)) / 2 - 14
         self._pill(p, text, QPointF(x, self.height() - 52))
 
-    def _pill(self, p, text, at: QPointF, anchor_bottom=False, bg=None, fg=None, mono=False, keep_inside=False):
-        f = font(12, QFont.Weight.DemiBold if bg is not None else QFont.Weight.Medium, mono=mono)
+    def _pill(self, p, text, at: QPointF, anchor_bottom=False, bg=None, fg=None, mono=False, keep_inside=False,
+              small=False):
+        f = font(11 if small else 12, QFont.Weight.DemiBold if bg is not None else QFont.Weight.Medium, mono=mono)
         fm = QFontMetricsF(f)
-        box = QRectF(0, 0, fm.horizontalAdvance(text) + 28, 28)
+        box = QRectF(0, 0, fm.horizontalAdvance(text) + (18 if small else 28), 22 if small else 28)
         box.moveTopLeft(at - QPointF(0, box.height()) if anchor_bottom else at)
         if keep_inside and box.top() < 4:
             box.moveTop(at.y() + 20)  # no room above the selection: tuck inside
         p.save()
         p.setPen(QPen(C.LINE, 1) if bg is None else Qt.PenStyle.NoPen)
         p.setBrush(bg or C.BASE)
-        p.drawRoundedRect(box, 8, 8)
+        p.drawRoundedRect(box, 6 if small else 8, 6 if small else 8)
         p.setPen(fg or C.SOFT)
         p.setFont(f)
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, text)

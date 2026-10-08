@@ -34,9 +34,9 @@ Grab a package from the [latest release](https://github.com/nicholas-sbx/screens
 | Distro | File | Install |
 |---|---|---|
 | Any (self-contained) | `Flatshot-*-x86_64.AppImage` | `chmod +x Flatshot-*.AppImage && ./Flatshot-*.AppImage` |
-| Debian 12+, Ubuntu 24.04+, KDE neon | `flatshot_*_all.deb` | `sudo apt install ./flatshot_*_all.deb` |
-| Fedora / openSUSE | `flatshot-*.noarch.rpm` | `sudo dnf install ./flatshot-*.noarch.rpm` |
-| Arch / Manjaro / EndeavourOS | `flatshot-*-any.pkg.tar.zst` | `sudo pacman -U flatshot-*-any.pkg.tar.zst`, or use the pacman repo below |
+| Debian 12+, Ubuntu 24.04+, KDE neon | `flatshot_*_amd64.deb` | `sudo apt install ./flatshot_*_amd64.deb` |
+| Fedora / openSUSE | `flatshot-*.x86_64.rpm` | `sudo dnf install ./flatshot-*.x86_64.rpm` |
+| Arch / Manjaro / EndeavourOS | `flatshot-*-x86_64.pkg.tar.zst` | `sudo pacman -U flatshot-*-x86_64.pkg.tar.zst`, or use the pacman repo below |
 
 The native packages use your distro's **PyQt6**. The AppImage bundles Python, **PySide6** and zxing-cpp. You can also install from source with `pipx install .`.
 
@@ -61,7 +61,7 @@ Flatshot uses zxing-cpp when it's installed and zbar otherwise.
 
 **Runtime helpers.** On Wayland an app can't read the screen itself, so Flatshot asks a trusted tool:
 
-- **KDE Plasma**: `spectacle` (comes with Plasma)
+- **KDE Plasma**: `flatshot-kwin-grab`, a small native helper included in the `.deb`, `.rpm` and Arch packages. It reads raw pixels straight from KWin's screenshot API, taking tens of milliseconds, and KWin authorizes it through its own desktop file, so the permission covers that one binary only. If it isn't available (for example in the AppImage), Flatshot falls back to `spectacle`, which is noticeably slower because it starts a whole app and round-trips a PNG.
 - **Sway, Hyprland, other wlroots compositors**: `grim`
 - **GNOME**: `gnome-screenshot`
 - **X11**: built in
@@ -136,7 +136,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `clipboard`: `image`, `path` or `none`.
 - `open_after`: `none`, `image` or `folder`.
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
-- `backend`: `auto`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
+- `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
 
 `flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file.
 
@@ -166,13 +166,13 @@ The self-test builds a fake desktop with a QR code in it. It then exercises, wit
 
 CI runs the self-test on PySide6 and on Ubuntu's PyQt6, offscreen and under a headless Weston (real Wayland), and again inside each built package. It also runs:
 
-- `tests/desktop_services.sh` against KDE's real shortcut daemon (`kglobalaccel`) and a notification server. This covers registering, assigning, conflict detection and key presses, notification buttons, and a full tray run.
+- `tests/desktop_services.sh` against KDE's real shortcut daemon (`kglobalaccel`) and a notification server. This covers registering, assigning, conflict detection and key presses, notification buttons, and a full tray run. It also covers the KWin capture helper, against a stand-in for KWin's screenshot service.
 - A layer-shell check on a headless Sway.
 
 Building packages locally:
 
 ```sh
-./packaging/build-packages.sh    # needs nfpm → dist/*.deb *.rpm *.pkg.tar.zst
+./packaging/build-packages.sh    # needs nfpm, cc, libdbus-1 headers → dist/*.deb *.rpm *.pkg.tar.zst
 ./packaging/build-appimage.sh    # needs curl → dist/Flatshot-*-x86_64.AppImage
 ```
 
@@ -195,6 +195,7 @@ Other commits don't trigger CI. To run the whole pipeline on demand, use **Actio
 
 ## Known limitations
 
+- The AppImage can't use the fast KWin capture helper: KWin authorizes the helper by its fixed install path, and an AppImage runs from a random temporary location. It uses Spectacle instead.
 - Skipping KWin's animations needs KDE's LayerShellQt library, which is built against your system Qt. The native packages use it. The AppImage bundles its own Qt, so it uses normal fullscreen windows and KWin animates them.
 - Window detection uses a KWin script, so it needs KWin (KDE Plasma). Other desktops get region and full-screen capture only.
 

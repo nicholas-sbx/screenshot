@@ -25,7 +25,7 @@ def _default_dir() -> str:
 
 CLIPBOARD = ("image", "path", "none")
 OPEN_AFTER = ("none", "image", "folder")
-BACKENDS = ("auto", "spectacle", "grim", "gnome-screenshot", "qt")
+BACKENDS = ("auto", "kwin", "spectacle", "grim", "gnome-screenshot", "qt")
 
 
 @dataclass
@@ -44,7 +44,7 @@ class Config:
     scan_codes: bool = True
     show_codes: bool = True
     toolbar_follows_mouse: bool = True
-    backend: str = "auto"
+    backend: str = "auto"  # see BACKENDS
     default_tool: str = "region"
     default_color: int = 0
     default_size: int = 1

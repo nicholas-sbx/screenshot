@@ -1,9 +1,10 @@
 """Grab the whole desktop as one image.
 
 Wayland doesn't let ordinary clients read the screen, so we lean on a
-trusted helper: KDE's ``spectacle`` first on Plasma, ``grim`` on wlroots
-compositors, ``gnome-screenshot`` as a last resort. On X11 Qt can grab
-directly.
+trusted helper. On KDE Plasma that's ``flatshot-kwin-grab`` (our own small
+native helper, allowed to use KWin's screenshot API, raw pixels, no PNG round
+trip) and then ``spectacle``; ``grim`` on wlroots compositors;
+``gnome-screenshot`` on GNOME. On X11 Qt can grab directly.
 """
 
 import os
@@ -11,7 +12,13 @@ import shutil
 import subprocess
 import tempfile
 
+from pathlib import Path
+
 from flatshot.qt import QGuiApplication, QImage, QPainter, QRect, QRectF
+
+# Where packages install the KWin helper; its .desktop file must name this
+# exact path for KWin to authorize it.
+KWIN_HELPER_PATHS = ("/usr/lib/flatshot/flatshot-kwin-grab", "/usr/libexec/flatshot/flatshot-kwin-grab")
 
 
 class CaptureError(RuntimeError):
@@ -41,6 +48,34 @@ def _run_tool(argv_for_path) -> QImage:
             os.unlink(path)
         except OSError:
             pass
+
+
+def kwin_helper() -> str | None:
+    override = os.environ.get("FLATSHOT_KWIN_GRAB")
+    for path in ([override] if override else []) + list(KWIN_HELPER_PATHS):
+        if path and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _kwin() -> QImage:
+    helper = kwin_helper()
+    if helper is None:
+        raise CaptureError("flatshot-kwin-grab is not installed")
+    proc = subprocess.run([helper], stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+    if proc.returncode != 0:
+        raise CaptureError(proc.stderr.decode(errors="replace").strip() or f"exit {proc.returncode}")
+    head, _, data = proc.stdout.partition(b"\n")
+    parts = head.split()
+    if len(parts) != 5 or parts[0] != b"FLATSHOT-RAW":
+        raise CaptureError("unexpected output from flatshot-kwin-grab")
+    width, height, stride, fmt = (int(x) for x in parts[1:])
+    if len(data) < stride * height:
+        raise CaptureError("short image from flatshot-kwin-grab")
+    image = QImage(data, width, height, stride, QImage.Format(fmt))
+    if image.isNull():
+        raise CaptureError(f"unsupported pixel format {fmt}")
+    return image.copy()  # detach from `data`
 
 
 def _spectacle() -> QImage:
@@ -74,6 +109,7 @@ def _qt() -> QImage:
 
 
 BACKENDS = {
+    "kwin": ("", _kwin),
     "spectacle": ("spectacle", _spectacle),
     "grim": ("grim", _grim),
     "gnome-screenshot": ("gnome-screenshot", _gnome_screenshot),
@@ -85,7 +121,7 @@ def backend_order() -> list[str]:
         return ["qt"]
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
     if "kde" in desktop:
-        return ["spectacle", "grim", "gnome-screenshot"]
+        return ["kwin", "spectacle", "grim", "gnome-screenshot"]
     if "gnome" in desktop:
         return ["gnome-screenshot", "grim", "spectacle"]
     return ["grim", "spectacle", "gnome-screenshot"]
@@ -99,7 +135,7 @@ def grab_desktop(preferred: str = "auto") -> QImage:
             fn = _qt
         else:
             exe, fn = BACKENDS.get(name, (name, None))
-            if fn is None or shutil.which(exe) is None:
+            if fn is None or (exe and shutil.which(exe) is None):
                 errors.append(f"{name}: not installed")
                 continue
         try:

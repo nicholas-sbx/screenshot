@@ -2,6 +2,7 @@
 package. Builds a fake desktop with a QR code, runs the overlay on it,
 draws, renders and scans. Set FLATSHOT_SELFTEST_OUT=dir to keep images."""
 
+import faulthandler
 import json
 import os
 import sys
@@ -50,6 +51,8 @@ def _fake_desktop(w=1600, h=1000) -> QImage:
 
 
 def run() -> int:
+    # A hang must fail loudly with stack traces, not sit until CI's timeout.
+    faulthandler.dump_traceback_later(120, exit=True)
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     tmp = Path(tempfile.mkdtemp(prefix="flatshot-selftest-"))
     os.environ["XDG_CONFIG_HOME"] = str(tmp / "config")  # never touch the real settings

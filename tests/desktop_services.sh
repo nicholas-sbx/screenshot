@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run desktop_services.py and a tray end-to-end test inside a private
 # session bus with KDE's KGlobalAccel, a notification server and Xvfb.
-# Needs: dbus-daemon, Xvfb, kglobalaccel5 (libkf5globalaccel-bin), dunst.
+# Needs: dbus-daemon, Xvfb, kglobalaccel5 (libkf5globalaccel-bin), dunst,
+# and a C compiler with libdbus-1 headers for the KWin capture helper.
 # Usage: tests/desktop_services.sh PYTHON
 set -euo pipefail
 PY=${1:-python3}
@@ -28,9 +29,31 @@ sleep 1
 echo "== services"
 $PY tests/desktop_services.py
 
+echo "== KWin capture helper (against a fake org.kde.KWin.ScreenShot2)"
+HELPER=$(mktemp -d)/flatshot-kwin-grab
+cc -O2 -Wall -Wextra -Werror -o "$HELPER" native/flatshot-kwin-grab.c $(pkg-config --cflags --libs dbus-1)
+export FLATSHOT_KWIN_GRAB=$HELPER
+$PY tests/fake_kwin_screenshot.py &
+pids+=($!)
+sleep 1.5
+$PY - <<'PYEOF'
+import sys, time
+from flatshot.qt import QGuiApplication
+app = QGuiApplication(sys.argv)
+from flatshot import capture
+t = time.monotonic()
+img = capture.grab_desktop("kwin")
+ms = (time.monotonic() - t) * 1000
+assert (img.width(), img.height()) == (1500, 900), img.size()
+want = 0xFF000000 | (300 % 256) << 16 | (200 % 256) << 8 | 0x5A
+assert img.pixel(300, 200) == want, hex(img.pixel(300, 200))
+print(f"kwin helper ok: 1500x900 raw grab in {ms:.0f} ms")
+PYEOF
+
 echo "== tray end-to-end"
 mkdir -p "$XDG_CONFIG_HOME/flatshot"
-printf '{"save_dir": "%s", "clipboard": "none", "backend": "qt"}\n' "$SHOTS" > "$XDG_CONFIG_HOME/flatshot/config.json"
+# The tray captures through the KWin helper (served by the fake above).
+printf '{"save_dir": "%s", "clipboard": "none", "backend": "kwin"}\n' "$SHOTS" > "$XDG_CONFIG_HOME/flatshot/config.json"
 $PY -m flatshot --tray > "$SHOTS.log" 2>&1 &
 pids+=($!)
 sleep 3
