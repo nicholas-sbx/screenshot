@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from flatshot import capture, config, output, pin, scanner, shapes, theme, windows
+from flatshot import capture, config, output, pin, scanner, screencast, shapes, theme, windows
 from flatshot.notify import Notifier
 from flatshot.overlay import Overlay
 from flatshot.qt import (
@@ -46,19 +46,38 @@ class Request:
     output: str | None = None  # explicit output file
     backend: str | None = None
     scan: bool = True
+    record: bool = False  # open with the record tool
 
 
 class Session:
-    def __init__(self, cfg: config.Config, request: Request, notifier: Notifier, on_finished, on_action=None):
+    def __init__(self, cfg: config.Config, request: Request, notifier: Notifier, on_finished, on_action=None,
+                 on_recording=None):
         """``on_finished(exit_code, holds_clipboard)`` is called exactly once.
-        ``on_action(key, path)`` handles notification buttons (tray only)."""
+        ``on_action(key, path)`` handles notification buttons (tray only).
+        ``on_recording(recording)`` takes over a screen recording once it
+        starts (tray only); without it the session lasts until the
+        recording ends."""
         self.cfg = cfg
         self.request = request
         self.notifier = notifier
         self.on_finished = on_finished
         self.on_action = on_action
-        tools = {name for name, _, _ in TOOLS}
+        self.on_recording = on_recording
+        from flatshot import recording
+
+        self.can_record = not request.image and recording.current() is None  # one recording at a time
+        tools = {name for name, _, _ in TOOLS} - (set() if self.can_record else {"record"})
         self.tool = cfg.default_tool if cfg.default_tool in tools else "region"
+        if request.record and self.can_record:
+            self.tool = "record"
+        self.rec_opts = screencast.Options.from_config(cfg)
+        self.countdown: int | None = None  # seconds left before recording starts
+        self._countdown_overlay: Overlay | None = None
+        self._countdown_timer = QTimer()
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._tick)
+        self._problems: dict[str, str | None] = {}
+        self.recording = None  # the recording this session started
         self.color_index = min(max(cfg.default_color, 0), len(theme.SWATCHES) - 1)
         self.size = min(max(cfg.default_size, 0), len(theme.SIZES) - 1)
         self.dim = QColor(theme.C.DIM)
@@ -223,7 +242,8 @@ class Session:
             return
         previous = self.pointer_overlay
         self.pointer_overlay = overlay
-        if self.cfg.toolbar_follows_mouse and not any(o.sel_rect is not None for o in self.overlays):
+        if self.cfg.toolbar_follows_mouse and not any(o.sel_rect is not None or o.rec_rect is not None
+                                                      for o in self.overlays):
             self.toolbar_overlay = overlay
             self._sync_toolbars()
         for o in (previous, overlay):
@@ -233,7 +253,7 @@ class Session:
     def _sync_toolbars(self):
         for o in self.overlays:
             if o.toolbar:
-                o.toolbar.setVisible(o is self.toolbar_overlay and o.sel_rect is None)
+                o.toolbar.setVisible(o is self.toolbar_overlay and o.sel_rect is None and self.countdown is None)
 
     # -- tool state --------------------------------------------------------
 
@@ -243,6 +263,8 @@ class Session:
             o.refresh()
 
     def set_tool(self, tool: str):
+        if tool == "record" and not self.can_record:
+            return
         self.commit_text()
         self.tool = tool
         self.refresh()
@@ -285,6 +307,109 @@ class Session:
 
     def next_number(self) -> int:
         return 1 + sum(isinstance(s, shapes.Counter) for o in self.overlays for s in o.annotations)
+
+    # -- recording ---------------------------------------------------------
+
+    def record_problem(self) -> str | None:
+        """Why recording in the chosen format can't work here (cached)."""
+        fmt = self.rec_opts.format
+        if fmt not in self._problems:
+            self._problems[fmt] = screencast.problem(fmt)
+        return self._problems[fmt]
+
+    def set_record_option(self, **changes):
+        """Change and remember recording options (format, fps, mic, ...)."""
+        keys = {"format": "record_format", "fps": "record_fps", "mic": "record_mic",
+                "system_audio": "record_system_audio", "cursor": "record_cursor"}
+        saved = config.load()
+        for name, value in changes.items():
+            setattr(self.rec_opts, name, value)
+            setattr(self.cfg, keys[name], value)
+            setattr(saved, keys[name], value)
+        try:
+            saved.save()
+        except OSError as e:
+            print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
+        self.refresh()
+
+    def disarm(self):
+        """Forget the area chosen for recording (on every monitor)."""
+        for o in self.overlays:
+            o.rec_rect = o.rec_window = None
+
+    def whole_screen(self, overlay: Overlay):
+        """The toolbar's screen button: capture, or choose the screen to record."""
+        if self.tool == "record":
+            self.disarm()
+            overlay.arm(QRectF(overlay.rect()))
+        else:
+            self.capture(overlay, None)
+
+    def start_countdown(self, overlay: Overlay):
+        if self.done or overlay.rec_rect is None or self.countdown is not None:
+            return
+        problem = self.record_problem()
+        if problem:
+            self.set_hint(problem)
+            return
+        if self.cfg.record_countdown <= 0:
+            self.start_recording(overlay)
+            return
+        self.countdown = self.cfg.record_countdown
+        self._countdown_overlay = overlay
+        self._countdown_timer.start()
+        self.refresh()
+
+    def cancel_countdown(self) -> bool:
+        if self.countdown is None:
+            return False
+        self._countdown_timer.stop()
+        self.countdown = self._countdown_overlay = None
+        self.refresh()
+        return True
+
+    def _tick(self):
+        if self.countdown is None or self.done:
+            self._countdown_timer.stop()
+            return
+        self.countdown -= 1
+        if self.countdown > 0:
+            self.refresh()
+            return
+        self._countdown_timer.stop()
+        overlay, self._countdown_overlay = self._countdown_overlay, None
+        self.countdown = None
+        self.start_recording(overlay)
+
+    def start_recording(self, overlay: Overlay):
+        """Close the overlays and record the area chosen on ``overlay``."""
+        from flatshot import recording
+
+        rect = overlay.rec_rect
+        if self.done or rect is None:
+            return
+        screen = overlay.target_screen
+        g = screen.geometry()
+        area = rect.toAlignedRect().translated(g.topLeft())
+        window = overlay.rec_window
+        full = rect.toAlignedRect() == overlay.rect()
+        shot = output.Shot(mode="window" if window else "monitor" if full else "region", monitor=screen.name())
+        source = window or (self._desktop.active if self._desktop else None)
+        if source:
+            shot.app, shot.title = source.app, source.title
+        thumbnail = overlay.render(rect)
+        opts = screencast.Options(**vars(self.rec_opts))
+        self._close_overlays()
+        rec = recording.Recording(self.cfg, screencast.Target(area, screen), opts, self.notifier, shot, thumbnail,
+                                  self.on_action, tray=self.on_recording is not None)
+        self.recording = rec
+        if self.on_recording is not None:
+            self.on_recording(rec)
+            self._finish(0, False)
+        else:
+            rec.finished.connect(self._finish)
+        # Let the compositor take the overlays down before the first frame.
+        QTimer.singleShot(150, rec.start)
 
     # -- history -----------------------------------------------------------
 
@@ -351,9 +476,21 @@ class Session:
             editing.update()
             return
 
+        if self.countdown is not None:
+            if k == K["Escape"]:
+                self.cancel_countdown()
+            return
         if k == K["Escape"]:
             if not any(o.cancel_gesture() for o in self.overlays):
                 self.cancel()
+        elif self.tool == "record" and enter:
+            armed = next((o for o in self.overlays if o.rec_rect is not None), None)
+            if armed is not None:
+                self.start_countdown(armed)
+            else:
+                self.whole_screen(target)
+        elif self.tool == "record" and ctrl and k in (K["S"], K["C"]):
+            pass
         elif ctrl and k == K["Z"]:
             self.redo() if shift else self.undo()
         elif ctrl and k == K["Y"]:
@@ -379,6 +516,7 @@ class Session:
 
     def _close_overlays(self):
         self.done = True
+        self._countdown_timer.stop()
         if self.window_finder:
             self.window_finder.stop()
             self.window_finder = None

@@ -53,8 +53,14 @@ overrides:
       - qt6-image-formats-plugins
       - wl-clipboard
       - libnotify-bin
+      # screen recording: the portal stream and the encoders
+      - gstreamer1.0-pipewire
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-plugins-ugly
+      - gstreamer1.0-tools
     suggests:
       - kde-spectacle | grim
+      - ffmpeg  # pausing a recording, and GIFs
   rpm:
     depends:
       - python3 >= 3.10
@@ -69,6 +75,11 @@ overrides:
       - qt6-qtimageformats
       - wl-clipboard
       - libnotify
+      # screen recording: the portal stream, encoders, pause and GIFs
+      - pipewire-gstreamer
+      - gstreamer1-plugins-good
+      - gstreamer1-plugin-openh264
+      - ffmpeg-free
   archlinux:
     depends:
       - python

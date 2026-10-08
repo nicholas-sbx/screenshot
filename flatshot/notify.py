@@ -32,16 +32,18 @@ class Notifier(QObject):
                 self._listener = None
 
     def send(self, summary: str, body: str = "", image: Path | None = None,
-             actions: dict[str, str] | None = None, on_action=None, urgent: bool = False) -> None:
-        """``actions`` maps key -> button label; "default" is a click on the bubble."""
+             actions: dict[str, str] | None = None, on_action=None, urgent: bool = False,
+             file: Path | None = None) -> None:
+        """``actions`` maps key -> button label; "default" is a click on the bubble.
+        ``file`` is what Plasma offers to drag out (default: ``image``)."""
         actions = actions if (actions and self._listener) else {}
         hints = {"desktop-entry": ("s", "flatshot")}
         if urgent:
             hints["urgency"] = ("y", 2)
         if image:
-            uri = image.resolve().as_uri()
-            hints["image-path"] = ("s", uri)
-            hints["x-kde-urls"] = ("as", [uri])  # Plasma: thumbnail + drag-and-drop
+            hints["image-path"] = ("s", image.resolve().as_uri())
+        if file or image:
+            hints["x-kde-urls"] = ("as", [(file or image).resolve().as_uri()])  # Plasma: thumbnail + drag-and-drop
         flat = [item for pair in actions.items() for item in pair]
         try:
             nid = dbus.call(SERVICE, PATH, SERVICE, "Notify", "susssasa{sv}i",

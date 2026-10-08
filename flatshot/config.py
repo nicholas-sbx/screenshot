@@ -28,11 +28,18 @@ def _default_dir() -> str:
     return str(Path(pictures or Path.home() / "Pictures") / "Screenshots")
 
 
+def _default_record_dir() -> str:
+    videos = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+    return str(Path(videos or Path.home() / "Videos") / "Screencasts")
+
+
 FORMAT_EXTENSIONS = ("png", "jpg", "jpeg", "webp", "avif", "jxl")
 CLIPBOARD = ("image", "path", "none")
 LOUPE_SIZES = (80, 320)  # smallest, largest
 OPEN_AFTER = ("none", "image", "folder")
 BACKENDS = ("auto", "kwin", "spectacle", "grim", "gnome-screenshot", "qt")
+RECORD_FORMATS = ("mp4", "webm", "gif")
+RECORD_FPS = (24, 30, 60)
 
 
 @dataclass
@@ -64,11 +71,26 @@ class Config:
     default_tool: str = "region"
     default_color: int = 0
     default_size: int = 1
+    # Screen recording
+    record_dir: str = ""
+    record_filename: str = "Recording_%Y-%m-%d_%H-%M-%S"  # same codes as `filename`
+    record_format: str = "mp4"  # mp4 | webm | gif
+    record_fps: int = 30  # 24 | 30 | 60
+    record_mic: bool = False
+    record_system_audio: bool = False
+    record_cursor: bool = True
+    record_countdown: int = 3  # seconds before recording starts, 0 for none
     # Pre-0.2 key, still honoured: false means clipboard = "none".
     copy_to_clipboard: bool | None = None
 
     def __post_init__(self):
         self.save_dir = os.path.expanduser(self.save_dir) if self.save_dir else _default_dir()
+        self.record_dir = os.path.expanduser(self.record_dir) if self.record_dir else _default_record_dir()
+        if self.record_format not in RECORD_FORMATS:
+            self.record_format = "mp4"
+        if self.record_fps not in RECORD_FPS:
+            self.record_fps = 30
+        self.record_countdown = max(0, min(int(self.record_countdown), 10))
         if self.copy_to_clipboard is False:
             self.clipboard = "none"
         self.copy_to_clipboard = None

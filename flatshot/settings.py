@@ -472,7 +472,7 @@ class SettingsWindow(QWidget):
         nav.setStyleSheet(f"background: {C.INK.name()};")
 
         pages = [("General", self._general), ("Capture", self._capture),
-                 ("After capture", self._after), ("Shortcuts", self._shortcuts)]
+                 ("After capture", self._after), ("Recording", self._recording), ("Shortcuts", self._shortcuts)]
         self.nav_items = []
         for i, (name, build) in enumerate(pages):
             item = NavItem(name)
@@ -699,6 +699,56 @@ class SettingsWindow(QWidget):
         sound_row.setVisible(self.cfg.sound)
         card.add(Row("Run a command", None, "{path} is replaced with the image file.",
                      below=self._line("run_command", "curl -F file=@{path} https://example.com/upload")))
+
+    def _recording(self):
+        from flatshot import screencast
+
+        card = self._card()
+        how = screencast.method()
+        problem = screencast.problem()
+        status = card.add(Row("Recorder", None, screencast.METHOD_LABELS.get(how, how)))
+        if problem:
+            status.error.setText(problem)
+            status.error.show()
+        folder = self._line("record_dir")
+        browse = Button("Choose…")
+        box = QWidget()
+        line = QHBoxLayout(box)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        line.addWidget(folder, 1)
+        line.addWidget(browse)
+        card.add(Row("Folder", None, below=box))
+
+        def pick():
+            path = QFileDialog.getExistingDirectory(self, "Recordings folder", folder.text())
+            if path:
+                folder.setText(path)
+                self._save(record_dir=path)
+
+        browse.clicked.connect(pick)
+        card.add(Row("File name", None, "The same codes as for screenshots. The extension is added for you.",
+                     below=self._line("record_filename")))
+        countdown = ValueSlider(self.cfg.record_countdown, 0, 10, 1, lambda v: f"{v} s" if v else "Off")
+        countdown.changed.connect(lambda v: self._save(record_countdown=v))
+        card.add(Row("Countdown", countdown, "Before recording starts."))
+
+        card = self._card("Defaults")
+        formats = screencast.formats_available() or screencast.FORMATS[:1]
+        if self.cfg.record_format not in [key for key, _ in formats]:
+            self.cfg.record_format = formats[0][0]
+        fmt = Segmented(formats, self.cfg.record_format)
+        fmt.changed.connect(lambda v: self._save(record_format=v))
+        card.add(Row("Format", fmt, "GIFs have no sound."))
+        fps = Segmented([(str(n), f"{n} fps") for n in config.RECORD_FPS], str(self.cfg.record_fps))
+        fps.changed.connect(lambda v: self._save(record_fps=int(v)))
+        card.add(Row("Frame rate", fps))
+        card.add(Row("Microphone", self._toggle("record_mic")))
+        card.add(Row("Computer sound", self._toggle("record_system_audio")))
+        card.add(Row("Mouse pointer", self._toggle("record_cursor")))
+        self._col.addWidget(_label("You can also change these under the area before you start. After a recording, "
+                                   "the clipboard, notification, open and command settings from After capture "
+                                   "apply; Copy to clipboard copies the video file.", "hint", wrap=True))
 
     def _shortcuts(self):
         supported = self.shortcuts.active or self.shortcuts.start()

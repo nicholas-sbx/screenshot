@@ -50,6 +50,12 @@ assert img.pixel(300, 200) == want, hex(img.pixel(300, 200))
 print(f"kwin helper ok: 1500x900 raw grab in {ms:.0f} ms")
 PYEOF
 
+echo "== screen-cast portal (against a fake xdg-desktop-portal)"
+$PY tests/fake_screencast_portal.py &
+pids+=($!)
+sleep 1.5
+$PY tests/screencast_portal.py
+
 echo "== tray end-to-end"
 mkdir -p "$XDG_CONFIG_HOME/flatshot"
 # The tray captures through the KWin helper (served by the fake above).

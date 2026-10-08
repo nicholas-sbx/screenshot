@@ -49,6 +49,10 @@ THEMES = {
 OUTLINE_LIGHT = QColor("#F2EEE6")
 OUTLINE_DARK = QColor("#121218")
 
+# Screen recording: the record button's dot, the stop button and the frame
+# around the area being recorded. The same red in every theme.
+REC = QColor("#FF4747")
+
 
 def use(name: str) -> None:
     """Switch the palette (unknown names fall back to Ember)."""

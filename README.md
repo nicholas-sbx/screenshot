@@ -2,7 +2,7 @@
 
 A small ShareX-style screenshot tool for Linux on Wayland, built mainly for KDE Plasma.
 
-Flatshot lives in your system tray. Press your shortcut and the screen freezes. **Drag a region, or click a window, and it's saved and copied straight away.** If you want to mark it up first, use the floating toolbar to draw on the frozen screen, then drag. Any **QR codes and barcodes** on screen are found automatically, each with a small card for copying or opening it.
+Flatshot lives in your system tray. Press your shortcut and the screen freezes. **Drag a region, or click a window, and it's saved and copied straight away.** If you want to mark it up first, use the floating toolbar to draw on the frozen screen, then drag. Any **QR codes and barcodes** on screen are found automatically, each with a small card for copying or opening it. The toolbar's record button **records an area of the screen** to MP4, WebM or GIF.
 
 The app is native Qt, but every pixel is custom-painted. It ignores your Qt style, colour scheme, fonts and icon theme, so it looks the same on every desktop: flat, square with rounded corners. Pick one of five colour themes in settings: Ember (the default), Graphite, Nord, Dusk or the light Paper.
 
@@ -19,7 +19,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Window capture** (KDE): hover over where a window was when the screen freezes and it lights up; click to capture just that window. Clicking empty desktop captures the whole monitor.
 - **Instant captures, no selection needed**: the **active window**, the **current monitor** (the one under the pointer), **all screens**, or the **last region** you captured, each on its own shortcut. From scripts you can also capture an exact area with `--region WxH+X+Y`. Active-window capture works on KDE Plasma, Sway and Hyprland.
 - **Pin to screen**: keep a capture in view as a small always-on-top window. Turn on the toolbar's pin button (or press <kbd>K</kbd>) and your next drag or window click is pinned instead of saved. It still captures the moment you let go; nothing asks first. There's also a "Pin region" shortcut, `--pin`, and a **Pin** button on notifications. Drag a pin to move it, scroll to zoom, double-click or <kbd>Esc</kbd> to close, right-click to copy or save.
-- **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region), <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Print</kbd> (active window) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens). Current monitor, last region and pin have no default key; set one if you want it.
+- **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region), <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Print</kbd> (active window) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens). Current monitor, last region, pin and record screen have no default key; set one if you want it.
 - **Folder and file name templates**: build the path from the date, the window's app or title, the capture type, the size or a counter. For example, `~/Pictures/Screenshots/%Y-%m/{app}` sorts shots into a folder per month and app.
 - **Save as PNG, JPEG, WebP, AVIF or JPEG XL**, with a quality slider for the lossy formats. WebP, AVIF and JPEG XL appear when Qt has the plugins: `qt6-imageformats` and `kimageformats`.
 - **After-capture actions** you choose in settings: save to a folder, copy the image or its path, show a notification, open the image or folder, or run your own command (for example an upload script).
@@ -27,6 +27,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Capture sound** (off by default): plays the desktop's screenshot sound, or a file you choose, after each capture. It uses an audio player you already have (`pw-play`, `paplay`, `ffplay` or `canberra-gtk-play`), runs in the background and never delays the capture.
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
+- **Screen recording**: pick the toolbar's record button (or press <kbd>V</kbd>), then drag an area, click a window, or press <kbd>Enter</kbd> for the whole screen. Drag the edges to adjust it. Under the area you can turn the **microphone**, the **computer's sound** and the **mouse pointer** on or off, and choose **MP4, WebM or GIF** and **24, 30 or 60 fps**; Flatshot remembers these. Press **Record** or <kbd>Enter</kbd>, and after a short countdown a small bar outside the area shows the time, with **pause**, **stop** and **discard**. The finished video goes to `~/Videos/Screencasts`, the file is copied to the clipboard, and a system notification offers **Open** and **Show in folder**. While recording, the tray icon turns into a stop button; clicking it, or pressing the "Record screen" shortcut again, stops and saves.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate (for hiding secrets) and numbered counters. It has 7 colours, 3 stroke sizes, and undo/redo.
 - **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
@@ -91,6 +92,15 @@ Flatshot uses zxing-cpp when it's installed and zbar otherwise.
 - **GNOME**: `gnome-screenshot`
 - **X11**: built in
 
+**Screen recording** uses:
+
+- **KDE Plasma, GNOME and other Wayland desktops**: the desktop's screen-cast portal, recorded with GStreamer. Install `gst-launch-1.0` and the PipeWire plugin, plus an encoder: `x264enc` or `openh264enc` for MP4, `vp8enc` for WebM. On Debian and Ubuntu that's `gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly` (the `.deb` recommends them); on Arch, `gstreamer gst-plugin-pipewire gst-plugins-good gst-plugins-ugly`. The first time, the desktop asks which screen to share; after that Flatshot remembers it, per monitor, until you revoke it.
+- **Sway, Hyprland, other wlroots compositors**: `wf-recorder` when installed, else the portal as above.
+- **X11**: `ffmpeg`.
+- **Everywhere**: `ffmpeg` for pausing (each stretch is recorded separately and joined at the end) and for GIFs. Without it the pause button and GIF are unavailable.
+
+Settings → Recording, and `flatshot --diagnose`, show which recorder is in use and what's missing.
+
 `wl-clipboard` is recommended. Without it, a clipboard image copied by a one-off `flatshot` run only lasts while that process runs, unless Klipper grabs it first. The tray app keeps running, so it doesn't have this problem.
 
 ### Getting started (KDE)
@@ -113,6 +123,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>Enter</kbd> / <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>C</kbd> | capture whole monitor with your drawings |
 | <kbd>Esc</kbd> / right-click | cancel the current drag, or quit |
 | <kbd>R</kbd> | region tool (back to capture mode) |
+| <kbd>V</kbd> | record tool: drag an area or click a window, then <kbd>Enter</kbd> to start (<kbd>Enter</kbd> before choosing picks the whole screen; <kbd>Esc</kbd> goes back) |
 | <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>N</kbd> | pen, line, arrow, box, ellipse, highlighter, text, pixelate, counter |
 | <kbd>Shift</kbd> while drawing | snap lines to 45° and make boxes/ellipses square/round |
 | <kbd>1</kbd>–<kbd>7</kbd> | colour |
@@ -130,6 +141,7 @@ flatshot --monitor       # capture the monitor under the pointer, no UI
 flatshot --last-region   # capture the same area as last time, no UI
 flatshot --region 800x600+100+50   # capture this area (logical pixels), no UI
 flatshot --pin           # pick a region and pin it to the screen (combines with the above)
+flatshot --record        # pick an area and record it; while recording, stops and saves
 flatshot --settings      # open settings
 flatshot --quit          # stop the tray app
 flatshot --diagnose      # what this Flatshot and the running tray app use
@@ -172,7 +184,15 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "theme": "ember",
   "default_tool": "region",
   "default_color": 0,
-  "default_size": 1
+  "default_size": 1,
+  "record_dir": "~/Videos/Screencasts",
+  "record_filename": "Recording_%Y-%m-%d_%H-%M-%S",
+  "record_format": "mp4",
+  "record_fps": 30,
+  "record_mic": false,
+  "record_system_audio": false,
+  "record_cursor": true,
+  "record_countdown": 3
 }
 ```
 
@@ -196,9 +216,10 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
+- `record_dir` and `record_filename`: where recordings go, with the same codes as `save_dir` and `filename`. `record_format` is `mp4`, `webm` or `gif`; `record_fps` is `24`, `30` or `60`. `record_mic`, `record_system_audio` and `record_cursor` are the switches under the area (a GIF has no sound). `record_countdown` is in seconds (0–10, 0 for none). After a recording, `clipboard` (`image` copies the video file), `notify`, `open_after` and `run_command` apply as for screenshots.
 - `theme`: `ember`, `graphite`, `nord`, `dusk` or `paper`. It changes the app's own panels only; drawing colours and what's saved stay the same.
 
-`flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file. The last region and the `{n}` counter are kept in `~/.local/state/flatshot/state.json`.
+`flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file. The last region, the `{n}` counter and the screen-cast portal's restore tokens are kept in `~/.local/state/flatshot/state.json`.
 
 ## Default palette: "Ember"
 
@@ -224,10 +245,11 @@ The self-test builds a fake desktop with a QR code in it. It then exercises, wit
 - the instant modes (window, monitor, all screens, last region, `--region`), file name templates, pinning and the colour picker
 - every drawing tool and the keyboard handling
 - the capture pipeline and the settings window
+- the record tool (choosing and adjusting an area, the options, the countdown) and a real recording of ffmpeg's test pattern with pause, stop and discard, when `ffmpeg` is installed
 
 CI runs the self-test on PySide6 and on Ubuntu's PyQt6, offscreen and under a headless Weston (real Wayland), and again inside each built package. It also runs:
 
-- `tests/desktop_services.sh` against KDE's real shortcut daemon (`kglobalaccel`) and a notification server. This covers registering, assigning, conflict detection and key presses, notification buttons, and a full tray run. It also covers the KWin capture helper, against a stand-in for KWin's screenshot service.
+- `tests/desktop_services.sh` against KDE's real shortcut daemon (`kglobalaccel`) and a notification server. This covers registering, assigning, conflict detection and key presses, notification buttons, and a full tray run. It also covers the KWin capture helper, against a stand-in for KWin's screenshot service, and the screen-cast portal client against a stand-in portal.
 - A layer-shell check on a headless Sway.
 
 Building packages locally:
@@ -273,4 +295,7 @@ When the overlay falls back to a normal window, the tray app also logs the reaso
 - Pins stay on top and open where the region was captured on KDE (through a KWin script) and on X11. On other Wayland desktops they are normal windows.
 
 - On Wayland, capture depends on one of the helper tools above. The xdg-desktop-portal screenshot API is not used yet.
+- Recording shows the mouse pointer but not your clicks: Wayland doesn't tell apps about clicks in other windows.
+- The recording bar and the corner marks are placed outside the recorded area on KDE Plasma (through a KWin script) and on X11. On other Wayland desktops the bar opens wherever the desktop puts it (drag it away) and there are no corner marks. When the area fills the only screen, there's no bar; stop from the tray icon or the shortcut (or, without the tray app, the bar is shown inside the area).
+- An area must be on one monitor. With the portal, a recording covers what that monitor shows; `wf-recorder` records one sound source (the microphone when both are on).
 - With mixed-DPI multi-monitor setups, each monitor's slice of the capture is mapped by its logical geometry. The output may be slightly soft on the lower-DPI screen.

@@ -142,12 +142,69 @@ def _check(p, c):
     p.drawPath(_path([(5, 12.5), (10, 17.5), (19, 7)]))
 
 
+def _record(p, c):
+    p.drawEllipse(QRectF(4, 4, 16, 16))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(c)
+    p.drawEllipse(QRectF(8.4, 8.4, 7.2, 7.2))
+
+
+def _mic(p, c):
+    p.drawRoundedRect(QRectF(9, 3.5, 6, 11), 3, 3)
+    path = QPainterPath()
+    path.moveTo(5.5, 11.5)
+    path.cubicTo(5.5, 20, 18.5, 20, 18.5, 11.5)
+    p.drawPath(path)
+    p.drawLine(QPointF(12, 17.8), QPointF(12, 20.5))
+
+
+def _speaker(p, c):
+    body = _path([(4, 9.5), (7.5, 9.5), (12, 5.5), (12, 18.5), (7.5, 14.5), (4, 14.5)])
+    body.closeSubpath()
+    p.drawPath(body)
+    for r in (3.5, 6.5):
+        arc = QPainterPath()
+        arc.arcMoveTo(QRectF(12 - r, 12 - r, 2 * r, 2 * r), 50)
+        arc.arcTo(QRectF(12 - r, 12 - r, 2 * r, 2 * r), 50, -100)
+        p.drawPath(arc)
+
+
+def _cursor(p, c):
+    body = _path([(6, 4), (18, 11), (12.5, 12.5), (10, 18)])
+    body.closeSubpath()
+    p.drawPath(body)
+
+
+def _pause(p, c):
+    p.drawLine(QPointF(9, 6.5), QPointF(9, 17.5))
+    p.drawLine(QPointF(15, 6.5), QPointF(15, 17.5))
+
+
+def _resume(p, c):
+    body = _path([(8, 5.5), (18.5, 12), (8, 18.5)])
+    body.closeSubpath()
+    p.setBrush(c)
+    p.drawPath(body)
+
+
+def _stop(p, c):
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(c)
+    p.drawRoundedRect(QRectF(7, 7, 10, 10), 2, 2)
+
+
+def _trash(p, c):
+    p.drawPath(_path([(4.5, 7), (19.5, 7)], [(9.5, 7), (9.5, 4.5), (14.5, 4.5), (14.5, 7)],
+                     [(6.5, 7), (7.5, 19.5), (16.5, 19.5), (17.5, 7)]))
+
+
 _ICONS = {
     "region": _region, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate,
     "counter": _counter, "undo": _undo, "redo": _redo, "screen": _screen,
     "copy": _copy, "open": _open, "close": _close, "check": _check,
-    "codes": _codes, "codes-off": _codes_off, "pin": _pin,
+    "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
+    "speaker": _speaker, "cursor": _cursor, "pause": _pause, "resume": _resume, "stop": _stop, "trash": _trash,
 }
 
 

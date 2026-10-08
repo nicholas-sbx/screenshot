@@ -23,6 +23,7 @@ ACTIONS = {
     "screen": ("Capture all screens", "Ctrl+Shift+Print"),
     "last": ("Capture last region", ""),
     "pin": ("Pin region to screen", ""),
+    "record": ("Record screen", ""),
 }
 
 # KGlobalAccel::SetShortcutFlag

@@ -4,13 +4,15 @@ notification actions, and the target of `flatshot` invocations."""
 import sys
 from pathlib import Path
 
-from flatshot import config, ipc, output, pin, theme
+from flatshot import config, ipc, output, pin, recording, theme
 from flatshot.notify import Notifier
-from flatshot.qt import QAction, QIcon, QImage, QMenu, QObject, QSystemTrayIcon, QTimer
+from flatshot.qt import (
+    QAction, QIcon, QImage, QMenu, QObject, QPainter, QPixmap, QRectF, QSystemTrayIcon, Qt, QTimer,
+)
 from flatshot.capture import parse_geometry
 from flatshot.session import MODES, Request, Session
 from flatshot.shortcuts import ACTIONS, GlobalShortcuts
-from flatshot.theme import ICON_PATH
+from flatshot.theme import C, ICON_PATH, REC
 
 # Let a menu or notification popup fade out before the screen is frozen.
 MENU_DELAY_MS = 220
@@ -28,6 +30,25 @@ SHORTCUT_MODES = {
 LEGACY_COMMANDS = {"capture": "region", "full": "screens"}
 
 
+def _stop_icon() -> QIcon:
+    """The tray icon while recording: the bar's red stop button."""
+    icon = QIcon()
+    for size in (16, 22, 24, 32, 48, 64):
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(REC)
+        p.drawEllipse(QRectF(1, 1, size - 2, size - 2))
+        s = size * 0.32
+        p.setBrush(C.TEXT)
+        p.drawRoundedRect(QRectF((size - s) / 2, (size - s) / 2, s, s), size / 16, size / 16)
+        p.end()
+        icon.addPixmap(pm)
+    return icon
+
+
 class TrayApp(QObject):
     def __init__(self, app):
         super().__init__()
@@ -38,6 +59,10 @@ class TrayApp(QObject):
 
         self.server = ipc.Server(status=diagnose.info)
         self.session: Session | None = None
+        self.recording: recording.Recording | None = None
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._update_tooltip)
         self.settings = None
         self.tray: QSystemTrayIcon | None = None
         self.menu_actions: dict[str, QAction] = {}
@@ -65,7 +90,7 @@ class TrayApp(QObject):
         self.tray.setToolTip("Flatshot")
         menu = QMenu()
         # Active window makes no sense straight from the menu (the menu has focus).
-        for action in ("region", "monitor", "screen", "last", "pin"):
+        for action in ("region", "monitor", "screen", "last", "pin", "record"):
             self.menu_actions[action] = menu.addAction(ACTIONS[action][0])
             self.menu_actions[action].triggered.connect(
                 lambda _=False, a=action: self._shortcut(a, delay_ms=MENU_DELAY_MS))
@@ -85,16 +110,19 @@ class TrayApp(QObject):
         self.tray.show()
 
     def _update_menu(self):
-        if not self.shortcuts.active:
-            return
         for action, item in self.menu_actions.items():
-            keys = self.shortcuts.get(action)
+            keys = self.shortcuts.get(action) if self.shortcuts.active else ""
             label = ACTIONS[action][0]
+            if action == "record" and self.recording is not None:
+                label = "Stop recording"
             item.setText(f"{label}\t{keys}" if keys else label)
 
     def _activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.capture(delay_ms=MENU_DELAY_MS)
+            if self.recording is not None:
+                self.recording.stop()
+            else:
+                self.capture(delay_ms=MENU_DELAY_MS)
         elif reason == QSystemTrayIcon.ActivationReason.MiddleClick:
             self.capture("screens", delay_ms=MENU_DELAY_MS)
 
@@ -106,6 +134,9 @@ class TrayApp(QObject):
     # -- commands ------------------------------------------------------------
 
     def _shortcut(self, action: str, delay_ms: int = 0):
+        if action == "record":
+            self.record(delay_ms)
+            return
         mode, pinned = SHORTCUT_MODES.get(action, ("region", False))
         self.capture(mode, pinned=pinned, delay_ms=delay_ms)
 
@@ -116,6 +147,12 @@ class TrayApp(QObject):
             self.show_settings()
         elif name == "quit":
             self.quit()
+        elif name == "record":
+            try:
+                delay = float(rest[0]) if rest else 0
+            except ValueError:
+                delay = 0
+            self.record(int(max(0, delay) * 1000))
         else:
             mode, _, geometry = LEGACY_COMMANDS.get(name, name).partition(":")
             if mode not in MODES:
@@ -127,17 +164,54 @@ class TrayApp(QObject):
             self.capture(mode, rect=parse_geometry(geometry), pinned="pin" in rest,
                          delay_ms=int(max(0, delay) * 1000))
 
-    def capture(self, mode="region", image: str | None = None, rect=None, pinned=False, delay_ms: int = 0):
+    def capture(self, mode="region", image: str | None = None, rect=None, pinned=False, delay_ms: int = 0,
+                record=False):
         if self.session is not None:
             return  # one capture at a time
         cfg = config.load()  # pick up settings changes
         theme.use(cfg.theme)
-        request = Request(mode=mode, rect=rect, pin=pinned, image=image)
-        self.session = Session(cfg, request, self.notifier, self._finished, self._on_action)
+        request = Request(mode=mode, rect=rect, pin=pinned, image=image, record=record)
+        self.session = Session(cfg, request, self.notifier, self._finished, self._on_action,
+                               on_recording=None if self.recording else self._recording_started)
         QTimer.singleShot(delay_ms, self.session.start)
+
+    def record(self, delay_ms: int = 0):
+        """Choose an area to record, or stop the recording in progress."""
+        if self.recording is not None:
+            self.recording.stop()
+        else:
+            self.capture(delay_ms=delay_ms, record=True)
 
     def _finished(self, code, holds_clipboard):
         self.session = None
+
+    # -- recording -------------------------------------------------------------
+
+    def _recording_started(self, rec: recording.Recording):
+        self.recording = rec
+        rec.changed.connect(self._update_tooltip)
+        rec.finished.connect(self._recording_ended)
+        if self.tray:
+            self.tray.setIcon(_stop_icon())
+        self._clock.start()
+        self._update_tooltip()
+        self._update_menu()
+
+    def _update_tooltip(self):
+        rec = self.recording
+        if not self.tray or rec is None:
+            return
+        state = {"starting": "Starting to record", "paused": "Recording paused",
+                 "saving": "Saving the recording"}.get(rec.state, "Recording")
+        self.tray.setToolTip(f"Flatshot: {state}  {recording.clock(rec.elapsed_ms())}  ·  click to stop")
+
+    def _recording_ended(self, code, holds_clipboard):
+        self.recording = None
+        self._clock.stop()
+        if self.tray:
+            self.tray.setIcon(QIcon(ICON_PATH))
+            self.tray.setToolTip("Flatshot")
+        self._update_menu()
 
     def _on_action(self, key: str, path: Path):
         if key in ("default", "open"):
@@ -161,6 +235,11 @@ class TrayApp(QObject):
         self.settings.activateWindow()
 
     def quit(self):
+        if self.recording is not None:
+            # Save what was recorded first.
+            self.recording.stop()
+            recording.when_idle(self.quit)
+            return
         if self.tray:
             self.tray.hide()
         self.app.quit()

@@ -22,6 +22,8 @@ def parse_args(argv):
                          help="capture the region captured last time")
     instant.add_argument("-r", "--region", metavar="WxH+X+Y", help="capture this area (logical pixels)")
     ap.add_argument("--pin", action="store_true", help="pin the result to the screen instead of saving it")
+    ap.add_argument("--record", action="store_true",
+                    help="choose an area and record it to a video (stops the recording in progress)")
     ap.add_argument("-o", "--output", metavar="FILE",
                     help="save to this file instead of the screenshot folder ('-' writes PNG to stdout)")
     ap.add_argument("-i", "--image", metavar="FILE", help="annotate an existing image instead of the screen")
@@ -41,6 +43,8 @@ def parse_args(argv):
     args = ap.parse_args(argv)
     if args.region is not None and parse_geometry(args.region) is None:
         ap.error(f"--region: expected WxH+X+Y (like 800x600+100+50), got {args.region!r}")
+    if args.record and (_mode(args) != "region" or args.pin or args.image or args.output):
+        ap.error("--record picks its area on screen; it doesn't combine with instant captures, --pin, -i or -o")
     return args
 
 
@@ -92,6 +96,8 @@ def _forwardable(args) -> str | None:
         return "settings"
     if args.tray:
         return "settings"  # already running: show something useful
+    if args.record:
+        return f"record {args.delay:g}"
     mode = _mode(args)
     if mode == "rect":
         mode = f"rect:{args.region.strip()}"
@@ -148,7 +154,7 @@ def run_once(app, args) -> int:
         QTimer.singleShot(10 * 60 * 1000, app.quit)
 
     request = Request(mode=_mode(args), rect=parse_geometry(args.region or ""), pin=args.pin, image=args.image,
-                      output=args.output, backend=args.backend, scan=not args.no_scan)
+                      output=args.output, backend=args.backend, scan=not args.no_scan, record=args.record)
     session = Session(cfg, request, Notifier(interactive=False), finished)
     QTimer.singleShot(max(0, int(args.delay * 1000)), session.start)
     app.exec()

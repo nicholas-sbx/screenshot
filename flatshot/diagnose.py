@@ -23,7 +23,16 @@ def info() -> dict:
         "layer-shell overlay": f"yes (scope {layershell.SCOPE})" if layer else f"no: {layershell.status}",
         "last overlay": layershell.last_overlay,
         "KWin capture helper": capture.kwin_helper() or "not installed",
+        "screen recorder": _recorder(),
     }
+
+
+def _recorder() -> str:
+    from flatshot import screencast
+
+    how = screencast.method()
+    problem = screencast.problem()
+    return screencast.METHOD_LABELS.get(how, how) + (f" (not usable: {problem})" if problem else "")
 
 
 def _lines(data: dict) -> list[str]:

@@ -197,6 +197,21 @@ def copy_text(text: str) -> tuple[bool, bool]:
     return True, True
 
 
+def copy_file(path: Path) -> tuple[bool, bool]:
+    """Copy a file (a recording) so it pastes into file managers and chats."""
+    uri = path.resolve().as_uri()
+    for argv in _clipboard_helpers("text/uri-list"):
+        if _pipe_to(argv, (uri + "\r\n").encode()):
+            return True, False
+    from flatshot.qt import QUrl
+
+    mime = QMimeData()
+    mime.setUrls([QUrl(uri)])
+    mime.setData("x-special/gnome-copied-files", QByteArray(f"copy\n{uri}".encode()))
+    QGuiApplication.clipboard().setMimeData(mime)
+    return True, True
+
+
 def _spawn(argv: list[str], **kw) -> bool:
     try:
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

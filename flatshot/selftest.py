@@ -230,6 +230,7 @@ def run() -> int:
     settings.close()
 
     _instant_and_extras(app, tmp, desktop, out_dir)
+    _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
     return 0
 
@@ -487,3 +488,223 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     finally:
         os.environ["PATH"] = old_path
     print("self-test: magnifier, crosshair and sound settings ok")
+
+
+def _recording(app, tmp: Path, desktop: QImage, out_dir):
+    """The record tool: choose and adjust an area, the options panel, the
+    countdown, then a real recording of ffmpeg's test pattern with pause,
+    the controls bar, stop and discard."""
+    import shutil
+
+    from flatshot import capture, config, recording, screencast, windows
+    from flatshot.notify import Notifier
+    from flatshot.qt import QEvent, QMouseEvent
+    from flatshot.session import Request, Session
+
+    def wait(done, seconds=10.0):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            app.processEvents()
+            if done():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def key(session, ov, k, text=""):
+        session.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(k), Qt.KeyboardModifier.NoModifier, text))
+
+    def mouse(ov, kind, x, y):
+        types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
+                 "release": QEvent.Type.MouseButtonRelease}
+        pos = QPointF(x, y)
+        left = Qt.MouseButton.LeftButton
+        event = QMouseEvent(types[kind], pos, ov.mapToGlobal(pos), Qt.MouseButton.NoButton if kind == "move" else left,
+                            Qt.MouseButton.NoButton if kind == "release" else left, Qt.KeyboardModifier.NoModifier)
+        {"press": ov.mousePressEvent, "move": ov.mouseMoveEvent, "release": ov.mouseReleaseEvent}[kind](event)
+
+    # Annotating a file can't record.
+    src = tmp / "desktop.png"
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(src), scan=False),
+                Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    assert not ov.toolbar.tools["record"].isVisibleTo(ov.toolbar), "record button shown for an image"
+    key(s, ov, Qt.Key.Key_V, "v")
+    assert s.tool != "record"
+    s.cancel()
+
+    real_grab, real_supported = capture.grab_desktop, windows.WindowFinder.supported
+    capture.grab_desktop = lambda preferred="auto", pointer=False: desktop.copy()
+    windows.WindowFinder.supported = staticmethod(lambda: False)
+    forced = os.environ.get("FLATSHOT_RECORDER")
+    os.environ["FLATSHOT_RECORDER"] = "test"
+    rec_dir = tmp / "recordings"
+    try:
+        done = []
+        cfg = config.Config(record_dir=str(rec_dir), notify=False, clipboard="none", record_countdown=1,
+                            record_format="mp4")
+        s = Session(cfg, Request(record=True, scan=False), Notifier(interactive=False),
+                    lambda code, holds: done.append(code))
+        s.start()
+        ov = s.overlays[0]
+        ov.resize(ov.target_screen.geometry().size())
+        app.processEvents()
+        bar = ov.toolbar
+        assert s.tool == "record" and bar.tools["record"].active, s.tool
+        assert bar.tools["pen"].dimmed and not bar.swatches[0].isEnabled() and not bar.pin_button.isEnabled()
+
+        # Drag out an area; it stays chosen, with the options panel under it.
+        mouse(ov, "press", 60, 50)
+        mouse(ov, "move", 300, 200)
+        mouse(ov, "release", 300, 200)
+        assert ov.rec_rect == QRectF(60, 50, 240, 150), ov.rec_rect
+        assert ov.panel is not None and ov.panel.isVisibleTo(ov), "no options panel"
+        assert ov.panel.geometry().top() >= ov.rec_rect.bottom(), "panel not under the area"
+        # Drag the bottom-right handle, then move the whole area.
+        assert ov._handle_at(QPointF(300, 200)) == "br" and ov._handle_at(QPointF(180, 125)) == "move"
+        mouse(ov, "press", 300, 200)
+        mouse(ov, "move", 340, 230)
+        mouse(ov, "release", 340, 230)
+        assert ov.rec_rect == QRectF(60, 50, 280, 180), ov.rec_rect
+        mouse(ov, "press", 100, 100)
+        mouse(ov, "move", 110, 90)
+        mouse(ov, "release", 110, 90)
+        assert ov.rec_rect == QRectF(70, 40, 280, 180), ov.rec_rect
+
+        # Options: remembered in the settings for next time.
+        ov.panel.cursor.click()
+        assert s.rec_opts.cursor is False and config.load().record_cursor is False
+        ov.panel.fps.click()
+        assert s.rec_opts.fps == 60 and config.load().record_fps == 60
+        s.set_record_option(fps=30, cursor=True)
+        if "gif" in {k for k, _ in screencast.formats_available()}:
+            s.set_record_option(format="gif")
+            assert not ov.panel.mic.isEnabled(), "GIFs have no sound"
+            s.set_record_option(format="mp4")
+        if out_dir:
+            ov.cursor_pos = None
+            ov.grab().save(str(Path(out_dir) / "overlay-record.png"))
+
+        # Esc goes back to choosing; Enter with nothing chosen picks the whole screen.
+        key(s, ov, Qt.Key.Key_Escape)
+        assert ov.rec_rect is None and not ov.panel.isVisibleTo(ov) and not done
+        key(s, ov, Qt.Key.Key_Return)
+        assert ov.rec_rect == QRectF(ov.rect()), ov.rec_rect
+        mouse(ov, "press", 60, 50)
+        mouse(ov, "move", 300, 210)
+        mouse(ov, "release", 300, 210)
+
+        # Countdown: Esc cancels it, Enter starts it again.
+        key(s, ov, Qt.Key.Key_Return)
+        assert s.countdown == 1 and not ov.panel.isVisibleTo(ov) and not bar.isVisibleTo(ov)
+        if out_dir:
+            ov.grab().save(str(Path(out_dir) / "overlay-countdown.png"))
+        key(s, ov, Qt.Key.Key_Escape)
+        assert s.countdown is None and ov.rec_rect is not None and ov.panel.isVisibleTo(ov)
+
+        if screencast.problem("mp4") is not None:
+            print(f"self-test: record tool ok; recording skipped ({screencast.problem('mp4')})")
+            s.cancel()
+            return
+        key(s, ov, Qt.Key.Key_Return)
+        assert wait(lambda: recording.current() is not None and recording.current().state == "recording"), \
+            "recording never started"
+        rec = recording.current()
+        assert not s.overlays and rec.bar is not None and rec.bar.isVisible(), "no recording controls"
+        if recording._can_place():  # (not on Wayland without KWin)
+            assert rec.frame is not None, "no frame around the area"
+            assert rec.bar.geometry().top() > rec.target.rect.bottom(), "bar over the recorded area"
+        wait(lambda: False, 1.0)
+        if out_dir:
+            rec.bar.grab().save(str(Path(out_dir) / "recording-bar.png"))
+        rec.toggle_pause()
+        assert wait(lambda: rec.proc is None) and rec.state == "paused"
+        paused_at = rec.elapsed_ms()
+        wait(lambda: False, 0.4)
+        assert rec.elapsed_ms() == paused_at, "the clock ran while paused"
+        rec.toggle_pause()
+        assert rec.state == "recording" and len(rec.segments) == 2
+        wait(lambda: False, 0.8)
+        rec.stop()
+        assert wait(lambda: done, 60) and done == [0], done
+        files = list(rec_dir.glob("Recording_*.mp4"))
+        assert len(files) == 1 and files[0].stat().st_size > 1000, files
+        seconds = screencast.duration(str(files[0]))
+        assert seconds is None or seconds > 1.0, seconds
+        assert recording.current() is None and not rec._tmp.exists()
+
+        # Discard: nothing saved.
+        done = []
+        s = Session(replace_cfg(cfg, record_countdown=0), Request(record=True, scan=False),
+                    Notifier(interactive=False), lambda code, holds: done.append(code))
+        s.start()
+        ov = s.overlays[0]
+        ov.arm(QRectF(0, 0, 120, 90))
+        key(s, ov, Qt.Key.Key_Return)
+        assert wait(lambda: recording.current() is not None and recording.current().state == "recording")
+        recording.current().discard()
+        assert wait(lambda: done) and done == [1], done
+        assert len(list(rec_dir.glob("Recording_*"))) == 1, "a discarded recording was saved"
+
+        # A recorder that quits by itself: what it recorded is kept. One that
+        # fails at once: its error is reported and nothing is saved.
+        import signal
+
+        def record_until(action, launch=None):
+            done = []
+            s = Session(replace_cfg(cfg, record_countdown=0), Request(record=True, scan=False),
+                        Notifier(interactive=False), lambda code, holds: done.append(code))
+            real_launch = screencast.launch
+            if launch:
+                screencast.launch = launch
+            try:
+                s.start()
+                ov = s.overlays[0]
+                ov.arm(QRectF(0, 0, 120, 90))
+                key(s, ov, Qt.Key.Key_Return)
+                assert wait(lambda: done or (recording.current() is not None and recording.current().proc))
+                action(recording.current())
+                assert wait(lambda: done, 60), "the recording never finished"
+            finally:
+                screencast.launch = real_launch
+            return done[0]
+
+        before = len(list(rec_dir.glob("Recording_*")))
+        assert record_until(lambda rec: (wait(lambda: False, 1.5), os.killpg(rec.proc.pid, signal.SIGTERM))) == 0
+        assert len(list(rec_dir.glob("Recording_*"))) == before + 1, "the recorded part was lost"
+        failing = lambda *a, **k: screencast.Launch(["sh", "-c", "echo 'no such screen' >&2; exit 3"])
+        assert record_until(lambda rec: None, launch=failing) == 2
+        assert len(list(rec_dir.glob("Recording_*"))) == before + 1, "a failed recording was saved"
+
+        # The tray takes the recording over (so screenshots still work meanwhile);
+        # the tray icon, its menu and the shortcut stop it.
+        from flatshot.tray import TrayApp
+
+        config.Config(record_dir=str(rec_dir), notify=False, clipboard="none", record_countdown=0).save()
+        tray = TrayApp(app)
+        tray.record()
+        assert wait(lambda: tray.session is not None and tray.session.overlays)
+        ov = tray.session.overlays[0]
+        ov.arm(QRectF(10, 10, 200, 120))
+        key(tray.session, ov, Qt.Key.Key_Return)
+        assert wait(lambda: tray.session is None and tray.recording is not None
+                    and tray.recording.state == "recording"), "the tray didn't take the recording over"
+        assert tray.menu_actions == {} or tray.menu_actions["record"].text().startswith("Stop recording")
+        wait(lambda: False, 0.6)
+        tray.record()  # the shortcut again: stop
+        assert wait(lambda: tray.recording is None, 60), "the tray couldn't stop the recording"
+        assert len(list(rec_dir.glob("Recording_*.mp4"))) == 3
+    finally:
+        capture.grab_desktop, windows.WindowFinder.supported = real_grab, real_supported
+        if forced is None:
+            os.environ.pop("FLATSHOT_RECORDER", None)
+        else:
+            os.environ["FLATSHOT_RECORDER"] = forced
+        shutil.rmtree(rec_dir, ignore_errors=True)
+    print("self-test: record tool, countdown, pause, stop and discard ok")
+
+
+def replace_cfg(cfg, **changes):
+    from dataclasses import replace
+
+    return replace(cfg, **changes)
