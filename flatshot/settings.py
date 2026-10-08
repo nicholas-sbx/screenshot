@@ -572,13 +572,24 @@ class SettingsWindow(QWidget):
                      "Show the toolbar on the monitor the pointer is on."))
         card.add(Row("Detect windows", self._toggle("detect_windows"),
                      "Hover a window and click to capture just that window. KDE Plasma."))
+        card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
+                     "In instant captures: active window, monitor, all screens, last region."))
+
+        card = self._card("Magnifier and crosshair")
+        loupe = self._toggle("show_loupe")
+        card.add(Row("Magnifier", loupe, "Zoomed pixels, coordinates and colour beside the pointer."))
+        lo, hi = config.LOUPE_SIZES
+        size = ValueSlider(self.cfg.loupe_size, lo, hi, 20, lambda v: f"{v}px")
+        size.changed.connect(lambda v: self._save(loupe_size=v))
+        size_row = card.add(Row("Magnifier size", size))
+        loupe.toggled.connect(lambda on: (size_row.setVisible(on), card.update()))
+        size_row.setVisible(self.cfg.show_loupe)
+        card.add(Row("Crosshair lines", self._toggle("show_crosshair"),
+                     "Lines across the screen through the pointer."))
 
         card = self._card("QR codes and barcodes")
         card.add(Row("Scan the screen", self._toggle("scan_codes")))
         card.add(Row("Show results", self._toggle("show_codes"), "Press Q while capturing to show or hide them."))
-
-        card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
-                     "In instant captures: active window, monitor, all screens, last region."))
 
         card = self._card("Advanced")
         combo = Combo()
@@ -652,6 +663,40 @@ class SettingsWindow(QWidget):
         then = Segmented([("none", "Nothing"), ("image", "Image"), ("folder", "Folder")], self.cfg.open_after)
         then.changed.connect(lambda v: self._save(open_after=v))
         card.add(Row("Open", then))
+
+        sound_on = self._toggle("sound")
+        card.add(Row("Play a sound", sound_on))
+        sound_file = self._line("sound_file", "The desktop's screenshot sound")
+        choose = Button("Choose…")
+        test = Button("Play")
+        box = QWidget()
+        line = QHBoxLayout(box)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        for w, stretch in ((sound_file, 1), (choose, 0), (test, 0)):
+            line.addWidget(w, stretch)
+        sound_row = card.add(Row("Sound file", None, "Leave empty for the desktop's own. OGG, WAV, FLAC or MP3.",
+                                 below=box))
+
+        def pick_sound():
+            path, _ = QFileDialog.getOpenFileName(self, "Sound", sound_file.text() or "/usr/share/sounds",
+                                                  "Sounds (*.oga *.ogg *.wav *.flac *.mp3 *.opus)")
+            if path:
+                sound_file.setText(path)
+                self._save(sound_file=path)
+
+        def try_sound():
+            from flatshot import sound
+
+            self._save(sound_file=sound_file.text().strip())
+            sound_row.error.setVisible(not sound.play(self.cfg.sound_file))
+            sound_row.error.setText("Couldn't play it: no such file, or no player (pw-play, paplay, "
+                                    "ffplay or canberra-gtk-play) installed.")
+
+        choose.clicked.connect(pick_sound)
+        test.clicked.connect(try_sound)
+        sound_on.toggled.connect(lambda on: (sound_row.setVisible(on), card.update()))
+        sound_row.setVisible(self.cfg.sound)
         card.add(Row("Run a command", None, "{path} is replaced with the image file.",
                      below=self._line("run_command", "curl -F file=@{path} https://example.com/upload")))
 

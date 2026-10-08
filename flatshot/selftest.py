@@ -403,17 +403,79 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
         p.end()
         return img
 
-    annotated()  # warm up font loading
-    reference = annotated()
     settings = SettingsWindow(config.load(), GlobalShortcuts())
     settings.resize(760, 600)
     for name in theme.THEMES:
         settings._set_theme(name)
         app.processEvents()
         assert config.load().theme == name and theme.C.ACCENT == QColor(theme.THEMES[name][9]), name
-        assert annotated() == reference, f"annotations changed with the {name} theme"
+        # Back to back with Ember, so both renders see the same fonts. The
+        # first text render after fonts change can differ, so warm up first.
+        annotated()
+        themed = annotated()
+        theme.use("ember")
+        assert annotated() == themed, f"annotations changed with the {name} theme"
+        theme.use(name)
         if out_dir:
             settings.grab().save(str(Path(out_dir) / f"settings-{name}.png"))
     settings._set_theme("ember")
     settings.close()
     print(f"self-test: pin toggle and {len(theme.THEMES)} themes ok")
+
+    # Magnifier / crosshair switches and size: each changes what's painted.
+    def overlay_with(**cfg_changes) -> QImage:
+        session = Session(config.Config(save_dir=str(tmp / "x"), notify=False, clipboard="none", **cfg_changes),
+                          Request(image=str(src), scan=False), Notifier(interactive=False), lambda *a: None)
+        session.start()
+        ov = session.overlays[0]
+        ov.resize(ov.base.deviceIndependentSize().toSize())
+        ov.toolbar.hide()
+        ov.cursor_pos = QPointF(200, 200)
+        session.pointer_overlay = None  # no hint pill
+        shot = ov.grab().toImage()
+        session.cancel()
+        app.processEvents()
+        return shot
+
+    both = overlay_with()
+    no_loupe = overlay_with(show_loupe=False)
+    no_lines = overlay_with(show_crosshair=False)
+    bare = overlay_with(show_loupe=False, show_crosshair=False)
+    big = overlay_with(loupe_size=240)
+    variants = [both, no_loupe, no_lines, bare, big]
+    same = [(i, j) for i in range(5) for j in range(i + 1, 5) if variants[i] == variants[j]]
+    assert not same, f"magnifier / crosshair settings changed nothing: {same}"
+    # Far from the pointer, with neither, the overlay is just the shaded screen.
+    assert bare.pixel(600, 450) == no_loupe.pixel(600, 450)
+    assert config.Config(loupe_size=5).loupe_size == config.LOUPE_SIZES[0]
+
+    # Sound: a successful capture runs the player with the chosen file; cancelling doesn't.
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    played = tmp / "played.txt"
+    fake = bin_dir / "pw-play"
+    fake.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{played}'\n")
+    fake.chmod(0o755)
+    clip = tmp / "shutter.wav"
+    clip.write_bytes(b"RIFF")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{bin_dir}:{old_path}"
+    try:
+        for sound_on, action in ((True, "cancel"), (True, "capture"), (False, "capture")):
+            done = []
+            session = Session(config.Config(save_dir=str(tmp / "sound"), notify=False, clipboard="none",
+                                            sound=sound_on, sound_file=str(clip)),
+                              Request(image=str(src), scan=False), Notifier(interactive=False),
+                              lambda code, holds: done.append(code))
+            session.start()
+            if action == "cancel":
+                session.cancel()
+            else:
+                session.capture(session.overlays[0], QRectF(0, 0, 40, 40))
+            wait(lambda: done)
+        wait(lambda: played.exists())
+        time.sleep(0.2)
+        assert played.read_text().split() == [str(clip.resolve())], played.read_text()
+    finally:
+        os.environ["PATH"] = old_path
+    print("self-test: magnifier, crosshair and sound settings ok")

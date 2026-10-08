@@ -302,9 +302,9 @@ class Overlay(QWidget):
                 self._paint_codes(p)
         if self.sel_rect is not None:
             self._paint_selection(p, self.sel_rect)
-        elif region and self.cursor_pos is not None:
+        elif region and self.cursor_pos is not None and self.ctl.cfg.show_crosshair:
             self._paint_crosshair(p, self.cursor_pos)
-        if region and self.cursor_pos is not None and self._loupe_allowed():
+        if region and self.cursor_pos is not None and self.ctl.cfg.show_loupe and self._loupe_allowed():
             self._paint_loupe(p, self.cursor_pos)
         if self.sel_rect is None and self is self.ctl.pointer_overlay:
             self._paint_hint(p)
@@ -362,7 +362,8 @@ class Overlay(QWidget):
         p.drawLine(QPointF(0, y), QPointF(self.width(), y))
 
     def _paint_loupe(self, p: QPainter, pos: QPointF):
-        cells, size = 15, 120.0
+        size = float(self.ctl.cfg.loupe_size)
+        cells = round(size / 8) | 1  # ~8 px per pixel, odd so one cell is the centre
         dpr = self.dpr()
         px, py = int(pos.x() * dpr), int(pos.y() * dpr)
         x = pos.x() + 24 if pos.x() + 24 + size < self.width() else pos.x() - 24 - size

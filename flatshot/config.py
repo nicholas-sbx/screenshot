@@ -30,6 +30,7 @@ def _default_dir() -> str:
 
 FORMAT_EXTENSIONS = ("png", "jpg", "jpeg", "webp", "avif", "jxl")
 CLIPBOARD = ("image", "path", "none")
+LOUPE_SIZES = (80, 320)  # smallest, largest
 OPEN_AFTER = ("none", "image", "folder")
 BACKENDS = ("auto", "kwin", "spectacle", "grim", "gnome-screenshot", "qt")
 
@@ -46,9 +47,14 @@ class Config:
     notify: bool = True
     open_after: str = "none"  # none | image | folder
     run_command: str = ""  # shell command, {path} is replaced by the quoted file path
+    sound: bool = False  # play a sound after a capture
+    sound_file: str = ""  # empty: the desktop's screenshot sound
     theme: str = "ember"  # see theme.THEMES
     # Capture
     dim_opacity: int = 60  # screen shading in %, 0 turns it off
+    show_loupe: bool = True  # magnifier with coordinates and colour
+    loupe_size: int = 120  # magnifier size in logical px
+    show_crosshair: bool = True
     detect_windows: bool = True  # hover + click a window to capture it (KDE)
     scan_codes: bool = True
     show_codes: bool = True
@@ -74,6 +80,7 @@ class Config:
             self.backend = "auto"
         self.dim_opacity = max(0, min(int(self.dim_opacity), 90))
         self.quality = max(1, min(int(self.quality), 100))
+        self.loupe_size = max(LOUPE_SIZES[0], min(int(self.loupe_size), LOUPE_SIZES[1]))
         self.format = str(self.format).lower().lstrip(".")
         if self.format == "jpeg":
             self.format = "jpg"

@@ -24,12 +24,13 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Save as PNG, JPEG, WebP, AVIF or JPEG XL**, with a quality slider for the lossy formats. WebP, AVIF and JPEG XL appear when Qt has the plugins: `qt6-imageformats` and `kimageformats`.
 - **After-capture actions** you choose in settings: save to a folder, copy the image or its path, show a notification, open the image or folder, or run your own command (for example an upload script).
 - **Mouse pointer** can be included in instant captures (off by default).
+- **Capture sound** (off by default): plays the desktop's screenshot sound, or a file you choose, after each capture. It uses an audio player you already have (`pw-play`, `paplay`, `ffplay` or `canberra-gtk-play`), runs in the background and never delays the capture.
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate (for hiding secrets) and numbered counters. It has 7 colours, 3 stroke sizes, and undo/redo.
 - **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
-- A **loupe** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. A size label shows the selection's real pixel size.
+- A **magnifier** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. You can resize it (80–320 px) or turn it off, and turn off the crosshair lines too. A size label shows the selection's real pixel size.
 - **Multi-monitor and HiDPI aware.** Output is saved at full native resolution with annotations drawn in at that resolution.
 
 ## Install
@@ -155,7 +156,12 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "notify": true,
   "open_after": "none",
   "run_command": "",
+  "sound": false,
+  "sound_file": "",
   "dim_opacity": 60,
+  "show_loupe": true,
+  "loupe_size": 120,
+  "show_crosshair": true,
   "detect_windows": true,
   "scan_codes": true,
   "show_codes": true,
@@ -184,6 +190,8 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   | `{n}` | a counter that goes up with every capture that uses it. `{n:4}` pads it to `0001` |
 
   A `/` in `filename` makes subfolders. Slashes, control characters and leading dots are removed from token values, so a window title can never point outside the folder. The extension is added from `format`. `{app}` and `{title}` are known on KDE Plasma, Sway and Hyprland.
+- `sound`: play a sound after each capture. `sound_file` is the file to play; empty means the desktop's screenshot sound.
+- `show_loupe`, `loupe_size` (80–320, in logical pixels) and `show_crosshair`: the magnifier and the crosshair lines while selecting.
 - `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.

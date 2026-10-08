@@ -424,6 +424,7 @@ class Session:
         self.done = True
         if self.pin_mode:
             pin.show(image, at)
+            self._play_sound()
             self._finish(0, False)
             return
         try:
@@ -433,9 +434,16 @@ class Session:
             return
         if result.path and result.saved:
             print(result.path, flush=True)
+        self._play_sound()
         if self.cfg.notify:
             self._notify(result)
         self._finish(0, result.holds_clipboard)
+
+    def _play_sound(self):
+        if self.cfg.sound:
+            from flatshot import sound
+
+            sound.play(self.cfg.sound_file)
 
     def _notify(self, result: output.Delivery):
         w, h = result.size
