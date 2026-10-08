@@ -95,7 +95,10 @@ def run() -> int:
     assert ctl.toolbar_overlay is ov and ov.toolbar.isVisibleTo(ov), "toolbar not on the active monitor"
     assert ctl.dim.alpha() == round(45 * 2.55)
     if os.environ.get("FLATSHOT_EXPECT_LAYER_SHELL") == "1":
-        assert getattr(ov, "_layer_shell", None) is not None, "overlay is not a layer-shell surface"
+        from flatshot import layershell
+
+        assert getattr(ov, "_layer_shell", None) is not None, \
+            f"overlay is not a layer-shell surface: {layershell.status}"
         for _ in range(100):  # wait for the compositor's configure
             if ov.windowHandle().isExposed():
                 break
