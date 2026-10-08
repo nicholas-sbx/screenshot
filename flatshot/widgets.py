@@ -5,7 +5,7 @@ from flatshot.qt import (
 )
 
 from flatshot import icons
-from flatshot.theme import C, SWATCHES, font
+from flatshot.theme import C, SWATCHES, font, is_light
 
 # (tool id, label, shortcut key)
 TOOLS = [
@@ -68,7 +68,7 @@ class IconButton(_Button):
         fg = C.SOFT
         if self.active:
             p.setBrush(C.ACCENT)
-            fg = C.INK
+            fg = C.ON_ACCENT
         elif self.toggled_on and not self.isDown():
             p.setBrush(C.HOVER if self.underMouse() else C.RAISED)
             fg = C.CODE
@@ -107,7 +107,7 @@ class Swatch(_Button):
             p.drawRoundedRect(QRectF(c.x() - 11, c.y() - 11, 22, 22), 7.5, 7.5)
             p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(SWATCHES[self.index])
-        if self.index == len(SWATCHES) - 1:  # ink on ink needs an edge
+        if is_light(SWATCHES[self.index]) == is_light(C.BASE):  # e.g. ink on a dark toolbar needs an edge
             p.setPen(QPen(C.LINE, 1.2))
         p.drawRoundedRect(QRectF(c.x() - 7, c.y() - 7, 14, 14), 4.5, 4.5)
 
@@ -232,6 +232,9 @@ class Toolbar(_Draggable):
             row.addWidget(b)
         row.addWidget(Divider(self))
 
+        self.pin_button = IconButton(ctl, "pin", "", self)
+        self.pin_button.clicked.connect(ctl.toggle_pin)
+        row.addWidget(self.pin_button)
         screen = IconButton(ctl, "screen", "Capture whole screen  ·  Enter", self)
         screen.clicked.connect(lambda: ctl.capture(self.parentWidget(), None))
         row.addWidget(screen)
@@ -248,6 +251,9 @@ class Toolbar(_Draggable):
         for s in self.swatches:
             s.set_selected(s.index == self.ctl.color_index)
         self.size_button.set_size(self.ctl.size)
+        self.pin_button.set_active(self.ctl.pin_mode)
+        self.pin_button.hint = ("Pinning: the capture stays on screen, not saved  ·  K" if self.ctl.pin_mode
+                                else "Pin the capture to the screen instead of saving it  ·  K")
         n = self.ctl.code_count()
         found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
         if self.ctl.codes_visible:

@@ -132,6 +132,12 @@ def _codes_off(p, c):
     p.drawLine(QPointF(4, 20), QPointF(20, 4))
 
 
+def _pin(p, c):
+    p.drawPath(_path([(10, 4.5), (10, 9.5), (7, 13.5), (17, 13.5), (14, 9.5), (14, 4.5)]))
+    p.drawLine(QPointF(8.5, 4.5), QPointF(15.5, 4.5))
+    p.drawLine(QPointF(12, 13.5), QPointF(12, 20))
+
+
 def _check(p, c):
     p.drawPath(_path([(5, 12.5), (10, 17.5), (19, 7)]))
 
@@ -141,7 +147,7 @@ _ICONS = {
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate,
     "counter": _counter, "undo": _undo, "redo": _redo, "screen": _screen,
     "copy": _copy, "open": _open, "close": _close, "check": _check,
-    "codes": _codes, "codes-off": _codes_off,
+    "codes": _codes, "codes-off": _codes_off, "pin": _pin,
 }
 
 

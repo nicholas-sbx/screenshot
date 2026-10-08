@@ -4,7 +4,7 @@ notification actions, and the target of `flatshot` invocations."""
 import sys
 from pathlib import Path
 
-from flatshot import config, ipc, output, pin
+from flatshot import config, ipc, output, pin, theme
 from flatshot.notify import Notifier
 from flatshot.qt import QAction, QIcon, QImage, QMenu, QObject, QSystemTrayIcon, QTimer
 from flatshot.capture import parse_geometry
@@ -129,6 +129,7 @@ class TrayApp(QObject):
         if self.session is not None:
             return  # one capture at a time
         cfg = config.load()  # pick up settings changes
+        theme.use(cfg.theme)
         request = Request(mode=mode, rect=rect, pin=pinned, image=image)
         self.session = Session(cfg, request, self.notifier, self._finished, self._on_action)
         QTimer.singleShot(delay_ms, self.session.start)

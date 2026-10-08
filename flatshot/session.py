@@ -19,7 +19,7 @@ from flatshot.widgets import TOOLS
 
 TOOL_KEYS = {keyval(getattr(Qt.Key, f"Key_{key}")): name for name, _, key in TOOLS}
 K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in
-     ["Escape", "Return", "Enter", "Backspace", "Z", "Y", "S", "C", "Q", "I", "1", "BracketLeft", "BracketRight"]}
+     ["Escape", "Return", "Enter", "Backspace", "Z", "Y", "S", "C", "Q", "I", "K", "1", "BracketLeft", "BracketRight"]}
 
 # region: the overlay. The rest deliver straight away, without any UI:
 # screens (every monitor), monitor (the one under the pointer), window (the
@@ -64,6 +64,7 @@ class Session:
         self.dim = QColor(theme.C.DIM)
         self.dim.setAlpha(round(cfg.dim_opacity * 2.55))
         self.codes_visible = cfg.show_codes
+        self.pin_mode = request.pin  # the capture is pinned to the screen instead of saved
         self.overlays: list[Overlay] = []
         self.pointer_overlay: Overlay | None = None  # where the mouse is
         self.toolbar_overlay: Overlay | None = None  # where the toolbar is
@@ -260,6 +261,10 @@ class Session:
             self.text_edit[1].size = self.size
         self.refresh()
 
+    def toggle_pin(self):
+        self.pin_mode = not self.pin_mode
+        self.refresh()
+
     def toggle_codes(self):
         self.codes_visible = not self.codes_visible
         self.refresh()
@@ -356,6 +361,8 @@ class Session:
             self.capture(target, None)
         elif not ctrl and k == K["Q"]:
             self.toggle_codes()
+        elif not ctrl and k == K["K"]:
+            self.toggle_pin()
         elif not ctrl and k == K["I"]:
             self.copy_color(target)
         elif not ctrl and k in TOOL_KEYS:
@@ -415,7 +422,7 @@ class Session:
     def _deliver(self, image: QImage, shot: output.Shot | None = None, at: QRect | None = None):
         """``at``: where the image came from, in global logical coordinates."""
         self.done = True
-        if self.request.pin:
+        if self.pin_mode:
             pin.show(image, at)
             self._finish(0, False)
             return

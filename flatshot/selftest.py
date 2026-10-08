@@ -367,3 +367,53 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     wait(lambda: done)
     assert done == [0] and not ctl.overlays, done
     print("self-test: instant modes, last region, templates, pin and colour picker ok")
+
+    # Toolbar pin toggle (K): the drag still captures at once, but pins instead of saving.
+    from flatshot.qt import QRectF
+    done = []
+    pin_out = tmp / "pin-toggle"
+    ctl = Session(config.Config(save_dir=str(pin_out), notify=False, clipboard="none"),
+                  Request(image=str(src), scan=False), Notifier(interactive=False),
+                  lambda code, holds: done.append(code))
+    ctl.start()
+    ov = ctl.overlays[0]
+    ov.toolbar.pin_button.click()
+    assert ctl.pin_mode and ov.toolbar.pin_button.active
+    ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(Qt.Key.Key_K), Qt.KeyboardModifier.NoModifier, "k"))
+    assert not ctl.pin_mode
+    ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(Qt.Key.Key_K), Qt.KeyboardModifier.NoModifier, "k"))
+    ctl.capture(ov, QRectF(10, 10, 60, 40))
+    wait(lambda: done)
+    assert done == [0] and pin.open_count() == 1 and not pin_out.exists(), (done, pin.open_count())
+    pin._open[0].close()
+
+    # Themes: every palette switches the UI colours; annotations don't follow.
+    from flatshot import shapes, theme
+    from flatshot.settings import SettingsWindow
+    from flatshot.shortcuts import GlobalShortcuts
+
+    def annotated() -> QImage:
+        img = QImage(120, 60, QImage.Format.Format_RGB32)
+        img.fill(QColor("#808080"))
+        p = QPainter(img)
+        text = shapes.Text(QPointF(6, 6), theme.SWATCHES[0], 2)
+        text.text, text.editing = "Ab", False
+        text.paint(p, None)
+        shapes.Counter(QPointF(90, 30), theme.SWATCHES[5], 2, 7).paint(p, None)
+        p.end()
+        return img
+
+    annotated()  # warm up font loading
+    reference = annotated()
+    settings = SettingsWindow(config.load(), GlobalShortcuts())
+    settings.resize(760, 600)
+    for name in theme.THEMES:
+        settings._set_theme(name)
+        app.processEvents()
+        assert config.load().theme == name and theme.C.ACCENT == QColor(theme.THEMES[name][9]), name
+        assert annotated() == reference, f"annotations changed with the {name} theme"
+        if out_dir:
+            settings.grab().save(str(Path(out_dir) / f"settings-{name}.png"))
+    settings._set_theme("ember")
+    settings.close()
+    print(f"self-test: pin toggle and {len(theme.THEMES)} themes ok")

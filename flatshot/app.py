@@ -73,6 +73,7 @@ def make_app() -> QApplication:
     app.setApplicationVersion(__version__)
     app.setDesktopFileName("flatshot")
     app.setWindowIcon(QIcon(theme.ICON_PATH))
+    theme.use(config.load().theme)
     app.setQuitOnLastWindowClosed(False)
     theme.apply(app)
     return app

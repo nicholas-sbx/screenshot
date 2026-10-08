@@ -1,9 +1,9 @@
 """Settings window: a sidebar of pages, each a stack of quiet grouped cards.
 Changes are saved as they're made and apply from the next capture."""
 
-from flatshot import __version__, autostart, config, output
+from flatshot import __version__, autostart, config, output, theme
 from flatshot.qt import (
-    QAbstractButton, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon, QKeySequence, QLabel,
+    QAbstractButton, QApplication, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon, QKeySequence, QLabel,
     QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, QStackedWidget, Qt, QVBoxLayout,
     QWidget, Signal, keyval,
 )
@@ -13,7 +13,9 @@ from flatshot.theme import C, ICON_PATH, font
 MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in
                  ("Control", "Shift", "Alt", "Meta", "AltGr", "Super_L", "Super_R", "Hyper_L", "Hyper_R")}
 
-STYLE = f"""
+
+def _style() -> str:
+    return f"""
 QWidget#window, QWidget#page {{ background: {C.BASE.name()}; }}
 QLabel {{ color: {C.TEXT.name()}; background: transparent; font-size: 13px; font-weight: 400; }}
 QLabel[role="hint"] {{ color: {C.MUTED.name()}; font-size: 12px; }}
@@ -69,7 +71,7 @@ class Toggle(QAbstractButton):
         on = self.isChecked()
         p.setBrush(C.ACCENT if on else C.LINE)
         p.drawRoundedRect(QRectF(self.rect()), 10, 10)
-        p.setBrush(C.TEXT)
+        p.setBrush(C.KNOB if on else C.TEXT)
         x = self.width() - 18 if on else 2
         p.drawEllipse(QRectF(x, 2, 16, 16))
 
@@ -415,7 +417,7 @@ class SettingsWindow(QWidget):
         self.setWindowTitle("Flatshot Settings")
         self.setWindowIcon(QIcon(ICON_PATH))
         self.setObjectName("window")
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(_style())
         self.resize(760, 560)
         self.setMinimumSize(640, 440)
 
@@ -432,6 +434,7 @@ class SettingsWindow(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(nav)
         root.addWidget(self.stack, 1)
+        self.nav = nav
         nav.setStyleSheet(f"background: {C.INK.name()};")
 
         pages = [("General", self._general), ("Capture", self._capture),
@@ -489,10 +492,24 @@ class SettingsWindow(QWidget):
         edit.editingFinished.connect(lambda: self._save(**{key: edit.text().strip()}))
         return edit
 
+    def _set_theme(self, name: str):
+        self._save(theme=name)
+        theme.use(name)
+        theme.apply(QApplication.instance())
+        self.setStyleSheet(_style())
+        self.nav.setStyleSheet(f"background: {C.INK.name()};")
+        for w in self.findChildren(QWidget):
+            w.update()
+
     # -- pages ---------------------------------------------------------------
 
     def _general(self):
         card = self._card()
+        look = Segmented([(key, t[0]) for key, t in theme.THEMES.items()],
+                         self.cfg.theme if self.cfg.theme in theme.THEMES else "ember")
+        look.changed.connect(self._set_theme)
+        card.add(Row("Theme", look, "Colours of the toolbar, the settings and the other panels. "
+                                    "Your drawing colours stay the same."))
         start = Toggle(autostart.enabled())
         start.toggled.connect(autostart.set_enabled)
         card.add(Row("Start at login", start, "Keeps Flatshot in the system tray so shortcuts work."))

@@ -15,6 +15,7 @@ HINTS = {
     "windows": "Drag to capture  ·  Click a window to capture it  ·  Esc to cancel",
     "text": "Click to place text  ·  Enter to finish  ·  R to capture",
 }
+PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  K to save instead"
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
 
 
@@ -347,8 +348,10 @@ class Overlay(QWidget):
         p.drawRect(r.adjusted(-1, -1, 1, 1))
         dpr = self.dpr()
         label = f"{round(r.width() * dpr)} × {round(r.height() * dpr)}"
+        if self.ctl.pin_mode:
+            label = f"Pin  ·  {label}"
         self._pill(p, label, QPointF(r.left(), r.top() - 10), anchor_bottom=True,
-                   bg=C.ACCENT, fg=C.INK, keep_inside=True)
+                   bg=C.ACCENT, fg=C.ON_ACCENT, keep_inside=True)
 
     def _paint_crosshair(self, p: QPainter, pos: QPointF):
         color = QColor(C.ACCENT)
@@ -389,7 +392,9 @@ class Overlay(QWidget):
             tool = "codes"
         elif tool == "region" and self.windows:
             tool = "windows"
-        text = self.ctl.hint or HINTS.get(tool, DRAW_HINT)
+        if self.ctl.pin_mode and self.ctl.tool == "region":
+            tool = "pin"
+        text = self.ctl.hint or (PIN_HINT if tool == "pin" else HINTS.get(tool, DRAW_HINT))
         fm = QFontMetricsF(font(12, QFont.Weight.Medium))
         x = (self.width() - fm.horizontalAdvance(text)) / 2 - 14
         self._pill(p, text, QPointF(x, self.height() - 52))

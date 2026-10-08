@@ -9,7 +9,7 @@ from flatshot.qt import (
     QRectF, Qt,
 )
 
-from flatshot.theme import C, SIZES, font, is_light
+from flatshot.theme import C, OUTLINE_DARK, OUTLINE_LIGHT, SIZES, font, is_light
 
 
 def _pen(color: QColor, width: float) -> QPen:
@@ -204,7 +204,7 @@ class Text(Shape):
         path = QPainterPath()
         for i, line in enumerate(lines):
             path.addText(self.pos + QPointF(0, fm.ascent() + i * fm.lineSpacing()), f, line)
-        outline = QColor(C.TEXT if not is_light(self.color) else C.INK)
+        outline = QColor(OUTLINE_LIGHT if not is_light(self.color) else OUTLINE_DARK)
         outline.setAlpha(210)
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -237,7 +237,7 @@ class Counter(Shape):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(self.color)
         p.drawEllipse(box)
-        p.setPen(C.INK if is_light(self.color) else C.TEXT)
+        p.setPen(OUTLINE_DARK if is_light(self.color) else OUTLINE_LIGHT)
         p.setFont(font(round(r * 1.05), QFont.Weight.Bold))
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, str(self.number))
         p.restore()

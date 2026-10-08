@@ -4,7 +4,7 @@ A small ShareX-style screenshot tool for Linux on Wayland, built mainly for KDE 
 
 Flatshot lives in your system tray. Press your shortcut and the screen freezes. **Drag a region, or click a window, and it's saved and copied straight away.** If you want to mark it up first, use the floating toolbar to draw on the frozen screen, then drag. Any **QR codes and barcodes** on screen are found automatically, each with a small card for copying or opening it.
 
-The app is native Qt, but every pixel is custom-painted. It ignores your Qt style, colour scheme, fonts and icon theme, so it looks the same on every desktop: flat, square with rounded corners, and one fixed palette.
+The app is native Qt, but every pixel is custom-painted. It ignores your Qt style, colour scheme, fonts and icon theme, so it looks the same on every desktop: flat, square with rounded corners. Pick one of five colour themes in settings: Ember (the default), Graphite, Nord, Dusk or the light Paper.
 
 | | |
 |---|---|
@@ -18,7 +18,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Instant region capture**: drag and release to save to `~/Pictures/Screenshots` and copy to the clipboard.
 - **Window capture** (KDE): hover over where a window was when the screen freezes and it lights up; click to capture just that window. Clicking empty desktop captures the whole monitor.
 - **Instant captures, no selection needed**: the **active window**, the **current monitor** (the one under the pointer), **all screens**, or the **last region** you captured, each on its own shortcut. From scripts you can also capture an exact area with `--region WxH+X+Y`. Active-window capture works on KDE Plasma, Sway and Hyprland.
-- **Pin to screen**: pin a region as a small always-on-top window, for keeping a reference in view. Drag it to move, scroll to zoom, double-click or <kbd>Esc</kbd> to close, right-click to copy or save. Notifications have a **Pin** button too.
+- **Pin to screen**: keep a capture in view as a small always-on-top window. Turn on the toolbar's pin button (or press <kbd>K</kbd>) and your next drag or window click is pinned instead of saved. It still captures the moment you let go; nothing asks first. There's also a "Pin region" shortcut, `--pin`, and a **Pin** button on notifications. Drag a pin to move it, scroll to zoom, double-click or <kbd>Esc</kbd> to close, right-click to copy or save.
 - **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region), <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Print</kbd> (active window) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens). Current monitor, last region and pin have no default key; set one if you want it.
 - **Folder and file name templates**: build the path from the date, the window's app or title, the capture type, the size or a counter. For example, `~/Pictures/Screenshots/%Y-%m/{app}` sorts shots into a folder per month and app.
 - **Save as PNG, JPEG, WebP, AVIF or JPEG XL**, with a quality slider for the lossy formats. WebP, AVIF and JPEG XL appear when Qt has the plugins: `qt6-imageformats` and `kimageformats`.
@@ -108,6 +108,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | Click | capture the highlighted window, or the whole monitor |
 | <kbd>Q</kbd> | hide / show detected QR codes and barcodes |
 | <kbd>I</kbd> | copy the colour under the cursor (as `#RRGGBB`) and close |
+| <kbd>K</kbd> | pin instead of save: the next drag or click pins the capture to the screen (press again to turn off) |
 | <kbd>Enter</kbd> / <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>C</kbd> | capture whole monitor with your drawings |
 | <kbd>Esc</kbd> / right-click | cancel the current drag, or quit |
 | <kbd>R</kbd> | region tool (back to capture mode) |
@@ -161,6 +162,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "toolbar_follows_mouse": true,
   "backend": "auto",
   "include_pointer": false,
+  "theme": "ember",
   "default_tool": "region",
   "default_color": 0,
   "default_size": 1
@@ -185,10 +187,11 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
+- `theme`: `ember`, `graphite`, `nord`, `dusk` or `paper`. It changes the app's own panels only; drawing colours and what's saved stay the same.
 
 `flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file. The last region and the `{n}` counter are kept in `~/.local/state/flatshot/state.json`.
 
-## Palette: "Ember"
+## Default palette: "Ember"
 
 | | | |
 |---|---|---|
