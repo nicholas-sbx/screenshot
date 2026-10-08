@@ -248,7 +248,7 @@ The `build` workflow then:
 
 1. Runs every test.
 2. Builds the `.deb`, `.rpm`, Arch package and AppImage.
-3. Install-tests the packages on Ubuntu 24.04, Debian 12 and 13, Fedora and Arch.
+3. Install-tests the packages on Ubuntu 24.04, Debian 12 and 13, and Arch. The Fedora check is off for now (it was taking over 5 minutes), so the `.rpm` is built but not install-tested.
 4. If there is no `v<version>` tag yet, publishes the GitHub release with checksums.
 5. Updates the pacman repository on the `pacman` release, after installing Flatshot from it with pacman as a check.
 
