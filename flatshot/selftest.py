@@ -1,0 +1,154 @@
+"""Headless smoke test (``flatshot --self-test``), used by CI on every
+package. Builds a fake desktop with a QR code, runs the overlay on it,
+draws, renders and scans. Set FLATSHOT_SELFTEST_OUT=dir to keep images."""
+
+import os
+import sys
+
+from flatshot import qt
+import tempfile
+from pathlib import Path
+
+from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPointF, QRectF, Qt
+
+TEST_URL = "https://github.com/nicholas-sbx/screenshot"
+QR_IMAGE: QImage | None = None
+
+
+def _qr_image(text: str) -> QImage | None:
+    from flatshot import scanner
+
+    if not scanner.available():
+        return None
+    zx = scanner.zxingcpp
+    try:
+        if hasattr(zx, "create_barcode"):  # zxing-cpp >= 2.3
+            bitmap = zx.create_barcode(text, zx.BarcodeFormat.QRCode).to_image(scale=5)
+        else:
+            bitmap = zx.write_barcode(zx.BarcodeFormat.QRCode, text, 180, 180)
+        view = memoryview(bitmap)
+        h, w = view.shape
+        data = view.tobytes()
+    except Exception as e:  # noqa: BLE001
+        print(f"self-test: cannot generate a QR code ({e}); skipping scan check")
+        return None
+    return QImage(data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+
+
+def _fake_desktop(w=1600, h=1000) -> QImage:
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    p = QPainter(img)
+    grad = QLinearGradient(0, 0, w, h)
+    grad.setColorAt(0, QColor("#2B3A55"))
+    grad.setColorAt(1, QColor("#5C4B6E"))
+    p.fillRect(img.rect(), grad)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor("#F5F3EF"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(QRectF(120, 140, 820, 560), 14, 14)
+    p.setPen(QColor("#333"))
+    f = QFont()
+    f.setPixelSize(30)
+    p.setFont(f)
+    p.drawText(QPointF(170, 220), "Some window with text")
+    f.setPixelSize(18)
+    p.setFont(f)
+    for i in range(8):
+        p.drawText(QPointF(170, 280 + i * 34), f"Line {i + 1}: lorem ipsum dolor sit amet, consectetur")
+    qr = QR_IMAGE
+    if qr is not None:
+        p.fillRect(QRectF(1060, 240, qr.width() + 40, qr.height() + 40), QColor("white"))
+        p.drawImage(1080, 260, qr)
+    p.end()
+    return img
+
+
+def run() -> int:
+    global QR_IMAGE
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from flatshot import app as appmod, config, output, scanner, shapes
+
+    app = appmod.make_app()
+    QR_IMAGE = _qr_image(TEST_URL)
+    out_dir = os.environ.get("FLATSHOT_SELFTEST_OUT")
+    tmp = Path(tempfile.mkdtemp(prefix="flatshot-selftest-"))
+    src = tmp / "desktop.png"
+    desktop = _fake_desktop()
+    assert desktop.save(str(src)), "could not write test image"
+
+    cfg = config.Config(save_dir=str(tmp), notify=False, copy_to_clipboard=False)
+    args = appmod.parse_args(["--image", str(src)])
+    ctl = appmod.Controller(app, cfg, args)
+    ctl.start()
+    assert ctl.overlays, "no overlay was created"
+    ov = ctl.overlays[0]
+    ov.resize(ov.base.deviceIndependentSize().toSize())
+    app.processEvents()
+
+    codes = scanner.scan(desktop)
+    if QR_IMAGE is not None:
+        assert any(c.text == TEST_URL for c in codes), f"QR code not found: {codes}"
+        ctl._codes_found(codes)
+        assert ov.chips, "no code chip was shown"
+        print(f"self-test: scanner found {len(codes)} code(s)")
+    else:
+        print("self-test: zxing-cpp unavailable, scan check skipped")
+
+    dpr = ov.dpr()
+
+    def at(x, y):  # test coordinates are in image pixels
+        return QPointF(x / dpr, y / dpr)
+
+    ov.cursor_pos = at(700, 600)
+    if out_dir:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        ov.grab().save(str(Path(out_dir) / "overlay-region.png"))
+
+    for tool, a, b in [("arrow", (200, 760), (420, 640)), ("rect", (150, 170), (700, 240)),
+                       ("pixelate", (160, 330), (560, 400)), ("marker", (160, 460), (600, 460)),
+                       ("ellipse", (980, 200), (1340, 600))]:
+        shape = shapes.create(tool, at(*a), ctl.color, ctl.size)
+        shape.extend(at(*b), False)
+        ov.commit(shape)
+    ov.commit(shapes.Counter(at(140, 160), ctl.color, ctl.size, ctl.next_number()))
+    text = shapes.Text(at(460, 720), ctl.color, 2)
+    text.text = "flatshot"
+    ctl.begin_text(ov, text)
+    ctl.commit_text()
+    assert len(ov.annotations) == 7, len(ov.annotations)
+    ctl.undo()
+    assert len(ov.annotations) == 6
+    ctl.redo()
+    assert len(ov.annotations) == 7
+
+    # Keyboard: tool hotkey, typing into a text box, Enter, Ctrl+Z.
+    def key(k, text="", mods=Qt.KeyboardModifier.NoModifier):
+        ctl.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(k), mods, text))
+
+    key(Qt.Key.Key_T, "t")
+    assert ctl.tool == "text", ctl.tool
+    ctl.begin_text(ov, shapes.Text(at(1000, 760), ctl.color, 1))
+    for ch in "hi!":
+        key(Qt.Key.Key_A, ch)  # the key code doesn't matter while typing
+    key(Qt.Key.Key_Backspace)
+    key(Qt.Key.Key_Return)
+    assert ctl.text_edit is None and ov.annotations[-1].text == "hi", ov.annotations[-1]
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert len(ov.annotations) == 7
+    key(Qt.Key.Key_3, "3")
+    assert ctl.color_index == 2
+    key(Qt.Key.Key_P, "p")
+    assert ctl.tool == "pen"
+    if out_dir:
+        ov.toolbar.place()
+        ov.grab().save(str(Path(out_dir) / "overlay-draw.png"))
+
+    region = ov.render(QRectF(at(100, 100), at(1000, 800)))
+    assert abs(region.width() - 900) <= 2 and abs(region.height() - 700) <= 2, region.size()
+    saved = output.save(region, cfg)
+    assert saved.exists() and QImage(str(saved)).width() == region.width()
+    if out_dir:
+        region.save(str(Path(out_dir) / "result.png"))
+    ctl._hide_all()
+    print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
+    return 0

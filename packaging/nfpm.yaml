@@ -1,0 +1,59 @@
+# One description, three native formats: nfpm pkg -p deb|rpm|archlinux
+# Paths are relative to the repo root; VERSION comes from the environment.
+name: flatshot
+arch: all
+platform: linux
+version: ${VERSION}
+version_schema: none
+release: "1"
+section: graphics
+priority: optional
+maintainer: nicholas-sbx <nicholas-sbx@users.noreply.github.com>
+description: |
+  Region screenshots for Wayland (KDE first) with a floating draw toolbar.
+  Drag to capture instantly, or annotate first with pen, arrows, shapes,
+  text, highlighter, pixelate and counters. QR codes and barcodes on screen
+  are detected with one-click Copy / Open.
+homepage: https://github.com/nicholas-sbx/screenshot
+license: MIT
+
+contents:
+  - src: ./build/stage/flatshot
+    dst: /usr/share/flatshot/flatshot
+    type: tree
+  - src: ./packaging/flatshot-launcher
+    dst: /usr/bin/flatshot
+    file_info:
+      mode: 0755
+  - src: ./packaging/flatshot.desktop
+    dst: /usr/share/applications/flatshot.desktop
+  - src: ./packaging/flatshot.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/flatshot.svg
+  - src: ./LICENSE
+    dst: /usr/share/licenses/flatshot/LICENSE
+
+overrides:
+  deb:
+    depends:
+      - python3 (>= 3.10)
+      - python3-pyqt6
+    recommends:
+      - python3-zxing-cpp
+      - qt6-wayland
+      - wl-clipboard
+      - libnotify-bin
+    suggests:
+      - kde-spectacle | grim
+  rpm:
+    depends:
+      - python3 >= 3.10
+      - python3-pyqt6
+    recommends:
+      - python3-zxing-cpp
+      - qt6-qtwayland
+      - wl-clipboard
+      - libnotify
+  archlinux:
+    depends:
+      - python
+      - python-pyqt6

@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=Flatshot
+GenericName=Screenshot Tool
+Comment=Region screenshots with a floating draw toolbar and QR code scanning
+Exec=flatshot
+Icon=flatshot
+Terminal=false
+Categories=Graphics;Utility;
+Keywords=screenshot;capture;snip;qr;barcode;annotate;
+StartupNotify=false
+Actions=Full;Delayed;
+
+[Desktop Action Full]
+Name=Capture All Screens Now
+Exec=flatshot --full
+
+[Desktop Action Delayed]
+Name=Capture in 3 Seconds
+Exec=flatshot --delay 3
