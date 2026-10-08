@@ -17,7 +17,6 @@ joins them at the end, and turns the result into a GIF when asked.
 """
 
 import os
-import secrets
 import shutil
 import subprocess
 import threading
@@ -274,6 +273,12 @@ def segment_extension(fmt: str) -> str:
 
 # -- the screen-cast portal ------------------------------------------------------------
 
+def _token() -> str:
+    import secrets
+
+    return "flatshot_" + secrets.token_hex(6)
+
+
 class Portal(QObject):
     """One xdg-desktop-portal ScreenCast session for one monitor. ``ready``
     or ``failed`` fires once after ``start``; the session then lasts until
@@ -325,7 +330,7 @@ class Portal(QObject):
         from jeepney import MatchRule
         from jeepney.bus_messages import message_bus
 
-        token = "flatshot_" + secrets.token_hex(6)
+        token = _token()
         sender = self._conn.unique_name.lstrip(":").replace(".", "_")
         path = f"{PORTAL_PATH}/request/{sender}/{token}"
         rule = MatchRule(type="signal", interface=REQUEST, member="Response", path=path)
@@ -351,7 +356,7 @@ class Portal(QObject):
         version = self._property("version", 1)
         cursors = self._property("AvailableCursorModes", CURSOR_HIDDEN)
         results = self._request("CreateSession", "a{sv}",
-                                 {"session_handle_token": ("s", "flatshot_" + secrets.token_hex(6))})
+                                 {"session_handle_token": ("s", _token())})
         self._session = results["session_handle"][1]
         options = {"types": ("u", MONITOR), "multiple": ("b", False)}
         wanted = CURSOR_EMBEDDED if self.cursor else CURSOR_HIDDEN

@@ -10,7 +10,7 @@ from flatshot.qt import (
 
 from flatshot import layershell, shapes
 from flatshot.theme import C, font
-from flatshot.widgets import CodeChip, RecordPanel, Toolbar
+from flatshot.widgets import CodeChip, Toolbar
 
 HINTS = {
     "region": "Drag to capture  ·  Click for whole screen  ·  Esc to cancel",
@@ -75,7 +75,7 @@ class Overlay(QWidget):
         self.rec_rect: QRectF | None = None
         self.rec_window = None  # the window clicked, when the area is one
         self._rec_drag: tuple[str, QPointF, QRectF] | None = None
-        self.panel: RecordPanel | None = None
+        self.panel = None  # recordpanel.RecordPanel, made when first needed
 
         self.setWindowTitle("Flatshot")
         self.setMouseTracking(True)
@@ -126,6 +126,8 @@ class Overlay(QWidget):
                 self.panel.hide()
             return
         if self.panel is None:
+            from flatshot.recordpanel import RecordPanel
+
             self.panel = RecordPanel(self.ctl, self)
         self.panel.refresh()
         r, w, h = self.rec_rect, self.panel.width(), self.panel.height()

@@ -23,11 +23,12 @@ def info() -> dict:
         "layer-shell overlay": f"yes (scope {layershell.SCOPE})" if layer else f"no: {layershell.status}",
         "last overlay": layershell.last_overlay,
         "KWin capture helper": capture.kwin_helper() or "not installed",
-        "screen recorder": _recorder(),
     }
 
 
 def _recorder() -> str:
+    """(Not part of info(): it runs gst-inspect, and the tray answers
+    status queries on a short timeout.)"""
     from flatshot import screencast
 
     how = screencast.method()
@@ -41,7 +42,7 @@ def _lines(data: dict) -> list[str]:
 
 
 def report() -> str:
-    out = ["This flatshot:"] + _lines(info())
+    out = ["This flatshot:"] + _lines({**info(), "screen recorder": _recorder()})
     reply = ipc.query("status")
     if reply is None:
         out.append("Tray app: not running.")

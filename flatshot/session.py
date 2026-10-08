@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from flatshot import capture, config, output, pin, scanner, screencast, shapes, theme, windows
+from flatshot import capture, config, output, pin, scanner, shapes, theme, windows
 from flatshot.notify import Notifier
 from flatshot.overlay import Overlay
 from flatshot.qt import (
@@ -63,14 +63,15 @@ class Session:
         self.on_finished = on_finished
         self.on_action = on_action
         self.on_recording = on_recording
-        from flatshot import recording
-
-        self.can_record = not request.image and recording.current() is None  # one recording at a time
+        # One recording at a time. (Recording code is only imported once used,
+        # so screenshots never pay for it.)
+        recording = sys.modules.get("flatshot.recording")
+        self.can_record = not request.image and (recording is None or recording.current() is None)
         tools = {name for name, _, _ in TOOLS} - (set() if self.can_record else {"record"})
         self.tool = cfg.default_tool if cfg.default_tool in tools else "region"
         if request.record and self.can_record:
             self.tool = "record"
-        self.rec_opts = screencast.Options.from_config(cfg)
+        self._rec_opts = None
         self.countdown: int | None = None  # seconds left before recording starts
         self._countdown_overlay: Overlay | None = None
         self._countdown_timer = QTimer()
@@ -310,8 +311,19 @@ class Session:
 
     # -- recording ---------------------------------------------------------
 
+    @property
+    def rec_opts(self):
+        """The recording options (screencast.Options), from the settings."""
+        if self._rec_opts is None:
+            from flatshot import screencast
+
+            self._rec_opts = screencast.Options.from_config(self.cfg)
+        return self._rec_opts
+
     def record_problem(self) -> str | None:
         """Why recording in the chosen format can't work here (cached)."""
+        from flatshot import screencast
+
         fmt = self.rec_opts.format
         if fmt not in self._problems:
             self._problems[fmt] = screencast.problem(fmt)
@@ -383,7 +395,7 @@ class Session:
 
     def start_recording(self, overlay: Overlay):
         """Close the overlays and record the area chosen on ``overlay``."""
-        from flatshot import recording
+        from flatshot import recording, screencast
 
         rect = overlay.rec_rect
         if self.done or rect is None:
