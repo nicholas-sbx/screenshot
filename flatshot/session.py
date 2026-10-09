@@ -30,6 +30,11 @@ MODES = ("region", "screens", "monitor", "window", "last", "rect")
 DESKTOP_TIMEOUT_MS = 1500
 
 
+def _screens() -> list:
+    """The monitors as they are now: overlays built for others won't do."""
+    return [(s, s.geometry(), s.devicePixelRatio()) for s in QGuiApplication.screens()]
+
+
 def last_region() -> QRect | None:
     try:
         x, y, w, h = (int(v) for v in config.load_state()["last_region"])
@@ -126,6 +131,7 @@ class Session:
         # could take it), shown while show_pointer is on.
         self.pointer_image: QImage | None = None
         self._plain_image: QImage | None = None
+        self._prepared_for = None  # the screens the overlays were built ahead for (prepare())
         self.show_pointer = False
         self.done = False
         self.clock = timing.Clock("capture")  # (started again by start())
@@ -231,7 +237,60 @@ class Session:
                 config.update_state(last_region=[rect.x(), rect.y(), rect.width(), rect.height()])
         self._deliver(image, shot, rect)
 
+    # -- built ahead -----------------------------------------------------
+
+    def prepare(self) -> bool:
+        """Build the overlay windows and their toolbars now, before there's
+        a picture, so that start() only has to put it in and show them.
+        The tray app does this while idle, for its next capture."""
+        if self.request.image or self.mode != "region" or self.overlays or self.done:
+            return False
+        self._prepared_for = _screens()
+        for screen in QGuiApplication.screens():
+            o = Overlay(self, screen, QPixmap(), QPoint(0, 0))
+            o.add_toolbar()
+            o.prepare_window()
+            self.overlays.append(o)
+        return True
+
+    def ready_for(self, cfg: config.Config, request: Request, on_recording) -> bool:
+        """Can this prepared session take this capture? Only if nothing it
+        was built from has changed since."""
+        recording = sys.modules.get("flatshot.recording")
+        busy = recording is not None and recording.current() is not None
+        return (bool(self.overlays) and not self.done and cfg == self.cfg and request == self.request
+                and (on_recording is None) == (self.on_recording is None) and self.can_record == (not busy)
+                and self._prepared_for == _screens())
+
+    def discard(self):
+        """Let go of a prepared session that won't be used."""
+        self.done = True
+        for o in self.overlays:
+            o.release()
+            o.deleteLater()
+        self.overlays = []
+
     def _build_overlays(self, image: QImage):
+        if self.overlays and not self.request.image and self._prepared_for == _screens():
+            # Built ahead: just the pictures.
+            for o in self.overlays:
+                phys = capture.to_pixels(image, o.target_screen.geometry())
+                pm = QPixmap.fromImage(image.copy(phys))
+                pm.setDevicePixelRatio(phys.width() / max(1, o.target_screen.geometry().width()))
+                o.set_picture(pm, phys.topLeft())
+                if self.pointer_image is not None:
+                    o.toolbar.pointer_button.show()
+                    o.toolbar.adjustSize()
+            self.clock.step("pictures ready", "windows built ahead")
+        else:
+            for o in self.overlays:  # (built ahead for other monitors)
+                o.release()
+                o.deleteLater()
+            self.overlays = []
+            self._build_new_overlays(image)
+        self._show_overlays()
+
+    def _build_new_overlays(self, image: QImage):
         if self.request.image:
             # Show the image on the screen under the mouse, scaled to fit.
             screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
@@ -240,14 +299,21 @@ class Session:
             pm.setDevicePixelRatio(max(image.width() / g.width(), image.height() / g.height(), 1.0))
             self.overlays.append(Overlay(self, screen, pm, QPoint(0, 0)))
         else:
+            pictures = []
             for screen in QGuiApplication.screens():
                 g = screen.geometry()
                 phys = capture.to_pixels(image, g)
                 pm = QPixmap.fromImage(image.copy(phys))
                 pm.setDevicePixelRatio(phys.width() / max(1, g.width()))
-                self.overlays.append(Overlay(self, screen, pm, phys.topLeft()))
+                pictures.append((screen, pm, phys.topLeft()))
+            self.clock.step("pictures ready")
+            for screen, pm, origin in pictures:
+                self.overlays.append(Overlay(self, screen, pm, origin))
         for o in self.overlays:
             o.add_toolbar()
+        self.clock.step("windows built")
+
+    def _show_overlays(self):
         # Best guess until the pointer enters an overlay (on Wayland the
         # cursor position is only known once it does).
         start_screen = QGuiApplication.screenAt(QCursor.pos())

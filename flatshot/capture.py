@@ -16,6 +16,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 
 from pathlib import Path
 
@@ -100,11 +101,15 @@ def _kwin_once(helper: str, pointer: bool) -> QImage:
     proc = subprocess.Popen([helper] + (["--cursor"] if pointer else []), stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     try:
+        started = time.monotonic()
         head = proc.stdout.readline()  # (unbuffered: no pixels read along with it)
         if not head:
             proc.wait(15)
             raise CaptureError(proc.stderr.read().decode(errors="replace").strip() or f"exit {proc.returncode}")
-        return _read_raw(head, proc.stdout.fileno())
+        replied = time.monotonic()
+        image = _read_raw(head, proc.stdout.fileno())
+        _note_times(started, replied)
+        return image
     finally:
         proc.stdout.close()
         proc.stderr.close()
@@ -112,6 +117,16 @@ def _kwin_once(helper: str, pointer: bool) -> QImage:
             proc.wait(15)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+# How the last KWin capture's time divided, for --verbose.
+_kwin_times = ""
+
+
+def _note_times(started: float, replied: float):
+    global _kwin_times
+    now = time.monotonic()
+    _kwin_times = f"KWin answered in {(replied - started) * 1000:.0f} ms, pixels in {(now - replied) * 1000:.0f} ms"
 
 
 def _read_raw(head: bytes, fd: int) -> QImage:
@@ -195,6 +210,7 @@ class _KWinServer:
 
     def grab(self, pointer: bool) -> QImage:
         r, w = _big_pipe()
+        started = time.monotonic()
         try:
             with self.lock:  # (one request at a time; the pixels are read after, side by side)
                 try:
@@ -208,7 +224,10 @@ class _KWinServer:
                 raise _ServerGone("flatshot-kwin-grab --serve stopped")
             if head.startswith(b"ERR "):
                 raise CaptureError(head[4:].decode(errors="replace").strip())
-            return _read_raw(head, r)
+            replied = time.monotonic()
+            image = _read_raw(head, r)
+            _note_times(started, replied)
+            return image
         finally:
             os.close(r)
             if w >= 0:
@@ -359,8 +378,7 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                     errors.append(f"{name}: {e}")
                     continue
                 second.join(5)  # (both ask for the same frame: about as quick as one)
-                last_grab = f"{name}{' (kept running)' if name == 'kwin' and kwin_kept_running() else ''}" \
-                    ", with and without the pointer at once" + (
+                last_grab = _describe(name, ", with and without the pointer at once") + (
                     "" if also_pointer else " (the one with the pointer failed)")
                 return image
         if name == "qt":
@@ -372,8 +390,7 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                 continue
         try:
             image = fn(pointer)
-            last_grab = f"{name}{' (kept running)' if name == 'kwin' and kwin_kept_running() else ''}" \
-                f"{', with the pointer' if pointer else ''}" + (
+            last_grab = _describe(name, ", with the pointer" if pointer else "") + (
                 f" (after {'; '.join(errors)})" if errors else "")
             return image
         except subprocess.CalledProcessError as e:
@@ -382,6 +399,15 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
         except Exception as e:  # noqa: BLE001 — try the next backend
             errors.append(f"{name}: {e}")
     raise CaptureError("could not capture the screen\n  " + "\n  ".join(errors))
+
+
+def _describe(name: str, what: str) -> str:
+    """Which helper took it, for --verbose: for KWin's, whether it was kept
+    running and how the time divided."""
+    if name != "kwin":
+        return name + what
+    notes = (["kept running"] if kwin_kept_running() else []) + ([_kwin_times] if _kwin_times else [])
+    return f"kwin{what}" + (f" ({'; '.join(notes)})" if notes else "")
 
 
 def _also(fn, out: list):

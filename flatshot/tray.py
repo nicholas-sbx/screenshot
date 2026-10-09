@@ -59,6 +59,7 @@ class TrayApp(QObject):
 
         self.server = ipc.Server(status=diagnose.info)
         self.session: Session | None = None
+        self._spare: Session | None = None  # the next region capture, its windows built ahead
         self.recording: recording.Recording | None = None
         self._clock = QTimer(self)
         self._clock.setInterval(1000)
@@ -82,6 +83,9 @@ class TrayApp(QObject):
         from flatshot import capture
 
         capture.warm_up(config.load().backend)  # (the KWin helper, ready for the first capture)
+        QTimer.singleShot(1500, self._prepare_spare)
+        for signal in (self.app.screenAdded, self.app.screenRemoved):
+            signal.connect(lambda *_: QTimer.singleShot(1500, self._prepare_spare))
         return True
 
     # -- tray ----------------------------------------------------------------
@@ -178,9 +182,33 @@ class TrayApp(QObject):
         cfg = config.load()  # pick up settings changes
         theme.use(cfg.theme)
         request = Request(mode=mode, rect=rect, pin=pinned, image=image, record=record)
-        self.session = Session(cfg, request, self.notifier, self._finished, self._on_action,
-                               on_recording=None if self.recording else self._recording_started)
+        on_recording = None if self.recording else self._recording_started
+        spare, self._spare = self._spare, None
+        if spare is not None and spare.ready_for(cfg, request, on_recording):
+            self.session = spare  # its windows are built already
+        else:
+            if spare is not None:
+                spare.discard()
+            self.session = Session(cfg, request, self.notifier, self._finished, self._on_action,
+                                   on_recording=on_recording)
         QTimer.singleShot(delay_ms, self.session.start)
+
+    def _prepare_spare(self):
+        """Build the next region capture's windows now, while nothing is
+        going on, so the overlay comes up sooner when it's asked for."""
+        if self.session is not None:
+            return  # (again once this capture is over)
+        if self._spare is not None:
+            if self._spare.ready_for(config.load(), Request(), None if self.recording else self._recording_started):
+                return
+            self._spare.discard()
+            self._spare = None
+        cfg = config.load()
+        theme.use(cfg.theme)
+        spare = Session(cfg, Request(), self.notifier, self._finished, self._on_action,
+                        on_recording=None if self.recording else self._recording_started)
+        if spare.prepare():
+            self._spare = spare
 
     def record(self, delay_ms: int = 0):
         """Choose an area to record, or stop the recording in progress."""
@@ -191,6 +219,7 @@ class TrayApp(QObject):
 
     def _finished(self, code, holds_clipboard):
         self.session = None
+        QTimer.singleShot(800, self._prepare_spare)  # the next one, once this one's gone
 
     # -- recording -------------------------------------------------------------
 

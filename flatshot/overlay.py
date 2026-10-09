@@ -84,6 +84,7 @@ class Overlay(QWidget):
     def __init__(self, ctl, screen, base: QPixmap, origin: QPoint):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.ctl = ctl
+        self._layer: bool | None = None  # a layer-shell surface (None: no window made yet)
         self.target_screen = screen
         self.base = base
         self.origin = origin  # top-left of this screen in the full capture, physical px
@@ -138,19 +139,35 @@ class Overlay(QWidget):
 
     # -- window ------------------------------------------------------------
 
-    def show_on_screen(self):
+    def prepare_window(self):
+        """Make the window (a layer-shell surface where possible) without
+        showing it: done ahead of time for an overlay built in advance."""
+        if self._layer is not None:
+            return
         screen = self.target_screen
         if hasattr(self, "setScreen"):
             self.setScreen(screen)
         self.setGeometry(screen.geometry())
-        if layershell.apply(self, screen):
+        self._layer = layershell.apply(self, screen)
+        if not self._layer and not hasattr(self, "setScreen"):
+            self.create()
+            self.windowHandle().setScreen(screen)
+
+    def set_picture(self, base: QPixmap, origin: QPoint):
+        """The picture, for an overlay built before it was taken."""
+        self.base = base
+        self.origin = origin
+        self._pixels = None
+        if self.toolbar is not None:
+            self.toolbar.placed = False  # (placed again once it has the screen's size)
+
+    def show_on_screen(self):
+        self.prepare_window()
+        if self._layer:
             # An overlay layer surface: no window animations, above panels.
             self.show()
         else:
             _report_fallback()
-            if not hasattr(self, "setScreen"):
-                self.create()
-                self.windowHandle().setScreen(screen)
             self.showFullScreen()
         self.raise_()
         self.activateWindow()
