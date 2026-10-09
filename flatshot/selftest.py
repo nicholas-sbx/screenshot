@@ -232,6 +232,7 @@ def run() -> int:
     _instant_and_extras(app, tmp, desktop, out_dir)
     _pointer_and_snapping(app, tmp, desktop, out_dir)
     _editor(app, tmp, out_dir)
+    _drawing_and_text(app, tmp, desktop, out_dir)
     _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
     return 0
@@ -291,7 +292,7 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     # Instant modes, with the screen grab and the window query stubbed.
     grabs = []
 
-    def fake_grab(preferred="auto", pointer=False):
+    def fake_grab(preferred="auto", pointer=False, also_pointer=None):
         grabs.append(pointer)
         return desktop.copy()
 
@@ -540,7 +541,7 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
     s.cancel()
 
     real_grab, real_supported = capture.grab_desktop, windows.WindowFinder.supported
-    capture.grab_desktop = lambda preferred="auto", pointer=False: desktop.copy()
+    capture.grab_desktop = lambda preferred="auto", pointer=False, also_pointer=None: desktop.copy()
     windows.WindowFinder.supported = staticmethod(lambda: False)
     forced = os.environ.get("FLATSHOT_RECORDER")
     os.environ["FLATSHOT_RECORDER"] = "test"
@@ -841,6 +842,202 @@ def _editor(app, tmp: Path, out_dir):
     app.processEvents()
     assert editor.open_count() == 0
     print("self-test: annotation editor ok")
+
+
+def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
+    """Shift / Ctrl / Alt while drawing, the filled rectangle, editing text,
+    undo and redo greyed out with nothing to do, the pointer shown or not,
+    the editor's own "Save the changes?", Copy saying Copied, and the file
+    dialog without a portal."""
+    from flatshot import capture, config, editor, filechooser, shapes, windows
+    from flatshot.notify import Notifier
+    from flatshot.qt import QEvent, QFileDialog, QKeyEvent, QMouseEvent, QPixmap, QRect
+    from flatshot.session import Request, Session
+
+    red = QColor("#ff0000")
+    # Shapes and the keys held while drawing them.
+    box = shapes.create("rect", QPointF(100, 100), red, 1)
+    box.extend(QPointF(140, 120))
+    assert box.rect() == QRectF(100, 100, 40, 20), box.rect()
+    box.extend(QPointF(140, 120), center=True)  # Ctrl: out from the middle
+    assert box.rect() == QRectF(60, 80, 80, 40), box.rect()
+    box.extend(QPointF(140, 130), constrain=True)  # Shift: square
+    assert box.rect() == QRectF(100, 100, 40, 40), box.rect()
+    box.extend(QPointF(150, 150), move=True)  # Alt: moved, the same size
+    assert box.rect() == QRectF(110, 120, 40, 30), box.rect()
+    box.extend(QPointF(160, 150))  # let go of Alt: grows from where it was moved to
+    assert box.rect() == QRectF(110, 120, 50, 30), box.rect()
+    line = shapes.create("line", QPointF(0, 0), red, 1)
+    line.extend(QPointF(100, 8), constrain=True)
+    assert abs(line.end.y()) < 0.01 and line.start == QPointF(0, 0), line.end
+    solid = shapes.create("solid", QPointF(10, 10), red, 1)
+    solid.extend(QPointF(30, 30))
+    pic = QImage(50, 50, QImage.Format.Format_ARGB32_Premultiplied)
+    pic.fill(QColor("#ffffff"))
+    paint = QPainter(pic)
+    solid.paint(paint, QPixmap())
+    paint.end()
+    assert QColor(pic.pixel(20, 20)) == red and QColor(pic.pixel(40, 40)) != red, "the filled box isn't filled"
+
+    # Typing: the caret moves, Shift selects, undo while typing.
+    def press(shape, k, text="", mods=Qt.KeyboardModifier.NoModifier):
+        return shape.key(QKeyEvent(QEvent.Type.KeyPress, k, mods, text))
+
+    t = shapes.Text(QPointF(10, 10), red, 1)
+    for ch in "hello world":
+        press(t, Qt.Key.Key_A, ch)
+    press(t, Qt.Key.Key_Left, "", Qt.KeyboardModifier.ControlModifier)
+    assert t.cursor == 6, t.cursor
+    press(t, Qt.Key.Key_Home, "", Qt.KeyboardModifier.ShiftModifier)
+    assert t.selected() == "hello ", t.selected()
+    press(t, Qt.Key.Key_A, "X")
+    assert t.text == "Xworld" and t.cursor == 1, t.text
+    press(t, Qt.Key.Key_Return, "\r", Qt.KeyboardModifier.ShiftModifier)
+    press(t, Qt.Key.Key_A, "y")
+    assert t.text == "X\nyworld", t.text
+    press(t, Qt.Key.Key_Up)
+    assert t.cursor <= 1, t.cursor
+    press(t, Qt.Key.Key_End, "", Qt.KeyboardModifier.ControlModifier)
+    press(t, Qt.Key.Key_Backspace, "", Qt.KeyboardModifier.ControlModifier)
+    assert t.text == "X\n", t.text  # (the whole word)
+    assert t.undo_edit() and t.text == "X\nyworld", t.text
+    assert t.undo_edit(redo=True) and t.text == "X\n"
+    assert press(t, Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier) is False, "Ctrl+Z is for the caller"
+    assert press(t, Qt.Key.Key_Return, "\r") == "commit"
+    assert t.contains(QPointF(12, 14)) and not t.contains(QPointF(400, 400))
+
+    # Capturing: undo and redo greyed out with nothing to do; the pointer.
+    with_pointer = desktop.copy()
+    paint = QPainter(with_pointer)
+    paint.fillRect(QRect(20, 20, 12, 18), red)
+    paint.end()
+
+    def grab(preferred="auto", pointer=False, also_pointer=None):
+        if also_pointer is not None:
+            also_pointer.append(with_pointer.copy())
+        return desktop.copy()
+
+    real_grab, real_supported = capture.grab_desktop, windows.WindowFinder.supported
+    capture.grab_desktop = grab
+    windows.WindowFinder.supported = staticmethod(lambda: False)
+    try:
+        cfg = config.Config(save_dir=str(tmp / "p"), notify=False, clipboard="none", default_tool="rect",
+                            dim_opacity=0)
+        s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda *a: None)
+        s.start()
+        ov = s.overlays[0]
+        ov.resize(ov.target_screen.geometry().size())
+        app.processEvents()
+        undo, redo = ov.toolbar.history_buttons
+        assert not undo.isEnabled() and not redo.isEnabled(), "undo / redo usable with nothing to do"
+        ov.commit(shapes.Counter(QPointF(300, 300), red, 1, 1))
+        assert undo.isEnabled() and not redo.isEnabled()
+        s.undo()
+        assert not undo.isEnabled() and redo.isEnabled()
+        s.redo()
+        assert ov.toolbar.pointer_button.isVisibleTo(ov.toolbar) and not s.show_pointer
+        dpr = ov.dpr()
+        spot = QRectF(QPointF(24, 24) / dpr, QPointF(28, 30) / dpr)
+        assert QColor(ov.render(spot).pixel(0, 0)) != red, "the pointer is in the picture before it's asked for"
+        qt.QApplication.sendEvent(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_M, Qt.KeyboardModifier.NoModifier,
+                                                "m"))
+        assert s.show_pointer and ov.toolbar.pointer_button.toggled_on
+        assert QColor(ov.render(spot).pixel(0, 0)) == red, "the pointer isn't in the picture"
+        s.toggle_pointer()
+        assert QColor(ov.render(spot).pixel(0, 0)) != red
+        # Ctrl held while dragging a box: it grows from the press, both ways.
+        mouse = lambda kind, at, mods=Qt.KeyboardModifier.NoModifier: qt.QApplication.sendEvent(  # noqa: E731
+            ov, QMouseEvent(kind, QPointF(at), QPointF(ov.mapToGlobal(at)), Qt.MouseButton.LeftButton,
+                            Qt.MouseButton.LeftButton if kind != QEvent.Type.MouseButtonRelease
+                            else Qt.MouseButton.NoButton, mods))
+        mouse(QEvent.Type.MouseButtonPress, QPointF(400, 400))
+        mouse(QEvent.Type.MouseMove, QPointF(450, 420), Qt.KeyboardModifier.ControlModifier)
+        mouse(QEvent.Type.MouseButtonRelease, QPointF(450, 420), Qt.KeyboardModifier.ControlModifier)
+        assert ov.annotations[-1].rect() == QRectF(350, 380, 100, 40), ov.annotations[-1].rect()
+        # Text: click, type, then click it again to change it; undo brings the old one back.
+        s.set_tool("text")
+        mouse(QEvent.Type.MouseButtonPress, QPointF(200, 600))
+        mouse(QEvent.Type.MouseButtonRelease, QPointF(200, 600))
+        for ch in "abc":
+            s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+        first = ov.annotations[-1]
+        assert first.text == "abc" and s.text_edit is None
+        n = len(ov.annotations)
+        mouse(QEvent.Type.MouseButtonPress, QPointF(203, 605))
+        mouse(QEvent.Type.MouseButtonRelease, QPointF(203, 605))
+        assert s.text_edit is not None and s.text_edit[1].replaces is first and first.hidden
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_End, Qt.KeyboardModifier.NoModifier, ""))
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, "d"))
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier, ""))
+        assert s.text_edit is not None and s.text_edit[1].text == "abc", "Ctrl+Z while typing undoes typing"
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, "!"))
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+        assert len(ov.annotations) == n + 1 and ov.annotations[-1].text == "abc!" and first.hidden
+        s.undo()
+        assert not first.hidden and len(ov.annotations) == n, "undo didn't bring the old text back"
+        if out_dir:
+            ov.toolbar.place()
+            ov.toolbar.show()
+            ov.grab().save(str(Path(out_dir) / "overlay-text.png"))
+        s.cancel()
+    finally:
+        capture.grab_desktop, windows.WindowFinder.supported = real_grab, real_supported
+
+    # The editor: greyed undo, Copied, drawings past the picture hidden, its
+    # own "Save the changes?".
+    src = tmp / "ask.png"
+    pic = QImage(200, 100, QImage.Format.Format_RGB32)
+    pic.fill(QColor("#808080"))
+    pic.save(str(src))
+    ed = editor.open_file(src)
+    ed.resize(800, 500)
+    app.processEvents()
+    assert not ed.bar.history[0].isEnabled() and not ed.bar.history[1].isEnabled()
+    ed.commit(shapes.Counter(QPointF(20, 20), red, 1, 1))
+    assert ed.bar.history[0].isEnabled() and not ed.bar.history[1].isEnabled()
+    ed.bar.copied()
+    assert ed.bar.copy_button.text == "Copied"
+    outside = shapes.create("solid", QPointF(150, 50), red, 1)
+    outside.extend(QPointF(400, 90))
+    ed.commit(outside)
+    canvas = ed.canvas
+    canvas.fit()
+    shown = canvas.grab().toImage()
+    past = canvas.offset + QPointF(260, 70) * canvas.zoom
+    inside = canvas.offset + QPointF(170, 70) * canvas.zoom
+    dpr = shown.devicePixelRatio()
+    assert QColor(shown.pixel((inside * dpr).toPoint())) == red
+    assert QColor(shown.pixel((past * dpr).toPoint())) != red, "a drawing shows past the picture's edge"
+    ed.close()
+    app.processEvents()
+    assert editor.open_count() == 1 and ed.ask_save.isVisible(), "closing with changes didn't ask"
+    if out_dir:
+        ed.grab().save(str(Path(out_dir) / "editor-ask.png"))
+    ed.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert editor.open_count() == 1 and not ed.ask_save.isVisible()
+    ed.close()
+    ed.answer("discard")
+    app.processEvents()
+    assert editor.open_count() == 0, "Don't save didn't close"
+
+    # No portal here (no session bus): Qt's dialog, without blocking.
+    chosen = []
+    filechooser.save_file(None, "Save as", tmp / "x.png", [("PNG", ["*.png"])], chosen.append)
+    dialog = None
+    end = time.monotonic() + 5
+    while dialog is None and time.monotonic() < end:
+        app.processEvents()
+        dialog = next((d for d in filechooser._pending if isinstance(d, QFileDialog)), None)
+    if filechooser.dbus.available() and dialog is None:
+        print("self-test: (a file-chooser portal answered; Qt's dialog not checked)")
+    else:
+        assert dialog is not None, "no file dialog"
+        dialog.fileSelected.emit(str(tmp / "chosen.png"))
+        dialog.reject()
+        app.processEvents()
+        assert chosen and chosen[0].endswith("chosen.png"), chosen
+    print("self-test: drawing keys, filled box, text editing, pointer, undo state, save prompt ok")
 
 
 def replace_cfg(cfg, **changes):

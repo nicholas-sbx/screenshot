@@ -19,7 +19,7 @@ from flatshot.widgets import TOOLS
 
 K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in ["Escape", "Return", "Enter", "Backspace", "Y", "S", "C"]}
 # The tools that draw in the chosen colour: picking a colour switches to one.
-COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
+COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "solid", "ellipse", "marker", "text", "counter")
 CUSTOM = len(theme.SWATCHES)  # the colour index of your own colour, after the toolbar's others
 
 # region: the overlay. The rest deliver straight away, without any UI:
@@ -122,6 +122,11 @@ class Session:
         # overlays are up (only with more than one monitor and the setting on).
         self._desktop_image: QImage | None = None
         self.hovered = None  # the window under the pointer, on whichever monitor
+        # The same picture with the mouse pointer in it (where the helper
+        # could take it), shown while show_pointer is on.
+        self.pointer_image: QImage | None = None
+        self._plain_image: QImage | None = None
+        self.show_pointer = False
         self.done = False
 
     @property
@@ -156,8 +161,13 @@ class Session:
                 if image.isNull():
                     raise capture.CaptureError(f"cannot read {self.request.image}")
             else:
+                # The overlay's picture can show the pointer or not (the
+                # toolbar's pointer button): both are taken at once.
+                extra = [] if not instant else None
                 image = capture.grab_desktop(self.request.backend or self.cfg.backend,
-                                             pointer=instant and self.cfg.include_pointer)
+                                             pointer=instant and self.cfg.include_pointer, also_pointer=extra)
+                if extra and extra[0].size() == image.size():
+                    self.pointer_image = extra[0]
         except capture.CaptureError as e:
             self.fail(str(e))
             return
@@ -388,7 +398,8 @@ class Session:
                 p.scale(sx, sy)
                 p.translate(g.x() - area.x(), g.y() - area.y())
                 for shape in o.annotations:
-                    shape.paint(p, o.base)
+                    if not shape.hidden:
+                        shape.paint(p, o.base)
                 p.restore()
         p.end()
         return out.convertToFormat(QImage.Format.Format_RGB32)
@@ -494,6 +505,19 @@ class Session:
             print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
         for o in self.overlays:
             o.snap_changed()
+        self.refresh()
+
+    def toggle_pointer(self):
+        """Show the mouse pointer in the picture, or not (as captured)."""
+        if self.pointer_image is None or self.tool == "record" or self.done:
+            return
+        self.show_pointer = not self.show_pointer
+        for o in self.overlays:
+            o.show_pointer(self.pointer_image, self.show_pointer)
+        if self._desktop_image is not None:
+            if self._plain_image is None:
+                self._plain_image = self._desktop_image
+            self._desktop_image = self.pointer_image if self.show_pointer else self._plain_image
         self.refresh()
 
     def toggle_codes(self):
@@ -642,6 +666,18 @@ class Session:
         for o in self.redo_stack:
             o.undone.clear()
         self.redo_stack.clear()
+        self._refresh_toolbars()
+
+    def _refresh_toolbars(self):
+        for o in self.overlays:
+            if o.toolbar:
+                o.toolbar.refresh()
+
+    def can_undo(self) -> bool:
+        return bool(self.history) or self.text_edit is not None
+
+    def can_redo(self) -> bool:
+        return bool(self.redo_stack)
 
     def undo(self):
         self.commit_text()
@@ -649,19 +685,25 @@ class Session:
             o = self.history.pop()
             if o.undo():
                 self.redo_stack.append(o)
+        self.refresh()
 
     def redo(self):
+        self.commit_text()
         if self.redo_stack:
             o = self.redo_stack.pop()
             if o.redo():
                 self.history.append(o)
+        self.refresh()
 
     # -- text --------------------------------------------------------------
 
     def begin_text(self, overlay: Overlay, shape: shapes.Text):
         self.commit_text()
         self.text_edit = (overlay, shape)
+        if shape.replaces is not None:
+            shape.replaces.hidden = True  # (the copy is shown while it's edited)
         overlay.update()
+        self._refresh_toolbars()
 
     def commit_text(self) -> bool:
         """Finish the text being typed. Returns True if there was one."""
@@ -670,9 +712,12 @@ class Session:
         overlay, shape = self.text_edit
         self.text_edit = None
         shape.editing = False
-        if shape.is_valid():
+        if shape.is_valid() and shape.changed():
             overlay.commit(shape)
+        elif shape.replaces is not None:
+            shape.replaces.hidden = False  # edited back to as it was
         overlay.update()
+        self._refresh_toolbars()
         return True
 
     # -- keys --------------------------------------------------------------
@@ -684,21 +729,19 @@ class Session:
         k = keyval(event.key())
         mods = event.modifiers()
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         enter = k in (K["Return"], K["Enter"])
 
-        if self.text_edit and not ctrl:
+        if self.text_edit:
             editing, shape = self.text_edit
-            if k == K["Escape"] or (enter and not shift):
-                self.commit_text()
-            elif enter:
-                shape.text += "\n"
-            elif k == K["Backspace"]:
-                shape.text = shape.text[:-1]
-            elif event.text() and event.text().isprintable():
-                shape.text += event.text()
-            editing.update()
-            return
+            action = self.keymap.action(event, keys.CAPTURE) if ctrl else None
+            used = action in ("undo", "redo") and shape.undo_edit(redo=action == "redo")
+            if not used:
+                used = shape.key(event)
+                if used == "commit":
+                    self.commit_text()
+            if used:
+                editing.update()
+                return
 
         if k == K["Escape"]:
             # Acted on when the key comes up (key_release): closing on the way
@@ -734,6 +777,8 @@ class Session:
             self.toggle_pin()
         elif action == "snap":
             self.toggle_snap()
+        elif action == "pointer":
+            self.toggle_pointer()
         elif action == "copy_color":
             self.copy_color(target)
         elif action.startswith("tool."):
@@ -775,6 +820,7 @@ class Session:
         # buttons can keep this session for as long as the notification is
         # in the desktop's history.
         self.overlays = []
+        self.pointer_image = self._plain_image = None
         self.pointer_overlay = self.toolbar_overlay = self._countdown_overlay = None
         self.history, self.redo_stack, self.text_edit = [], [], None
         self._grabbed = None

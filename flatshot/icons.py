@@ -42,6 +42,11 @@ def _rect(p, c):
     p.drawRoundedRect(QRectF(4, 6, 16, 12), 2.5, 2.5)
 
 
+def _solid(p, c):
+    p.setBrush(c)
+    p.drawRoundedRect(QRectF(4, 6, 16, 12), 2.5, 2.5)
+
+
 def _ellipse(p, c):
     p.drawEllipse(QRectF(4, 6, 16, 12))
 
@@ -108,10 +113,10 @@ def _save_as(p, c):
 
 
 def _fit(p, c):
-    # Arrows out to the corners: the whole picture in the window.
-    p.drawPath(_path([(4, 9), (4, 4), (9, 4)], [(15, 4), (20, 4), (20, 9)], [(20, 15), (20, 20), (15, 20)],
-                     [(9, 20), (4, 20), (4, 15)], [(4, 4), (9.5, 9.5)], [(20, 4), (14.5, 9.5)],
-                     [(20, 20), (14.5, 14.5)], [(4, 20), (9.5, 14.5)]))
+    # A magnifier with a picture in its lens: zoom to fit (not full screen).
+    p.drawEllipse(QRectF(3.5, 3.5, 13, 13))
+    p.drawLine(QPointF(14.6, 14.6), QPointF(20.5, 20.5))
+    p.drawRoundedRect(QRectF(6.8, 7.6, 6.4, 4.8), 1, 1)
 
 
 def _counter(p, c):
@@ -221,6 +226,16 @@ def _cursor(p, c):
     p.drawPath(body)
 
 
+def _cursor_off(p, c):
+    faded = QColor(c)
+    faded.setAlphaF(0.55)
+    pen = p.pen()
+    p.setPen(QPen(faded, pen.widthF(), pen.style(), pen.capStyle(), pen.joinStyle()))
+    _cursor(p, faded)
+    p.setPen(pen)
+    p.drawLine(QPointF(4, 20), QPointF(20, 4))
+
+
 def _pause(p, c):
     p.drawLine(QPointF(9, 6.5), QPointF(9, 17.5))
     p.drawLine(QPointF(15, 6.5), QPointF(15, 17.5))
@@ -271,7 +286,8 @@ _ICONS = {
     "counter": _counter, "undo": _undo, "redo": _redo, "screen": _screen,
     "copy": _copy, "open": _open, "close": _close, "check": _check,
     "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
-    "speaker": _speaker, "cursor": _cursor, "pause": _pause, "resume": _resume, "stop": _stop, "trash": _trash,
+    "speaker": _speaker, "cursor": _cursor, "cursor-off": _cursor_off, "solid": _solid, "pause": _pause,
+    "resume": _resume, "stop": _stop, "trash": _trash,
     "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit, "save": _save,
     "save-as": _save_as,
 }

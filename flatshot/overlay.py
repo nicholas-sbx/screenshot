@@ -12,6 +12,7 @@ from flatshot.qt import (
 )
 
 from flatshot import layershell, shapes
+from flatshot.qt import keyval
 from flatshot.theme import C, font
 from flatshot.widgets import CodeChip, Toolbar
 
@@ -19,7 +20,8 @@ HINTS = {
     "region": "Drag to capture  ·  Click for whole screen  ·  Esc to cancel",
     "codes": "Drag to capture  ·  {codes} hides detected codes  ·  Esc to cancel",
     "windows": "Drag to capture  ·  Click a window to capture it  ·  Esc to cancel",
-    "text": "Click to place text  ·  Enter to finish  ·  {tool.region} to capture",
+    "text": "Click to place text, or on text to change it  ·  Drag text to move it  ·  Enter to finish",
+    "shape": "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it",
 }
 PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  {pin} to save instead"
 EYEDROPPER_HINT = "Click a pixel to make it your colour  ·  Esc to stop"
@@ -43,6 +45,7 @@ CORNER_BONUS, TEE_BONUS, CROSS_BONUS = 1.6, 1.25, 1.1
 # the same amount, with a curve between them. Up to this radius (logical px).
 ROUNDED_UP_TO = 24
 RAINBOW_SECONDS = 4  # one trip round the colours
+MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in ("Shift", "Control", "Alt", "AltGr", "Meta")}
 
 
 def _buffer(image: QImage) -> memoryview:
@@ -85,6 +88,8 @@ class Overlay(QWidget):
         self.base = base
         self.origin = origin  # top-left of this screen in the full capture, physical px
         self._pixels: QImage | None = None
+        self._plain: QPixmap | None = None  # the picture without the pointer, while it's shown
+        self._with_pointer: QPixmap | None = None
         self.annotations: list[shapes.Shape] = []
         self.undone: list[shapes.Shape] = []
         self.active: shapes.Shape | None = None
@@ -116,6 +121,8 @@ class Overlay(QWidget):
         self._edge_thread: threading.Thread | None = None
         self._snap_point: QPointF | None = None
         self._loupe_box = QRect()
+        # The text tool: a text being dragged to a new place (press position, its position then).
+        self._text_drag: tuple[QPointF, QPointF] | None = None
         self._rainbow: QTimer | None = None
         if ctl.cfg.rainbow:
             self._rainbow = QTimer(self)
@@ -126,6 +133,7 @@ class Overlay(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled)  # (accents, compose, CJK in text)
         self.update_cursor()
 
     # -- window ------------------------------------------------------------
@@ -282,7 +290,7 @@ class Overlay(QWidget):
     def release(self):
         """Let go of the pictures: the overlay is closing, and its Python
         side can outlive it (held by a closure or an undo list)."""
-        self.base = QPixmap()
+        self.base = self._plain = self._with_pointer = QPixmap()
         self._pixels = None
         self._edge_maps = None
         self.annotations, self.undone, self.active = [], [], None
@@ -291,6 +299,19 @@ class Overlay(QWidget):
 
     def dpr(self) -> float:
         return self.base.devicePixelRatio()
+
+    def show_pointer(self, desktop: QImage, show: bool):
+        """Show this screen's part of ``desktop`` (the capture with the mouse
+        pointer in it), or go back to the picture without it."""
+        if self._plain is None:
+            self._plain = self.base
+        if show and self._with_pointer is None:
+            pm = QPixmap.fromImage(desktop.copy(QRect(self.origin, self._plain.size())))
+            pm.setDevicePixelRatio(self._plain.devicePixelRatio())
+            self._with_pointer = pm
+        self.base = self._with_pointer if show else self._plain
+        self._pixels = None
+        self.update()
 
     def pixels(self) -> QImage:
         if self._pixels is None:
@@ -393,21 +414,32 @@ class Overlay(QWidget):
     def undo(self) -> bool:
         if not self.annotations:
             return False
-        self.undone.append(self.annotations.pop())
+        shape = self.annotations.pop()
+        if getattr(shape, "replaces", None) is not None:
+            shape.replaces.hidden = False  # the text as it was before it was edited
+        self.undone.append(shape)
         self.update()
         return True
 
     def redo(self) -> bool:
         if not self.undone:
             return False
-        self.annotations.append(self.undone.pop())
+        shape = self.undone.pop()
+        if getattr(shape, "replaces", None) is not None:
+            shape.replaces.hidden = True
+        self.annotations.append(shape)
         self.update()
         return True
+
+    def text_at(self, pos: QPointF):
+        """The text drawn at ``pos`` (topmost), if any."""
+        return next((s for s in reversed(self.annotations)
+                     if isinstance(s, shapes.Text) and not s.hidden and s.contains(pos)), None)
 
     def cancel_gesture(self) -> bool:
         if self.sel_rect is not None or self.active is not None or self._rec_drag is not None:
             spanned = self.sel_rect is not None and self.ctl.spans()
-            self.sel_origin = self.sel_rect = self.active = self._rec_drag = None
+            self.sel_origin = self.sel_rect = self.active = self._rec_drag = self._text_drag = None
             if spanned:
                 self.ctl.selection_moved(self, None)
             self.ctl.refresh()
@@ -569,7 +601,8 @@ class Overlay(QWidget):
         p = QPainter(image)
         p.translate(-phys.x() / dpr, -phys.y() / dpr)
         for shape in self.annotations:
-            shape.paint(p, self.base)
+            if not shape.hidden:
+                shape.paint(p, self.base)
         p.end()
         image.setDevicePixelRatio(1.0)
         return image.convertToFormat(QImage.Format.Format_RGB32)
@@ -588,7 +621,16 @@ class Overlay(QWidget):
             self.ctl.take_color(self, pos)
             return
         self.ctl.close_picker()  # a click elsewhere closes it, and does what it would anyway
-        if self.ctl.commit_text() and self.ctl.tool == "text":
+        editing = self.ctl.text_edit
+        if editing and editing[0] is self and editing[1].contains(pos):
+            # In the text being typed: the caret goes there (Shift: selects
+            # to there); a drag moves the text.
+            shape = editing[1]
+            shape.place(shape.index_at(pos), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+            self._text_drag = (pos, QPointF(shape.pos))
+            self.update()
+            return
+        if self.ctl.commit_text() and self.ctl.tool == "text" and self.text_at(pos) is None:
             return  # first click just finishes the text being typed
         tool = self.ctl.tool
         if tool == "record" and self.ctl.countdown is not None:
@@ -604,7 +646,14 @@ class Overlay(QWidget):
             self.sel_rect = QRectF(pos, pos)
             self.ctl.refresh()
         elif tool == "text":
-            self.ctl.begin_text(self, shapes.Text(pos, self.ctl.color, self.ctl.size))
+            old = self.text_at(pos)
+            if old is not None:  # edit it again (a copy, so undo brings back the original)
+                shape = old.copy_for_editing()
+                shape.place(shape.index_at(pos))
+                self._text_drag = (pos, QPointF(shape.pos))
+            else:
+                shape = shapes.Text(pos, self.ctl.color, self.ctl.size)
+            self.ctl.begin_text(self, shape)
         elif tool == "counter":
             self.commit(shapes.Counter(pos, self.ctl.color, self.ctl.size, self.ctl.next_number()))
         else:
@@ -626,8 +675,13 @@ class Overlay(QWidget):
                 self.ctl.selection_moved(self, pos)
         elif self._rec_drag is not None:
             self._drag_area(pos, self._snap_point)
+        elif self._text_drag is not None and self.ctl.text_edit and self.ctl.text_edit[0] is self:
+            start, origin = self._text_drag
+            if (pos - start).manhattanLength() > 3 or self.ctl.text_edit[1].pos != origin:
+                self.ctl.text_edit[1].pos = origin + (pos - start)
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif self.active is not None:
-            self.active.extend(pos, bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+            self.active.extend(pos, **shapes.modifiers(event.modifiers()))
         else:
             self._update_hover()
             if self.ctl.tool == "record":
@@ -636,6 +690,10 @@ class Overlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._text_drag is not None:
+            self._text_drag = None
+            self.update_cursor()
             return
         if self.sel_origin is not None:
             rect = self.sel_rect
@@ -697,10 +755,38 @@ class Overlay(QWidget):
         self.update()
 
     def keyPressEvent(self, event):
-        self.ctl.key(self, event)
+        if not self._modifier_changed(event):
+            self.ctl.key(self, event)
 
     def keyReleaseEvent(self, event):
-        self.ctl.key_release(self, event)
+        if not self._modifier_changed(event):
+            self.ctl.key_release(self, event)
+
+    def _modifier_changed(self, event) -> bool:
+        """Shift, Ctrl or Alt pressed or let go while drawing a shape: it
+        changes at once, without waiting for the pointer to move."""
+        if self.active is None or keyval(event.key()) not in MODIFIER_KEYS:
+            return False
+        if hasattr(self.active, "pointer"):
+            mods = shapes.modifiers(QGuiApplication.queryKeyboardModifiers())
+            mods["move"] = False  # (moving needs the pointer to move)
+            self.active.extend(self.active.pointer, **mods)
+            self.update()
+        return True
+
+    def inputMethodEvent(self, event):
+        """Text from an input method (compose, dead keys, CJK, emoji)."""
+        if self.ctl.text_edit and self.ctl.text_edit[0] is self and event.commitString():
+            self.ctl.text_edit[1].insert(event.commitString())
+            self.update()
+        event.accept()
+
+    def inputMethodQuery(self, query):
+        if query == Qt.InputMethodQuery.ImEnabled:
+            return bool(self.ctl.text_edit)
+        if query == Qt.InputMethodQuery.ImCursorRectangle and self.ctl.text_edit:
+            return self.ctl.text_edit[1].caret_rect().toAlignedRect()
+        return super().inputMethodQuery(query)
 
     # -- painting ----------------------------------------------------------
 
@@ -711,7 +797,8 @@ class Overlay(QWidget):
         p.drawPixmap(0, 0, self.base)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         for shape in self.annotations:
-            shape.paint(p, self.base)
+            if not shape.hidden:
+                shape.paint(p, self.base)
         if self.active is not None:
             self.active.paint(p, self.base)
         if self.ctl.text_edit and self.ctl.text_edit[0] is self:
@@ -989,6 +1076,8 @@ class Overlay(QWidget):
             tool = "windows"
         if self.ctl.pin_mode and self.ctl.tool == "region":
             tool = "pin"
+        if self.active is not None and hasattr(self.active, "pointer"):
+            tool = "shape"  # (while dragging one out)
         if self.ctl.tool == "record":
             if self.ctl.countdown is not None:
                 text = RECORD_HINTS["countdown"].format(n=self.ctl.countdown)

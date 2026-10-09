@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 
 from pathlib import Path
 
@@ -146,12 +147,33 @@ def backend_order() -> list[str]:
     return ["grim", "spectacle", "gnome-screenshot"]
 
 
-def grab_desktop(preferred: str = "auto", pointer: bool = False) -> QImage:
+# Helpers that can be asked twice at once (Spectacle may hand a second
+# request to the first instance).
+TWICE = ("kwin", "grim")
+
+
+def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: list | None = None) -> QImage:
     """Every screen as one image; ``pointer`` draws the mouse pointer in
-    (where the helper supports it)."""
+    (where the helper supports it). With ``also_pointer`` (a list), the
+    same moment with the pointer drawn in is appended to it too, where the
+    helper can take both at once."""
     order = backend_order() if preferred in ("", "auto") else [preferred]
     errors = []
     for name in order:
+        if also_pointer is not None and name in TWICE and not pointer:
+            exe, fn = BACKENDS[name]
+            if not exe or shutil.which(exe) is not None:
+                second = threading.Thread(target=_also, args=(fn, also_pointer), daemon=True)
+                second.start()
+                try:
+                    image = fn(False)
+                except Exception as e:  # noqa: BLE001 — the next backend
+                    second.join(5)
+                    also_pointer.clear()
+                    errors.append(f"{name}: {e}")
+                    continue
+                second.join(5)  # (both ask for the same frame: about as quick as one)
+                return image
         if name == "qt":
             fn = _qt
         else:
@@ -167,3 +189,10 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False) -> QImage:
         except Exception as e:  # noqa: BLE001 — try the next backend
             errors.append(f"{name}: {e}")
     raise CaptureError("could not capture the screen\n  " + "\n  ".join(errors))
+
+
+def _also(fn, out: list):
+    try:
+        out.append(fn(True))
+    except Exception:  # noqa: BLE001 — then there's no pointer to show
+        pass

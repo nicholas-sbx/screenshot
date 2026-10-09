@@ -19,7 +19,18 @@ def _pen(color: QColor, width: float) -> QPen:
     return pen
 
 
+def modifiers(mods) -> dict:
+    """How the keys held while drawing change a shape, as for extend():
+    Shift squares it (or snaps a line to 45°), Ctrl draws it out from its
+    middle, Alt moves it without changing its size (as in Krita)."""
+    return {"constrain": bool(mods & Qt.KeyboardModifier.ShiftModifier),
+            "center": bool(mods & Qt.KeyboardModifier.ControlModifier),
+            "move": bool(mods & Qt.KeyboardModifier.AltModifier)}
+
+
 class Shape:
+    hidden = False  # replaced by an edited copy (see Text.replaces)
+
     def __init__(self, color: QColor, size: int):
         self.color = QColor(color)
         self.size = size
@@ -28,7 +39,7 @@ class Shape:
     def width(self) -> float:
         return SIZES[self.size]
 
-    def extend(self, pos: QPointF, constrain: bool) -> None:
+    def extend(self, pos: QPointF, constrain: bool = False, center: bool = False, move: bool = False) -> None:
         pass
 
     def is_valid(self) -> bool:
@@ -46,7 +57,7 @@ class Stroke(Shape):
         self.points = [QPointF(pos)]
         self.marker = marker
 
-    def extend(self, pos, constrain):
+    def extend(self, pos, constrain=False, center=False, move=False):
         if QLineF(self.points[-1], pos).length() >= 1.0:
             self.points.append(QPointF(pos))
 
@@ -73,22 +84,33 @@ class Stroke(Shape):
 
 
 class Drag(Shape):
-    """Any shape defined by a start and end point."""
+    """Any shape defined by a start and end point, dragged out from where
+    the press was (the anchor)."""
 
     def __init__(self, pos, color, size):
         super().__init__(color, size)
         self.start = QPointF(pos)
         self.end = QPointF(pos)
+        self.anchor = QPointF(pos)
+        self.pointer = QPointF(pos)  # where the pointer was last
 
-    def extend(self, pos, constrain):
-        self.end = QPointF(pos)
+    def extend(self, pos, constrain=False, center=False, move=False):
+        """``constrain``: square (Shift); ``center``: the anchor is the
+        middle, not a corner (Ctrl); ``move``: the shape follows the pointer
+        at its size (Alt), and goes on growing from there once let go."""
+        pos = QPointF(pos)
+        if move:
+            self.anchor += pos - self.pointer
+        self.pointer = pos
+        d = pos - self.anchor
         if constrain:
-            self._constrain()
+            d = self._constrain(d)
+        self.start = self.anchor - d if center else QPointF(self.anchor)
+        self.end = self.anchor + d
 
-    def _constrain(self):
-        d = self.end - self.start
+    def _constrain(self, d: QPointF) -> QPointF:
         side = max(abs(d.x()), abs(d.y()))
-        self.end = self.start + QPointF(math.copysign(side, d.x() or 1), math.copysign(side, d.y() or 1))
+        return QPointF(math.copysign(side, d.x() or 1), math.copysign(side, d.y() or 1))
 
     def rect(self) -> QRectF:
         return QRectF(self.start, self.end).normalized()
@@ -98,11 +120,11 @@ class Drag(Shape):
 
 
 class Line(Drag):
-    def _constrain(self):
+    def _constrain(self, d):
         # Snap to 45 degree steps.
-        line = QLineF(self.start, self.end)
+        line = QLineF(QPointF(0, 0), d)
         line.setAngle(round(line.angle() / 45) * 45)
-        self.end = line.p2()
+        return line.p2()
 
     def paint(self, p, base):
         p.save()
@@ -142,6 +164,18 @@ class Box(Drag):
         p.restore()
 
 
+class SolidBox(Drag):
+    """A filled rectangle: to cover something up, or to mark it boldly."""
+
+    def paint(self, p, base):
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.color)
+        p.drawRoundedRect(self.rect(), 3, 3)
+        p.restore()
+
+
 class Ellipse(Drag):
     def paint(self, p, base):
         p.save()
@@ -167,7 +201,7 @@ class Pixelate(Drag):
         src = src.intersected(base.rect())
         if src.isEmpty():
             return
-        key = (src.x(), src.y(), src.width(), src.height(), self.size)
+        key = (src.x(), src.y(), src.width(), src.height(), self.size, base.cacheKey())
         if self._cache is None or self._cache[0] != key:
             self._cache = (key, self._cover(base, src, dpr))
         big = self._cache[1]
@@ -209,41 +243,275 @@ def _scaled(pm: QPixmap, w: int, h: int) -> QPixmap:
 
 
 class Text(Shape):
+    """Text typed onto the picture, edited in place: a caret that moves
+    (arrows, Home, End, Ctrl for whole words), Shift to select, Ctrl+A,
+    cut, copy and paste, and its own undo while it's being typed."""
+
     SIZES_PX = [18, 26, 38]
+    PAD = 6  # the edit box, around the text
 
     def __init__(self, pos, color, size):
         super().__init__(color, size)
         self.pos = QPointF(pos)
         self.text = ""
         self.editing = True
+        self.cursor = 0  # where the caret is, in characters
+        self.anchor = 0  # the other end of the selection (== cursor: none)
+        self.replaces: "Text | None" = None  # the text this is an edited copy of
+        self._undo: list[tuple[str, int]] = []
+        self._redo: list[tuple[str, int]] = []
+        self._typing = False  # the last change was typing (undone a word at a time)
 
     def is_valid(self):
-        return bool(self.text.strip())
+        # An edited copy counts even when emptied: that deletes the text, undoably.
+        return bool(self.text.strip()) or (self.replaces is not None and self.changed())
+
+    def changed(self) -> bool:
+        r = self.replaces
+        return r is None or (self.text, self.pos, self.color, self.size) != (r.text, r.pos, r.color, r.size)
+
+    def copy_for_editing(self) -> "Text":
+        """A copy to edit in place of this one (hidden meanwhile), so undo
+        can bring this one back."""
+        t = Text(self.pos, self.color, self.size)
+        t.text, t.replaces = self.text, self
+        t.cursor = t.anchor = len(self.text)
+        return t
+
+    # -- geometry ------------------------------------------------------------
 
     def _font(self) -> QFont:
         return font(self.SIZES_PX[self.size], QFont.Weight.Bold)
 
+    def _metrics(self) -> QFontMetricsF:
+        return QFontMetricsF(self._font())
+
+    def lines(self) -> list[str]:
+        return self.text.split("\n")
+
+    def _row_col(self, index: int) -> tuple[int, int]:
+        before = self.text[:index].split("\n")
+        return len(before) - 1, len(before[-1])
+
+    def _index(self, row: int, col: int) -> int:
+        lines = self.lines()
+        row = min(max(row, 0), len(lines) - 1)
+        return sum(len(line) + 1 for line in lines[:row]) + min(col, len(lines[row]))
+
+    def _x_of(self, row: int, col: int) -> float:
+        return self._metrics().horizontalAdvance(self.lines()[row][:col])
+
+    def _col_at(self, row: int, x: float) -> int:
+        """The column nearest to ``x`` (from the text's left) on ``row``."""
+        fm, line = self._metrics(), self.lines()[row]
+        best, best_d = 0, abs(x)
+        for col in range(1, len(line) + 1):
+            d = abs(fm.horizontalAdvance(line[:col]) - x)
+            if d < best_d:
+                best, best_d = col, d
+        return best
+
+    def index_at(self, pos: QPointF) -> int:
+        fm = self._metrics()
+        row = int((pos.y() - self.pos.y()) // fm.lineSpacing())
+        row = min(max(row, 0), len(self.lines()) - 1)
+        return self._index(row, self._col_at(row, pos.x() - self.pos.x()))
+
+    def bounds(self) -> QRectF:
+        """The text's box (at least a caret's width when empty)."""
+        fm = self._metrics()
+        lines = self.lines()
+        w = max([fm.horizontalAdvance(line) for line in lines] + [2.0])
+        h = fm.height() + (len(lines) - 1) * fm.lineSpacing()
+        return QRectF(self.pos.x(), self.pos.y(), w, h)
+
+    def contains(self, pos: QPointF) -> bool:
+        return self.bounds().adjusted(-self.PAD, -self.PAD, self.PAD, self.PAD).contains(pos)
+
+    def caret_rect(self) -> QRectF:
+        fm = self._metrics()
+        row, col = self._row_col(self.cursor)
+        return QRectF(self.pos.x() + self._x_of(row, col) - 1, self.pos.y() + row * fm.lineSpacing(), 2, fm.height())
+
+    # -- editing ---------------------------------------------------------------
+
+    def selection(self) -> tuple[int, int]:
+        return min(self.cursor, self.anchor), max(self.cursor, self.anchor)
+
+    def selected(self) -> str:
+        a, b = self.selection()
+        return self.text[a:b]
+
+    def _clamp(self):
+        n = len(self.text)
+        self.cursor, self.anchor = min(max(self.cursor, 0), n), min(max(self.anchor, 0), n)
+
+    def _snapshot(self, typing: bool = False):
+        if not (typing and self._typing):
+            self._undo.append((self.text, self.cursor))
+            del self._undo[:-200]
+        self._redo.clear()
+        self._typing = typing
+
+    def insert(self, s: str):
+        if not s:
+            return
+        self._clamp()
+        self._snapshot(typing=s not in (" ", "\n") and len(s) == 1)
+        a, b = self.selection()
+        self.text = self.text[:a] + s + self.text[b:]
+        self.cursor = self.anchor = a + len(s)
+
+    def _delete(self, a: int, b: int):
+        if a == b:
+            return
+        self._snapshot()
+        self.text = self.text[:a] + self.text[b:]
+        self.cursor = self.anchor = a
+
+    def place(self, index: int, select: bool = False):
+        self._clamp()
+        self.cursor = min(max(index, 0), len(self.text))
+        if not select:
+            self.anchor = self.cursor
+        self._typing = False
+
+    def _word_left(self, i: int) -> int:
+        t = self.text
+        while i > 0 and t[i - 1].isspace():
+            i -= 1
+        while i > 0 and not t[i - 1].isspace():
+            i -= 1
+        return i
+
+    def _word_right(self, i: int) -> int:
+        t, n = self.text, len(self.text)
+        while i < n and t[i].isspace():
+            i += 1
+        while i < n and not t[i].isspace():
+            i += 1
+        return i
+
+    def undo_edit(self, redo: bool = False) -> bool:
+        """Undo (or redo) the last change to the text being typed; False if none."""
+        source, target = (self._redo, self._undo) if redo else (self._undo, self._redo)
+        if not source:
+            return False
+        target.append((self.text, self.cursor))
+        self.text, self.cursor = source.pop()
+        self.anchor = self.cursor
+        self._typing = False
+        return True
+
+    def key(self, event) -> bool | str:
+        """A key while typing: "commit" (Enter, Esc), True if it was used,
+        False if it's for whoever else (a Ctrl shortcut the text has no use
+        for: undo, save, ...)."""
+        from flatshot.qt import QGuiApplication, keyval
+
+        K = Qt.Key
+        k = keyval(event.key())
+        mods = event.modifiers()
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        alt = bool(mods & Qt.KeyboardModifier.AltModifier)
+        is_ = lambda *names: k in [keyval(getattr(K, f"Key_{n}")) for n in names]  # noqa: E731
+        self._clamp()
+        a, b = self.selection()
+        row, col = self._row_col(self.cursor)
+        if is_("Escape"):
+            return "commit"
+        if is_("Return", "Enter"):
+            if shift:
+                self.insert("\n")
+                return True
+            return "commit"
+        if is_("Backspace"):
+            self._delete(*((a, b) if a != b else (self._word_left(a) if ctrl else max(0, a - 1), a)))
+            return True
+        if is_("Delete"):
+            self._delete(*((a, b) if a != b else (a, self._word_right(a) if ctrl else a + 1)))
+            return True
+        if is_("Left"):
+            to = self._word_left(self.cursor) if ctrl else (a if a != b and not shift else self.cursor - 1)
+            self.place(to, shift)
+            return True
+        if is_("Right"):
+            to = self._word_right(self.cursor) if ctrl else (b if a != b and not shift else self.cursor + 1)
+            self.place(to, shift)
+            return True
+        if is_("Home"):
+            self.place(0 if ctrl else self._index(row, 0), shift)
+            return True
+        if is_("End"):
+            self.place(len(self.text) if ctrl else self._index(row, len(self.lines()[row])), shift)
+            return True
+        if is_("Up", "Down"):
+            target = row + (-1 if is_("Up") else 1)
+            if 0 <= target < len(self.lines()):
+                self.place(self._index(target, self._col_at(target, self._x_of(row, col))), shift)
+            else:
+                self.place(0 if target < 0 else len(self.text), shift)
+            return True
+        if ctrl and not alt:
+            clipboard = QGuiApplication.clipboard()
+            if is_("A"):
+                self.anchor, self.cursor = 0, len(self.text)
+                return True
+            if is_("C") and a != b:
+                clipboard.setText(self.selected())
+                return True
+            if is_("X") and a != b:
+                clipboard.setText(self.selected())
+                self._delete(a, b)
+                return True
+            if is_("V"):
+                self.insert(clipboard.text().replace("\r\n", "\n").replace("\t", "    "))
+                return True
+            return False
+        if is_("Tab"):
+            return True  # (not to move the focus away)
+        text = event.text()
+        if text and text.isprintable():
+            self.insert(text)
+        return True  # (any other key does nothing while typing)
+
+    # -- painting --------------------------------------------------------------
+
     def paint(self, p, base):
         f = self._font()
         fm = QFontMetricsF(f)
-        lines = self.text.split("\n")
+        lines = self.lines()
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.editing:
+            # The edit box, and what's selected.
+            box = self.bounds().adjusted(-self.PAD, -self.PAD / 2, self.PAD, self.PAD / 2)
+            edge = QColor(C.ACCENT)
+            edge.setAlpha(170)
+            pen = QPen(edge, 1.2, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(box, 4, 4)
+            a, b = self.selection()
+            if a != b:
+                shade = QColor(C.ACCENT)
+                shade.setAlpha(90)
+                ra, ca = self._row_col(a)
+                rb, cb = self._row_col(b)
+                for r in range(ra, rb + 1):
+                    x0 = self._x_of(r, ca if r == ra else 0)
+                    x1 = self._x_of(r, cb if r == rb else len(lines[r])) + (0 if r == rb else fm.averageCharWidth() / 2)
+                    p.fillRect(QRectF(self.pos.x() + x0, self.pos.y() + r * fm.lineSpacing(), x1 - x0, fm.height()),
+                               shade)
         path = QPainterPath()
         for i, line in enumerate(lines):
             path.addText(self.pos + QPointF(0, fm.ascent() + i * fm.lineSpacing()), f, line)
-        outline = QColor(OUTLINE_LIGHT if not is_light(self.color) else OUTLINE_DARK)
-        outline.setAlpha(210)
-        p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(_pen(outline, 3.5))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(self.color)
         p.drawPath(path)
         if self.editing:
-            x = self.pos.x() + fm.horizontalAdvance(lines[-1]) + 2
-            y = self.pos.y() + (len(lines) - 1) * fm.lineSpacing()
-            p.fillRect(QRectF(x, y, 2, fm.height()), C.ACCENT)
+            p.fillRect(self.caret_rect(), C.ACCENT)
         p.restore()
 
 
@@ -269,7 +537,8 @@ class Counter(Shape):
         p.restore()
 
 
-DRAG_TOOLS = {"line": Line, "arrow": Arrow, "rect": Box, "ellipse": Ellipse, "pixelate": Pixelate, "blur": Blur}
+DRAG_TOOLS = {"line": Line, "arrow": Arrow, "rect": Box, "solid": SolidBox, "ellipse": Ellipse, "pixelate": Pixelate,
+              "blur": Blur}
 
 
 def create(tool: str, pos: QPointF, color: QColor, size: int) -> Shape | None:

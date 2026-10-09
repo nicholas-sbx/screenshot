@@ -34,7 +34,7 @@ p = QPainter(desktop)
 p.fillRect(0, 0, 800, 600, QColor("#2050c0"))
 p.fillRect(800, 0, 640, 480, QColor("#20a050"))
 p.end()
-capture.grab_desktop = lambda preferred="auto", pointer=False: desktop.copy()
+capture.grab_desktop = lambda preferred="auto", pointer=False, also_pointer=None: desktop.copy()
 windows.WindowFinder.supported = staticmethod(lambda: False)
 windows.query_compositor = lambda: None
 shots = tmp / "shots"

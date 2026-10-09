@@ -8,20 +8,23 @@ from pathlib import Path
 
 from flatshot import config, icons, keys, output, shapes, theme
 from flatshot.qt import (
-    QColor, QEvent, QFileDialog, QFont, QFontMetricsF, QHBoxLayout, QImage, QMessageBox, QPainter, QPen, QPixmap,
-    QPoint, QPointF, QRectF, QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
+    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QHBoxLayout, QImage, QPainter, QPen, QPixmap, QPoint,
+    QPointF, QRectF, QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
 )
 from flatshot.theme import C, SWATCHES, font
 from flatshot.widgets import TOOLS, CustomSwatch, Divider, IconButton, SizeButton, Swatch, _Button
 
 # The overlay's drawing tools (not capturing or recording).
 EDIT_TOOLS = [t for t in TOOLS if t[0] not in ("region", "record")]
-COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
+COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "solid", "ellipse", "marker", "text", "counter")
 CUSTOM = len(SWATCHES)  # the colour index of your own colour
 ZOOM = (0.05, 32.0)
 # A touchpad pinch (older PyQt6 builds, as in Debian 12, don't name these).
 _gesture, _zoom = getattr(QEvent.Type, "NativeGesture", None), getattr(Qt.NativeGestureType, "ZoomNativeGesture", None)
 PINCH = (_gesture, _zoom) if _gesture is not None and _zoom is not None else None
+MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in ("Shift", "Control", "Alt", "AltGr", "Meta")}
+SHAPE_HINT = "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it"
+TEXT_HINT = "Click to place text, or on text to change it  ·  Drag text to move it  ·  Shift+Enter for a new line"
 HINT = "Scroll to move around  ·  Ctrl+scroll to zoom  ·  Space+drag or middle-drag to pan"
 
 _open: list["Editor"] = []
@@ -84,6 +87,8 @@ class Editor(QWidget):
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(self._unsay)
+        self._closing = False  # closing for sure: the changes were saved or let go
+        self.ask_save: AskSave | None = None
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         column = QVBoxLayout(self)
@@ -208,6 +213,9 @@ class Editor(QWidget):
     def begin_text(self, shape: shapes.Text):
         self.commit_text()
         self.text_edit = shape
+        if shape.replaces is not None:
+            shape.replaces.hidden = True  # (the copy is shown while it's edited)
+        self.bar.refresh()
         self.canvas.update()
 
     def commit_text(self) -> bool:
@@ -215,20 +223,41 @@ class Editor(QWidget):
             return False
         shape, self.text_edit = self.text_edit, None
         shape.editing = False
-        if shape.is_valid():
+        if shape.is_valid() and shape.changed():
             self.commit(shape)
+        elif shape.replaces is not None:
+            shape.replaces.hidden = False  # edited back to as it was
+        self.bar.refresh()
         self.canvas.update()
         return True
+
+    def text_at(self, pos: QPointF):
+        """The text drawn at ``pos`` (picture coordinates, topmost), if any."""
+        return next((s for s in reversed(self.annotations)
+                     if isinstance(s, shapes.Text) and not s.hidden and s.contains(pos)), None)
+
+    def can_undo(self) -> bool:
+        return bool(self.annotations) or self.text_edit is not None
+
+    def can_redo(self) -> bool:
+        return bool(self.undone)
 
     def undo(self):
         self.commit_text()
         if self.annotations:
-            self.undone.append(self.annotations.pop())
+            shape = self.annotations.pop()
+            if getattr(shape, "replaces", None) is not None:
+                shape.replaces.hidden = False  # the text as it was before it was edited
+            self.undone.append(shape)
             self._changed()
 
     def redo(self):
+        self.commit_text()
         if self.undone:
-            self.annotations.append(self.undone.pop())
+            shape = self.undone.pop()
+            if getattr(shape, "replaces", None) is not None:
+                shape.replaces.hidden = True
+            self.annotations.append(shape)
             self._changed()
 
     def _changed(self):
@@ -257,7 +286,8 @@ class Editor(QWidget):
         image.setDevicePixelRatio(self.dpr)
         p = QPainter(image)
         for shape in self.annotations:
-            shape.paint(p, self.base)
+            if not shape.hidden:
+                shape.paint(p, self.base)
         p.end()
         image.setDevicePixelRatio(1.0)
         return image.convertToFormat(QImage.Format.Format_ARGB32 if self.alpha else QImage.Format.Format_RGB32)
@@ -265,16 +295,23 @@ class Editor(QWidget):
     def save(self) -> bool:
         return self._save_to(self.path)
 
-    def save_as(self):
-        """Ask where to (Qt's own dialog, without blocking: the desktop's
-        through the portal can hang a tray app), then save there."""
-        dialog = QFileDialog(self, "Save as", str(self.path))
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
-        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setNameFilters([f"{label} (*.{key})" for key, label, _, _ in output.writable_formats()])
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        dialog.fileSelected.connect(lambda chosen: chosen and self._save_to(Path(chosen)))
-        dialog.open()
+    def save_as(self, then=None):
+        """Ask where to, with the desktop's own file dialog (KDE's, through
+        the portal, without blocking), then save there; then ``then()``."""
+        from flatshot import filechooser
+
+        formats = output.writable_formats()
+        filters = [(label, [f"*.{key}"] + (["*.jpeg"] if key == "jpg" else [])) for key, label, _, _ in formats]
+        ext = self.path.suffix.lower().lstrip(".")
+        current = next((i for i, f in enumerate(formats) if f[0] == ("jpg" if ext == "jpeg" else ext)), 0)
+
+        def chosen(path: str):
+            if self.base.isNull():
+                return  # (closed meanwhile)
+            if self._save_to(Path(path)) and then is not None:
+                then()
+
+        filechooser.save_file(self, "Save as", self.path, filters, chosen, current)
 
     def _save_to(self, path: Path) -> bool:
         try:
@@ -292,6 +329,8 @@ class Editor(QWidget):
     def copy(self):
         ok, _ = output.copy_image(self.render())
         self._say("Copied to the clipboard" if ok else "Couldn't copy to the clipboard")
+        if ok:
+            self.bar.copied()
 
     def _say(self, message: str):
         """Show ``message`` in the status line for a few seconds."""
@@ -308,19 +347,21 @@ class Editor(QWidget):
     def keyPressEvent(self, event):
         k = keyval(event.key())
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-        enter = k in (keyval(Qt.Key.Key_Return), keyval(Qt.Key.Key_Enter))
-        if self.text_edit is not None and not ctrl:
+        if self.ask_save is not None and self.ask_save.isVisible():
+            self.ask_save.key(event)
+            return
+        if self.text_edit is not None:
             shape = self.text_edit
-            if k == keyval(Qt.Key.Key_Escape) or (enter and not shift):
-                self.commit_text()
-            elif enter:
-                shape.text += "\n"
-            elif k == keyval(Qt.Key.Key_Backspace):
-                shape.text = shape.text[:-1]
-            elif event.text() and event.text().isprintable():
-                shape.text += event.text()
-            self.canvas.update()
+            action = self.keymap.action(event, keys.EDITOR) if ctrl else None
+            used = action in ("undo", "redo") and shape.undo_edit(redo=action == "redo")
+            if not used:
+                used = shape.key(event)
+                if used == "commit":
+                    self.commit_text()
+            if used:
+                self.canvas.update()
+                return
+        if self.canvas.modifier_changed(event):
             return
         if k == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
             self.canvas.set_space(True)
@@ -358,21 +399,20 @@ class Editor(QWidget):
     def keyReleaseEvent(self, event):
         if keyval(event.key()) == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
             self.canvas.set_space(False)
+        self.canvas.modifier_changed(event)
 
     # -- closing -------------------------------------------------------------
 
     def closeEvent(self, event):
         self.commit_text()
-        if self.dirty:
-            box = QMessageBox(QMessageBox.Icon.Question, "Annotate",
-                              f"Save the changes to {self.path.name}?", parent=self)
-            box.setStandardButtons(QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
-                                   | QMessageBox.StandardButton.Cancel)
-            answer = box.exec()
-            if answer == QMessageBox.StandardButton.Cancel or (
-                    answer == QMessageBox.StandardButton.Save and not self.save()):
-                event.ignore()
-                return
+        if self.dirty and not self._closing:
+            # Asked inside the window, not in a dialog of its own.
+            event.ignore()
+            self.close_picker()
+            if self.ask_save is None:
+                self.ask_save = AskSave(self)
+            self.ask_save.ask()
+            return
         event.accept()
         if self in _open:
             _open.remove(self)
@@ -383,8 +423,103 @@ class Editor(QWidget):
             for callback in callbacks:
                 QTimer.singleShot(0, callback)
 
+    def answer(self, choice: str):
+        """The answer to "Save the changes?": save, discard or cancel."""
+        self.ask_save.hide()
+        self.setFocus()
+        if choice == "save":
+            if self.save():
+                self._closing = True
+                self.close()
+        elif choice == "discard":
+            self._closing = True
+            self.close()
+
+    def resizeEvent(self, event):
+        if self.ask_save is not None:
+            self.ask_save.setGeometry(self.rect())
+
     def paintEvent(self, event):
         QPainter(self).fillRect(self.rect(), C.BASE)
+
+
+class AskSave(QWidget):
+    """"Save the changes?" over the editor, in its own look: the window
+    dimmed, a card in the middle with Don't save, Cancel and Save. Enter
+    saves, Esc cancels."""
+
+    def __init__(self, ed: Editor):
+        super().__init__(ed)
+        self.ed = ed
+        self.title_font = font(15, QFont.Weight.DemiBold)
+        self.body_font = font(13)
+        self.buttons = []
+        for text, icon, choice, strong in (("Don't save", "trash", "discard", False),
+                                           ("Cancel", "close", "cancel", False), ("Save", "save", "save", True)):
+            b = ActionButton(ed, text, icon, "", self)
+            b.set_look(text, icon, strong)
+            b.clicked.connect(lambda _=False, c=choice: ed.answer(c))
+            self.buttons.append(b)
+        self.hide()
+
+    def ask(self):
+        self.setGeometry(self.ed.rect())
+        self.show()
+        self.raise_()
+        self.setFocus()
+        self.update()
+
+    def key(self, event):
+        k = keyval(event.key())
+        if k == keyval(Qt.Key.Key_Escape):
+            self.ed.answer("cancel")
+        elif k in (keyval(Qt.Key.Key_Return), keyval(Qt.Key.Key_Enter)):
+            self.ed.answer("save")
+        elif k == keyval(Qt.Key.Key_D) or (k == keyval(Qt.Key.Key_W)
+                                            and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.ed.answer("discard")
+
+    def keyPressEvent(self, event):
+        self.key(event)
+
+    def _card(self) -> QRectF:
+        w = max(380.0, sum(b.width() for b in self.buttons) + 16 * 2 + 8 * 2)
+        w = min(w, self.width() - 32.0)
+        h = 168.0
+        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+
+    def resizeEvent(self, event):
+        card = self._card()
+        x = card.right() - 20
+        for b in reversed(self.buttons):
+            x -= b.width()
+            b.move(round(x), round(card.bottom() - 20 - b.height()))
+            x -= 8
+
+    def mousePressEvent(self, event):
+        event.accept()  # (nothing under it is clicked meanwhile)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        shade = QColor(C.DIM)
+        shade.setAlpha(150)
+        p.fillRect(self.rect(), shade)
+        card = self._card()
+        p.setPen(QPen(C.LINE, 1))
+        p.setBrush(C.BASE)
+        p.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        p.setPen(C.TEXT)
+        p.setFont(self.title_font)
+        inner = card.adjusted(22, 20, -22, 0)
+        name = QFontMetricsF(self.title_font).elidedText(f"Save the changes to {self.ed.path.name}?",
+                                                         Qt.TextElideMode.ElideMiddle, inner.width())
+        p.drawText(QRectF(inner.left(), inner.top(), inner.width(), 24), Qt.AlignmentFlag.AlignVCenter, name)
+        p.setPen(C.SOFT)
+        p.setFont(self.body_font)
+        p.drawText(QRectF(inner.left(), inner.top() + 32, inner.width(), 44),
+                   Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap,
+                   "Your drawings will be lost if you don't save them.")
 
 
 class _Bar(QWidget):
@@ -419,15 +554,23 @@ class _Bar(QWidget):
         row.addWidget(self.size_button)
         row.addWidget(Divider(self))
         km = ed.keymap
+        self.history = []
         for icon, hint, slot in (("undo", km.hint("Undo", "undo"), ed.undo), ("redo", km.hint("Redo", "redo"), ed.redo),
-                                 ("fit", km.hint("Fit the picture in the window", "fit"), lambda: ed.canvas.fit())):
+                                 ("fit", km.hint("Zoom to fit the picture in the window", "fit"),
+                                  lambda: ed.canvas.fit())):
             b = IconButton(ed, icon, hint, self)
             b.clicked.connect(slot)
+            self.history.append(b)
             row.addWidget(b)
+        self.history.pop()  # (fit is always there to use)
         row.addStretch(1)
         row.setSpacing(4)
-        copy = ActionButton(ed, "Copy", "copy", km.hint("Copy the picture", "copy"), self)
+        self.copy_button = copy = ActionButton(ed, "Copy", "copy", km.hint("Copy the picture", "copy"), self,
+                                               also=("Copied",))
         copy.clicked.connect(ed.copy)
+        self._copied_timer = QTimer(self)
+        self._copied_timer.setSingleShot(True)
+        self._copied_timer.timeout.connect(lambda: copy.set_look("Copy", "copy", False))
         save_as = ActionButton(ed, "Save as", "save-as", km.hint("Save to another file", "save_as"), self)
         save_as.clicked.connect(ed.save_as)
         self.save_button = ActionButton(ed, "Save", "save", "", self, also=("Saved",))
@@ -436,7 +579,14 @@ class _Bar(QWidget):
             row.addWidget(b)
         self.setFixedHeight(48)
 
+    def copied(self):
+        """Copy says "Copied" for a moment."""
+        self.copy_button.set_look("Copied", "check", False)
+        self._copied_timer.start(2000)
+
     def refresh(self):
+        self.history[0].setEnabled(self.ed.can_undo())
+        self.history[1].setEnabled(self.ed.can_redo())
         for name, b in self.tools.items():
             b.set_active(name == self.ed.tool)
         for s in self.swatches:
@@ -514,7 +664,9 @@ class _Status(QWidget):
         p.setFont(f)
         p.setPen(C.SOFT if self.ed._status else C.MUTED)
         text = self.ed._status or self.ed.hint or (
-            "Click a pixel to make it your colour  ·  Esc to stop" if self.ed.eyedropper else HINT)
+            "Click a pixel to make it your colour  ·  Esc to stop" if self.ed.eyedropper else
+            SHAPE_HINT if self.ed.active is not None and hasattr(self.ed.active, "pointer") else
+            TEXT_HINT if self.ed.tool == "text" else HINT)
         right = f"{self.ed.base.width()} × {self.ed.base.height()}   {round(self.ed.canvas.zoom * 100)}%"
         rw = QFontMetricsF(f).horizontalAdvance(right)
         p.drawText(QRectF(12, 0, self.width() - rw - 36, self.height()), Qt.AlignmentFlag.AlignVCenter, text)
@@ -536,8 +688,10 @@ class Canvas(QWidget):
         self._pan: QPointF | None = None  # where a pan began (pointer, offset)
         self._pan_offset = QPointF(0, 0)
         self._space = False
+        self._text_drag: tuple[QPointF, QPointF] | None = None  # a text being moved: (press, its position then)
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
+        self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled)  # (accents, compose, CJK in text)
 
     # -- the view ------------------------------------------------------------
 
@@ -637,15 +791,31 @@ class Canvas(QWidget):
             ed.take_color(at)
             return
         ed.close_picker()
-        if ed.commit_text() and ed.tool == "text":
+        if ed.text_edit is not None and ed.text_edit.contains(at):
+            # In the text being typed: the caret goes there (Shift: selects
+            # to there); a drag moves the text.
+            shape = ed.text_edit
+            shape.place(shape.index_at(at), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+            self._text_drag = (at, QPointF(shape.pos))
+            self.update()
+            return
+        if ed.commit_text() and ed.tool == "text" and ed.text_at(at) is None:
             return  # the first click finishes the text being typed
         if ed.tool == "text":
-            ed.begin_text(shapes.Text(at, ed.color, ed.size))
+            old = ed.text_at(at)
+            if old is not None:  # edit it again (a copy, so undo brings back the original)
+                shape = old.copy_for_editing()
+                shape.place(shape.index_at(at))
+                self._text_drag = (at, QPointF(shape.pos))
+            else:
+                shape = shapes.Text(at, ed.color, ed.size)
+            ed.begin_text(shape)
         elif ed.tool == "counter":
             ed.commit(shapes.Counter(at, ed.color, ed.size, ed.next_number()))
         else:
             ed.active = shapes.create(ed.tool, at, ed.color, ed.size)
         self.update()
+        ed.status.update()
 
     def mouseMoveEvent(self, event):
         pos = event.position()
@@ -655,11 +825,22 @@ class Canvas(QWidget):
             self._keep_in_view()
             self._changed()
             return
-        if self.ed.active is not None:
-            self.ed.active.extend(self.to_picture(pos), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+        if self._text_drag is not None and self.ed.text_edit is not None:
+            start, origin = self._text_drag
+            at = self.to_picture(pos)
+            if (at - start).manhattanLength() * self.zoom > 3 or self.ed.text_edit.pos != origin:
+                self.ed.text_edit.pos = origin + (at - start)
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+                self.update()
+        elif self.ed.active is not None:
+            self.ed.active.extend(self.to_picture(pos), **shapes.modifiers(event.modifiers()))
             self.update()
 
     def mouseReleaseEvent(self, event):
+        if self._text_drag is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._text_drag = None
+            self.update_cursor()
+            return
         if self._pan is not None and event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.LeftButton):
             self._pan = None
             self.update_cursor()
@@ -669,6 +850,7 @@ class Canvas(QWidget):
             if shape.is_valid():
                 self.ed.commit(shape)
             self.update()
+            self.ed.status.update()
 
     def wheelEvent(self, event):
         """Scrolling moves the picture (Shift: sideways); Ctrl+scroll zooms
@@ -683,6 +865,33 @@ class Canvas(QWidget):
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and not d.x():
             d = QPointF(d.y(), 0)
         self.pan_by(d)
+
+    def modifier_changed(self, event) -> bool:
+        """Shift, Ctrl or Alt pressed or let go while drawing a shape: it
+        changes at once, without waiting for the pointer to move."""
+        shape = self.ed.active
+        if shape is None or keyval(event.key()) not in MODIFIER_KEYS or not hasattr(shape, "pointer"):
+            return False
+        mods = shapes.modifiers(QGuiApplication.queryKeyboardModifiers())
+        mods["move"] = False  # (moving needs the pointer to move)
+        shape.extend(shape.pointer, **mods)
+        self.update()
+        return True
+
+    def inputMethodEvent(self, event):
+        """Text from an input method (compose, dead keys, CJK, emoji)."""
+        if self.ed.text_edit is not None and event.commitString():
+            self.ed.text_edit.insert(event.commitString())
+            self.update()
+        event.accept()
+
+    def inputMethodQuery(self, query):
+        if query == Qt.InputMethodQuery.ImEnabled:
+            return self.ed.text_edit is not None
+        if query == Qt.InputMethodQuery.ImCursorRectangle and self.ed.text_edit is not None:
+            r = self.ed.text_edit.caret_rect()
+            return QRectF(self.offset + r.topLeft() * self.zoom, r.size() * self.zoom).toAlignedRect()
+        return super().inputMethodQuery(query)
 
     def event(self, event):
         if PINCH is not None and event.type() == PINCH[0] and event.gestureType() == PINCH[1]:
@@ -706,8 +915,11 @@ class Canvas(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom < 1.0)
         p.drawPixmap(QPointF(0, 0), self.ed.base)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Only what's on the picture shows: nothing past its edges is saved.
+        p.setClipRect(QRectF(QPointF(0, 0), self.picture_size()))
         for shape in self.ed.annotations:
-            shape.paint(p, self.ed.base)
+            if not shape.hidden:
+                shape.paint(p, self.ed.base)
         if self.ed.active is not None:
             self.ed.active.paint(p, self.ed.base)
         if self.ed.text_edit is not None:

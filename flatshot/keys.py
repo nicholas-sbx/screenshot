@@ -16,6 +16,7 @@ BINDINGS = {
     "tool.line": ("Line", "L", BOTH),
     "tool.arrow": ("Arrow", "A", BOTH),
     "tool.rect": ("Rectangle", "B", BOTH),
+    "tool.solid": ("Filled rectangle", "F", BOTH),
     "tool.ellipse": ("Ellipse", "E", BOTH),
     "tool.marker": ("Highlighter", "H", BOTH),
     "tool.text": ("Text", "T", BOTH),
@@ -32,6 +33,7 @@ BINDINGS = {
     "codes": ("Show or hide QR codes", "Q", CAPTURE),
     "pin": ("Pin instead of saving", "K", CAPTURE),
     "snap": ("Snap to edges", "G", CAPTURE),
+    "pointer": ("Show or hide the mouse pointer", "M", CAPTURE),
     "copy_color": ("Copy the colour under the pointer", "I", CAPTURE),
     "save": ("Save", "Ctrl+S", EDITOR),
     "save_as": ("Save as", "Ctrl+Shift+S", EDITOR),
@@ -45,7 +47,7 @@ BINDINGS = {
 GROUPS = [
     ("Tools", [a for a in BINDINGS if a.startswith("tool.")]),
     ("Colours, sizes and undo", [a for a in BINDINGS if a.startswith(("color.", "size.")) or a in ("undo", "redo")]),
-    ("While capturing", ["codes", "pin", "snap", "copy_color"]),
+    ("While capturing", ["codes", "pin", "snap", "pointer", "copy_color"]),
     ("Annotation editor", ["save", "save_as", "copy", "fit", "actual_size", "zoom_in", "zoom_out", "close"]),
 ]
 

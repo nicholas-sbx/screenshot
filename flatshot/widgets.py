@@ -1,8 +1,8 @@
 """Custom-painted controls. Nothing here uses the Qt style for drawing."""
 
 from flatshot.qt import (
-    QAbstractButton, QColor, QConicalGradient, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QPointF,
-    QRectF, Qt, QWidget,
+    QAbstractButton, QColor, QConicalGradient, QFont, QFontMetrics, QHBoxLayout, QPainter, QPainterPath, QPen, QPoint,
+    QPointF, QRectF, Qt, QWidget,
 )
 
 from flatshot import icons
@@ -16,6 +16,7 @@ TOOLS = [
     ("line", "Line", "L"),
     ("arrow", "Arrow", "A"),
     ("rect", "Rectangle", "B"),
+    ("solid", "Filled rectangle", "F"),
     ("ellipse", "Ellipse", "E"),
     ("marker", "Highlighter", "H"),
     ("text", "Text", "T"),
@@ -23,6 +24,37 @@ TOOLS = [
     ("blur", "Blur", "U"),
     ("counter", "Counter", "N"),
 ]
+
+
+def _centred_boxes(widget: QWidget, centre: QPointF):
+    """A function giving squares (logical coordinates) round ``centre``
+    whose edges all fall on whole screen pixels, centred alike:
+    ``box(half, pixels)`` is ``half`` logical px each way, plus ``pixels``
+    screen pixels."""
+    dpr = widget.devicePixelRatioF()
+    at = widget.mapTo(widget.window(), QPoint(0, 0))
+    fx, fy = (at.x() * dpr) % 1, (at.y() * dpr) % 1  # where this widget's pixels start on the screen's
+    cx, cy = round(centre.x() * dpr + fx), round(centre.y() * dpr + fy)
+
+    def box(half: float, pixels: int = 0) -> QRectF:
+        h = max(1, round(half * dpr) + pixels)
+        return QRectF((cx - h - fx) / dpr, (cy - h - fy) / dpr, 2 * h / dpr, 2 * h / dpr)
+
+    return box
+
+
+def _fill_ring(p: QPainter, outer: QRectF, inner: QRectF, radius: float, color: QColor):
+    """The band between two rounded squares, filled (no pen to straddle pixels)."""
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    path.addRoundedRect(outer, radius, radius)
+    inset = (outer.width() - inner.width()) / 2
+    path.addRoundedRect(inner, max(0.5, radius - inset), max(0.5, radius - inset))
+    p.save()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawPath(path)
+    p.restore()
 
 
 class _Button(QAbstractButton):
@@ -114,17 +146,19 @@ class Swatch(_Button):
         p = self._painter()
         if not self.isEnabled():
             p.setOpacity(0.3)
-        c = QRectF(self.rect()).center()
+        # Every edge on a whole screen pixel, the same number of them either
+        # side of the middle: the colour sits exactly in the middle of its
+        # ring at any scale (at 125 % or 150 % a ring drawn with a pen at
+        # logical coordinates comes out a pixel thicker on one side).
+        box = _centred_boxes(self, QRectF(self.rect()).center())
         if self.selected or self.underMouse():
-            ring = QPen(C.TEXT if self.selected else C.MUTED, 2)
-            p.setPen(ring)
-            p.drawRoundedRect(QRectF(c.x() - 11, c.y() - 11, 22, 22), 7.5, 7.5)
-            p.setPen(Qt.PenStyle.NoPen)
+            _fill_ring(p, box(11), box(9), 7.5, C.TEXT if self.selected else C.MUTED)
         color = self.color()
+        inner = box(7)
         p.setBrush(color)
+        p.drawRoundedRect(inner, 4.5, 4.5)
         if is_light(color) == is_light(C.BASE):  # e.g. ink on a dark toolbar needs an edge
-            p.setPen(QPen(C.LINE, 1.2))
-        p.drawRoundedRect(QRectF(c.x() - 7, c.y() - 7, 14, 14), 4.5, 4.5)
+            _fill_ring(p, inner, box(7, -1), 4.5, C.LINE)
 
     def color(self) -> QColor:
         return SWATCHES[self.index]
@@ -352,6 +386,10 @@ class Toolbar(_Draggable):
         self.snap_button = IconButton(ctl, "magnet", "", self)
         self.snap_button.clicked.connect(ctl.toggle_snap)
         row.addWidget(self.snap_button)
+        self.pointer_button = IconButton(ctl, "cursor-off", "", self)
+        self.pointer_button.clicked.connect(ctl.toggle_pointer)
+        self.pointer_button.setVisible(ctl.pointer_image is not None)
+        row.addWidget(self.pointer_button)
 
         self.history_buttons = []
         for icon, hint, slot in [
@@ -383,8 +421,10 @@ class Toolbar(_Draggable):
             b.set_active(name == self.ctl.tool)
             b.set_dimmed(recording and name not in ("region", "record"))
         # Colours, sizes, codes, undo and pinning don't apply to a recording.
-        for w in self.swatches + [self.size_button, self.codes_button, self.pin_button] + self.history_buttons:
+        for w in self.swatches + [self.size_button, self.codes_button, self.pin_button, self.pointer_button]:
             w.setEnabled(not recording)
+        self.history_buttons[0].setEnabled(not recording and self.ctl.can_undo())
+        self.history_buttons[1].setEnabled(not recording and self.ctl.can_redo())
         self.screen_button.hint = ("Record whole screen  ·  Enter" if recording
                                    else "Capture whole screen  ·  Enter")
         for s in self.swatches:
@@ -397,6 +437,10 @@ class Toolbar(_Draggable):
         self.snap_button.set_toggle(self.ctl.snap_edges, "magnet",
                                     km.hint("Snap selections to edges in the picture", "snap") + "  ·  "
                                     + ("on (hold Ctrl to place freely)" if self.ctl.snap_edges else "off"))
+        shown = self.ctl.show_pointer
+        self.pointer_button.set_toggle(shown, "cursor" if shown else "cursor-off",
+                                       km.hint("Hide the mouse pointer" if shown else "Show the mouse pointer",
+                                               "pointer") + ("  ·  shown in the capture" if shown else ""))
         n = self.ctl.code_count()
         found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
         if self.ctl.codes_visible:

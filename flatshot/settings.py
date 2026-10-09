@@ -1,9 +1,11 @@
 """Settings window: a sidebar of pages, each a stack of quiet grouped cards.
 Changes are saved as they're made and apply from the next capture."""
 
-from flatshot import __version__, autostart, config, keys, output, theme
+from pathlib import Path
+
+from flatshot import __version__, autostart, config, filechooser, keys, output, theme
 from flatshot.qt import (
-    QAbstractButton, QApplication, QColor, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon,
+    QAbstractButton, QApplication, QColor, QComboBox, QFont, QFontMetrics, QHBoxLayout, QIcon,
     QKeySequence, QLabel, QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, QStackedWidget, Qt, QVBoxLayout,
     QWidget, Signal, keyval,
 )
@@ -656,10 +658,11 @@ class SettingsWindow(QWidget):
         card.add(Row("Folder", None, CODES_HINT, below=folder_box))
 
         def pick():
-            path = QFileDialog.getExistingDirectory(self, "Screenshot folder", folder.text())
-            if path:
+            def chosen(path):
                 folder.setText(path)
                 self._save(save_dir=path)
+
+            filechooser.choose_folder(self, "Screenshot folder", folder.text(), chosen)
 
         browse.clicked.connect(pick)
         filename = self._line("filename")
@@ -716,11 +719,13 @@ class SettingsWindow(QWidget):
                                  below=box))
 
         def pick_sound():
-            path, _ = QFileDialog.getOpenFileName(self, "Sound", sound_file.text() or "/usr/share/sounds",
-                                                  "Sounds (*.oga *.ogg *.wav *.flac *.mp3 *.opus)")
-            if path:
+            def chosen(path):
                 sound_file.setText(path)
                 self._save(sound_file=path)
+
+            start = str(Path(sound_file.text()).parent) if sound_file.text() else "/usr/share/sounds"
+            filechooser.open_file(self, "Sound", start,
+                                  [("Sounds", ["*.oga", "*.ogg", "*.wav", "*.flac", "*.mp3", "*.opus"])], chosen)
 
         def try_sound():
             from flatshot import sound
@@ -758,10 +763,11 @@ class SettingsWindow(QWidget):
         card.add(Row("Folder", None, CODES_HINT, below=box))
 
         def pick():
-            path = QFileDialog.getExistingDirectory(self, "Recordings folder", folder.text())
-            if path:
+            def chosen(path):
                 folder.setText(path)
                 self._save(record_dir=path)
+
+            filechooser.choose_folder(self, "Recordings folder", folder.text(), chosen)
 
         browse.clicked.connect(pick)
         filename = self._line("record_filename")
