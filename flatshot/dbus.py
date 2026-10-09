@@ -78,6 +78,7 @@ class SignalListener(QObject):
         self.rules = rules
         self.unique_name = ""
         self._conn = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> bool:
         if open_dbus_connection is None:
@@ -90,14 +91,25 @@ class SignalListener(QObject):
             return False
         self._conn = conn
         self.unique_name = conn.unique_name
-        threading.Thread(target=self._loop, args=(conn,), daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, args=(conn,), daemon=True)
+        self._thread.start()
         return True
 
     def stop(self) -> None:
+        """Stop listening, and wait for the thread to end: this object may
+        be let go of right after, and must not be while the thread could
+        still emit through it (that crashes PySide6)."""
         conn, self._conn = self._conn, None
         if conn is not None:
             try:
                 conn.sock.shutdown(socket.SHUT_RDWR)  # unblocks receive() in the thread
+            except Exception:  # noqa: BLE001
+                pass
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(2)
+        if conn is not None:
+            try:
                 conn.close()
             except Exception:  # noqa: BLE001
                 pass
