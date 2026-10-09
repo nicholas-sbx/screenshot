@@ -1094,8 +1094,14 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     picker.hex.setText("22aa77")
     picker.hex.textEdited.emit("22aa77")  # (the # is optional)
     assert s.custom_color.name().upper() == "#22AA77", s.custom_color.name()
-    picker.hex.setFocus()
-    press(picker.hex, Qt.Key.Key_Return)
+    # Enter in the hex field: it doesn't reach the overlay (which would
+    # capture), and closes the picker. (Sent to the picker, not the field:
+    # Qt 6.4 crashes on a key sent to a text field on a compositor with no
+    # keyboard, as in the headless test.)
+    press(picker, Qt.Key.Key_Return)
+    assert not s.done, "Enter in the picker captured"
+    picker.hex.returnPressed.emit()
+    app.processEvents()
     assert not s.done and not ov.picker_open(), "Enter in the hex field captured, or left the picker open"
     assert config.load().custom_color == "#22AA77", "your colour wasn't remembered"
     ov.toolbar.custom.click()

@@ -2,7 +2,7 @@
 only when it's first opened, so it costs screenshots nothing."""
 
 from flatshot.qt import (
-    QColor, QImage, QLinearGradient, QLineEdit, QPainter, QPainterPath, QPen, QPointF, QRect, QRectF, Qt, QWidget,
+    QColor, QImage, QLinearGradient, QLineEdit, QPainter, QPainterPath, QPen, QPointF, QRect, QRectF, Qt, QTimer, QWidget,
 )
 from flatshot.theme import C, font
 from flatshot.widgets import IconButton
@@ -33,7 +33,9 @@ class ColorPicker(QWidget):
             f" border-radius: 6px; padding: 0 8px; selection-background-color: {C.HOVER.name()}; }}"
             f"QLineEdit:focus {{ border-color: {C.MUTED.name()}; }}")
         self.hex.textEdited.connect(self._typed)
-        self.hex.returnPressed.connect(ctl.close_picker)
+        # (After the key is done with: hiding the field while it handles the
+        # key crashes Qt 6.4's Wayland text input.)
+        self.hex.returnPressed.connect(lambda: QTimer.singleShot(0, ctl.close_picker))
         self.dropper = IconButton(ctl, "eyedropper", "Take a colour from the screen  ·  then click a pixel",
                                   self, size=28)
         self.dropper.move(178, 166)
