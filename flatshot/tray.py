@@ -79,6 +79,9 @@ class TrayApp(QObject):
         self._build_tray()
         if self.tray is None:
             print("flatshot: no system tray found; running in the background anyway", file=sys.stderr)
+        from flatshot import capture
+
+        capture.warm_up(config.load().backend)  # (the KWin helper, ready for the first capture)
         return True
 
     # -- tray ----------------------------------------------------------------

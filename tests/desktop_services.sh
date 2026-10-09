@@ -36,19 +36,27 @@ export FLATSHOT_KWIN_GRAB=$HELPER
 $PY tests/fake_kwin_screenshot.py &
 pids+=($!)
 sleep 1.5
-$PY - <<'PYEOF'
-import sys, time
+for serve in 1 0; do
+FLATSHOT_KWIN_SERVE=$serve $PY - <<'PYEOF'
+import os, sys, time
 from flatshot.qt import QGuiApplication
 app = QGuiApplication(sys.argv)
 from flatshot import capture
-t = time.monotonic()
-img = capture.grab_desktop("kwin")
-ms = (time.monotonic() - t) * 1000
-assert (img.width(), img.height()) == (1500, 900), img.size()
+kept = os.environ["FLATSHOT_KWIN_SERVE"] == "1"
 want = 0xFF000000 | (300 % 256) << 16 | (200 % 256) << 8 | 0x5A
-assert img.pixel(300, 200) == want, hex(img.pixel(300, 200))
-print(f"kwin helper ok: 1500x900 raw grab in {ms:.0f} ms")
+for i in range(3):
+    t = time.monotonic()
+    img = capture.grab_desktop("kwin")
+    ms = (time.monotonic() - t) * 1000
+    assert (img.width(), img.height()) == (1500, 900), img.size()
+    assert img.pixel(300, 200) == want, hex(img.pixel(300, 200))
+    assert capture.kwin_kept_running() is kept, (kept, capture.last_grab)
+    print(f"kwin helper ok ({capture.last_grab}): 1500x900 raw grab in {ms:.0f} ms")
+extra = []
+img = capture.grab_desktop("kwin", also_pointer=extra)
+assert extra and extra[0].pixel(300, 200) == want, "both at once"
 PYEOF
+done
 
 echo "== screen-cast portal (against a fake xdg-desktop-portal)"
 $PY tests/fake_screencast_portal.py &

@@ -7,9 +7,12 @@ trip) and then ``spectacle``; ``grim`` on wlroots compositors;
 ``gnome-screenshot`` on GNOME. On X11 Qt can grab directly.
 """
 
+import fcntl
 import os
 import re
+import select
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -78,23 +81,201 @@ def kwin_helper() -> str | None:
 
 
 def _kwin(pointer: bool) -> QImage:
+    """KWin's picture: through the helper kept running (``--serve``), KWin
+    writing the pixels straight into a pipe of ours and on into the image;
+    else through a helper run for this one capture."""
     helper = kwin_helper()
     if helper is None:
         raise CaptureError("flatshot-kwin-grab is not installed")
-    proc = subprocess.run([helper] + (["--cursor"] if pointer else []), stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
-    if proc.returncode != 0:
-        raise CaptureError(proc.stderr.decode(errors="replace").strip() or f"exit {proc.returncode}")
-    head, _, data = proc.stdout.partition(b"\n")
+    server = _kwin_server(helper)
+    if server is not None:
+        try:
+            return server.grab(pointer)
+        except _ServerGone:
+            _drop_server(server)  # (a new one is started next time)
+    return _kwin_once(helper, pointer)
+
+
+def _kwin_once(helper: str, pointer: bool) -> QImage:
+    proc = subprocess.Popen([helper] + (["--cursor"] if pointer else []), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    try:
+        head = proc.stdout.readline()  # (unbuffered: no pixels read along with it)
+        if not head:
+            proc.wait(15)
+            raise CaptureError(proc.stderr.read().decode(errors="replace").strip() or f"exit {proc.returncode}")
+        return _read_raw(head, proc.stdout.fileno())
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+        try:
+            proc.wait(15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def _read_raw(head: bytes, fd: int) -> QImage:
+    """The picture after a "FLATSHOT-RAW w h stride format" line: read from
+    ``fd`` straight into the image's memory where the rows are laid out
+    alike (they are, for KWin's 32-bit formats)."""
     parts = head.split()
     if len(parts) != 5 or parts[0] != b"FLATSHOT-RAW":
-        raise CaptureError("unexpected output from flatshot-kwin-grab")
+        raise CaptureError("unexpected output from flatshot-kwin-grab: " + head.decode(errors="replace").strip())
     width, height, stride, fmt = (int(x) for x in parts[1:])
-    if len(data) < stride * height:
-        raise CaptureError("short image from flatshot-kwin-grab")
-    image = QImage(data, width, height, stride, QImage.Format(fmt))
+    image = QImage(width, height, QImage.Format(fmt))
     if image.isNull():
         raise CaptureError(f"unsupported pixel format {fmt}")
-    return image.copy()  # detach from `data`
+    if image.bytesPerLine() == stride:
+        _read_exactly(fd, _writable(image))
+        return image
+    data = bytearray(stride * height)
+    _read_exactly(fd, memoryview(data))
+    return QImage(bytes(data), width, height, stride, QImage.Format(fmt)).copy()
+
+
+def _writable(image: QImage) -> memoryview:
+    bits = image.bits()
+    if hasattr(bits, "setsize"):  # PyQt6
+        bits.setsize(image.sizeInBytes())
+    return memoryview(bits).cast("B")
+
+
+def _read_exactly(fd: int, into: memoryview, timeout: float = 15.0):
+    got, size = 0, len(into)
+    while got < size:
+        ready, _, _ = select.select([fd], [], [], timeout)
+        if not ready:
+            raise CaptureError("flatshot-kwin-grab: no picture came")
+        n = os.readv(fd, [into[got:]])
+        if n == 0:
+            raise CaptureError(f"short image from flatshot-kwin-grab ({got} of {size} bytes)")
+        got += n
+
+
+def _big_pipe() -> tuple[int, int]:
+    """A pipe as big as the system allows (up to 16 MiB), so a picture goes
+    through in a few large writes rather than hundreds of 64 KiB ones."""
+    r, w = os.pipe2(os.O_CLOEXEC)
+    try:
+        with open("/proc/sys/fs/pipe-max-size") as f:
+            size = min(int(f.read()), 16 << 20)
+        fcntl.fcntl(w, getattr(fcntl, "F_SETPIPE_SZ", 1031), size)
+    except (OSError, ValueError):
+        pass  # (the usual size then)
+    return r, w
+
+
+class _ServerGone(Exception):
+    pass
+
+
+class _KWinServer:
+    """flatshot-kwin-grab --serve, started once and kept: a capture then
+    costs neither starting a process nor connecting to D-Bus."""
+
+    def __init__(self, helper: str):
+        self.helper = helper
+        mine, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        try:
+            self.proc = subprocess.Popen([helper, "--serve"], stdin=theirs, stdout=subprocess.DEVNULL,
+                                         start_new_session=True)
+        finally:
+            theirs.close()
+        mine.settimeout(5)
+        self.sock = mine
+        self.lock = threading.Lock()
+        try:
+            hello = mine.recv(64)
+        except OSError as e:
+            self.close()
+            raise _ServerGone(str(e)) from e
+        if not hello.startswith(b"FLATSHOT-SERVE"):
+            self.close()
+            raise _ServerGone("no hello from flatshot-kwin-grab --serve")
+
+    def grab(self, pointer: bool) -> QImage:
+        r, w = _big_pipe()
+        try:
+            with self.lock:  # (one request at a time; the pixels are read after, side by side)
+                try:
+                    socket.send_fds(self.sock, [b"grab cursor" if pointer else b"grab"], [w])
+                    os.close(w)
+                    w = -1
+                    head = self.sock.recv(512)
+                except OSError as e:
+                    raise _ServerGone(str(e)) from e
+            if not head:
+                raise _ServerGone("flatshot-kwin-grab --serve stopped")
+            if head.startswith(b"ERR "):
+                raise CaptureError(head[4:].decode(errors="replace").strip())
+            return _read_raw(head, r)
+        finally:
+            os.close(r)
+            if w >= 0:
+                os.close(w)
+
+    def close(self):
+        try:
+            self.sock.close()  # (the helper ends when it sees that)
+        finally:
+            try:
+                self.proc.wait(1)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+_server: _KWinServer | None = None
+_server_lock = threading.Lock()
+_server_failed: set = set()  # helpers (path, mtime) that can't serve: too old, or broken
+
+
+def _kwin_server(helper: str) -> _KWinServer | None:
+    """The helper kept running, started if need be; None if it can't be."""
+    global _server
+    if os.environ.get("FLATSHOT_KWIN_SERVE", "1") == "0":
+        return None
+    try:
+        key = (helper, os.stat(helper).st_mtime_ns)
+    except OSError:
+        return None
+    with _server_lock:
+        if _server is not None and _server.helper == helper and _server.proc.poll() is None:
+            return _server
+        if _server is not None:
+            _server.close()
+            _server = None
+        if key in _server_failed:
+            return None
+        try:
+            version = subprocess.run([helper, "--version"], capture_output=True, timeout=5).stdout.split()
+            if len(version) < 2 or int(version[-1]) < 3:
+                raise _ServerGone("too old to stay running")
+            _server = _KWinServer(helper)
+        except (OSError, ValueError, subprocess.SubprocessError, _ServerGone):
+            _server_failed.add(key)
+            return None
+        return _server
+
+
+def _drop_server(server: _KWinServer):
+    global _server
+    with _server_lock:
+        if _server is server:
+            _server = None
+    server.close()
+
+
+def kwin_kept_running() -> bool:
+    return _server is not None and _server.proc.poll() is None
+
+
+def warm_up(preferred: str = "auto") -> None:
+    """Start the KWin helper now (the tray app does, in the background), so
+    the first capture doesn't wait for it."""
+    order = backend_order() if preferred in ("", "auto") else [preferred]
+    helper = kwin_helper()
+    if order and order[0] == "kwin" and helper is not None:
+        threading.Thread(target=_kwin_server, args=(helper,), daemon=True).start()
 
 
 def _spectacle(pointer: bool) -> QImage:
@@ -178,7 +359,8 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                     errors.append(f"{name}: {e}")
                     continue
                 second.join(5)  # (both ask for the same frame: about as quick as one)
-                last_grab = f"{name}, with and without the pointer at once" + (
+                last_grab = f"{name}{' (kept running)' if name == 'kwin' and kwin_kept_running() else ''}" \
+                    ", with and without the pointer at once" + (
                     "" if also_pointer else " (the one with the pointer failed)")
                 return image
         if name == "qt":
@@ -190,7 +372,8 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                 continue
         try:
             image = fn(pointer)
-            last_grab = f"{name}{', with the pointer' if pointer else ''}" + (
+            last_grab = f"{name}{' (kept running)' if name == 'kwin' and kwin_kept_running() else ''}" \
+                f"{', with the pointer' if pointer else ''}" + (
                 f" (after {'; '.join(errors)})" if errors else "")
             return image
         except subprocess.CalledProcessError as e:
