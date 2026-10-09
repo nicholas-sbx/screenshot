@@ -730,6 +730,30 @@ def _recording_crop(tmp: Path):
     from flatshot import screencast
     from flatshot.qt import QRect
 
+    # Which part of the desktop a portal stream shows, however the desktop reports it.
+    left, right = QRect(0, 0, 1280, 720), QRect(1280, 0, 1366, 768)  # 1920x1080 at 150 %, then 1366x768 at 100 %
+    screens = [left, right]
+    assert screencast.stream_shows((0, 0), (1280, 720), 1.5, screens) == left  # logical
+    assert screencast.stream_shows((0, 0), (1920, 1080), 1.5, screens) == left  # device pixels
+    assert screencast.stream_shows((1280, 0), (1366, 768), 1.0, screens) == right
+    assert screencast.stream_shows((0, 0), (2646, 768), 1.5, screens) == QRect(0, 0, 2646, 768)  # the workspace
+    assert screencast.stream_shows((5, 5), (100, 50), 1.0, screens) == QRect(5, 5, 100, 50)  # as reported
+
+    class Hidpi:  # the left screen above
+        def geometry(self):
+            return left
+
+        def devicePixelRatio(self):
+            return 2.0  # what Qt may say for 150 %
+
+        def name(self):
+            return "eDP-1"
+
+    target = screencast.Target(QRect(100, 100, 200, 100), Hidpi(), 1.5)
+    assert target.crop_in(left) == ((1920, 1080), QRect(150, 150, 300, 150)), target.crop_in(left)
+    # KDE sends the whole workspace at scale 1: crop in those pixels, not upscaled.
+    assert target.crop_in(QRect(0, 0, 2646, 768), (2646, 768)) == ((2646, 768), QRect(100, 100, 200, 100))
+
     if not (screencast.have("gst-launch-1.0") and screencast.gst_has("videotestsrc") and screencast.have("ffmpeg")
             and screencast._gst_video_encoder("mp4") is not None):
         print("self-test: recording crop skipped (needs GStreamer and ffmpeg)")

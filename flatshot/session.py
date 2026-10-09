@@ -412,7 +412,9 @@ class Session:
         thumbnail = overlay.render(rect)
         opts = screencast.Options(**vars(self.rec_opts))
         self._close_overlays()
-        rec = recording.Recording(self.cfg, screencast.Target(area, screen), opts, self.notifier, shot, thumbnail,
+        # The screen's real scale is the screenshot's: Qt's can be rounded.
+        target = screencast.Target(area, screen, overlay.dpr())
+        rec = recording.Recording(self.cfg, target, opts, self.notifier, shot, thumbnail,
                                   self.on_action, tray=self.on_recording is not None)
         self.recording = rec
         if self.on_recording is not None:

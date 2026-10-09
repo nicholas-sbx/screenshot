@@ -75,20 +75,57 @@ class Target:
     """What to record: ``rect`` in global logical coordinates, all on ``screen``."""
     rect: QRect
     screen: object  # QScreen
+    # The screen's real pixels per logical pixel, as measured from the screenshot
+    # (Qt's devicePixelRatio can be rounded, e.g. 2 for 125 %). 0: use Qt's.
+    scale: float = 0.0
 
-    def crop_in(self, frame: QRect) -> tuple[tuple[int, int], QRect]:
-        """For video of ``frame`` (global logical coordinates, at this
-        screen's scale): the frame's size in pixels, and the area within it
-        with an even size (H.264 and VP8 need one), kept inside it."""
-        dpr = self.screen.devicePixelRatio()
-        size = (round(frame.width() * dpr), round(frame.height() * dpr))
-        r = QRect(round((self.rect.x() - frame.x()) * dpr), round((self.rect.y() - frame.y()) * dpr),
-                  round(self.rect.width() * dpr), round(self.rect.height() * dpr)).intersected(QRect(0, 0, *size))
+    def pixel_scale(self) -> float:
+        return self.scale or self.screen.devicePixelRatio()
+
+    def crop_in(self, shown: QRect, size: tuple[int, int] | None = None) -> tuple[tuple[int, int], QRect]:
+        """For video that shows ``shown`` (global logical coordinates) at
+        ``size`` pixels (default: at this screen's scale): that size, and the
+        area within it, with an even size (H.264 and VP8 need one), kept
+        inside it."""
+        if size is None:
+            s = self.pixel_scale()
+            size = (round(shown.width() * s), round(shown.height() * s))
+        sx, sy = size[0] / max(1, shown.width()), size[1] / max(1, shown.height())
+        r = QRect(round((self.rect.x() - shown.x()) * sx), round((self.rect.y() - shown.y()) * sy),
+                  round(self.rect.width() * sx), round(self.rect.height() * sy)).intersected(QRect(0, 0, *size))
         return size, QRect(r.x(), r.y(), r.width() & ~1, r.height() & ~1)
 
     def local_pixels(self) -> QRect:
         """The area in the screen's own pixels."""
         return self.crop_in(self.screen.geometry())[1]
+
+
+def stream_shows(position: tuple[int, int], size: tuple[int, int], scale: float,
+                 screens: list[QRect] | None = None) -> QRect:
+    """Which part of the desktop (global logical coordinates) a portal
+    stream at ``position`` with ``size`` shows: one monitor, or the whole
+    workspace. Desktops differ in whether they report these in logical or
+    device pixels, so a monitor matches by place and shape; failing that,
+    the values are taken as logical, as the portal documents."""
+    if screens is None:
+        screens = [s.geometry() for s in QGuiApplication.screens()]
+    workspace = QRect()
+    for g in screens:
+        workspace = workspace.united(g)
+    (x, y), (w, h) = position, size
+    if w <= 0 or h <= 0:
+        return QRect(x, y, max(1, w), max(1, h))
+    aspect = w / h
+
+    def place_fits(g: QRect) -> bool:
+        return (x, y) == (g.x(), g.y()) or (abs(x - g.x() * scale) <= 2 and abs(y - g.y() * scale) <= 2)
+
+    fits = [g for g in screens + [workspace]
+            if place_fits(g) and abs(g.width() / max(1, g.height()) - aspect) <= 0.01 * aspect]
+    for g in fits:  # the reported size, in logical pixels or in device pixels
+        if (g.width(), g.height()) == (w, h) or (abs(g.width() * scale - w) <= 2 and abs(g.height() * scale - h) <= 2):
+            return g
+    return fits[0] if fits else QRect(x, y, w, h)
 
 
 # -- tools ----------------------------------------------------------------------
@@ -297,7 +334,9 @@ class Portal(QObject):
         self.target = target
         self.cursor = cursor
         self.node = 0
-        self.stream_rect: QRect | None = None  # the shared monitor, global logical coords
+        self.stream_rect: QRect | None = None  # what the stream shows, global logical coords
+        self.reported = ""  # the portal's own position and size, for the log
+        self.frame_size: tuple[int, int] | None = None  # the stream's pixels, as measured
         self._conn = None
         self._session = ""
         self._lock = threading.Lock()
@@ -383,7 +422,8 @@ class Portal(QObject):
         pos, size = props.get("position"), props.get("size")
         if pos and size:
             (x, y), (w, h) = pos[1], size[1]
-            self.stream_rect = QRect(int(x), int(y), int(w), int(h))
+            self.reported = f"position {x},{y} size {w}x{h}"
+            self.stream_rect = stream_shows((int(x), int(y)), (int(w), int(h)), self.target.pixel_scale())
         shared = self._shared_screen()
         if "restore_token" in results and shared is not None:
             tokens = config.load_state().get("screencast_tokens")
@@ -399,6 +439,39 @@ class Portal(QObject):
             what = shared.name() if shared is not None else "a different part of the desktop"
             raise RecordError(f"The shared screen is {what}, but the area is on {name}. "
                               f"Record again and share {name}.")
+        # Whatever the desktop says, the stream's real size is what counts.
+        self.frame_size = self._measure()
+
+    def _measure(self) -> tuple[int, int] | None:
+        """The stream's size in pixels, from GStreamer's own negotiation (a
+        moment's work: it connects, reads the format and stops). It asks for
+        raw video, as the recorder does: offered anything, the stream may
+        not be linked at all."""
+        import re
+
+        if not have("gst-launch-1.0"):
+            return None
+        fd = self.pipewire_fd()
+        try:
+            proc = subprocess.Popen(["gst-launch-1.0", "-v", "pipewiresrc", f"fd={fd}", f"path={self.node}",
+                                     "num-buffers=1", "!", "videoconvert", "!", "fakesink"], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, pass_fds=(fd,),
+                                    start_new_session=True)
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+        try:
+            out, _ = proc.communicate(timeout=4)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                pass
+            out, _ = proc.communicate()
+        found = re.search(rb"pipewiresrc\d*\.GstPad:src: caps = video/x-raw[^\n]*?width=\(int\)(\d+)"
+                          rb"[^\n]*?height=\(int\)(\d+)", out or b"")
+        return (int(found[1]), int(found[2])) if found else None
 
     def _shared_screen(self):
         screens = QGuiApplication.screens()
@@ -475,15 +548,19 @@ def launch(how: str, target: Target, opts: Options, path: str, portal: Portal | 
             argv.append(f"--audio={audio[0]}")  # wf-recorder records one source
         return Launch(argv, stop_signal="INT")
     if how in ("portal", "test-gst"):
-        # What the stream shows: the portal says, else assume the area's screen.
-        shown = portal.stream_rect if how == "portal" and portal.stream_rect is not None \
-            else target.screen.geometry()
-        frame, crop = target.crop_in(shown)
+        # What the stream shows (the portal says, else the area's screen), at
+        # the size it really is (measured, else that part at the screen's scale).
+        portal_used = how == "portal" and portal is not None
+        shown = portal.stream_rect if portal_used and portal.stream_rect is not None else target.screen.geometry()
+        frame, crop = target.crop_in(shown, portal.frame_size if portal_used else None)
         if crop.width() < 2 or crop.height() < 2:
             raise RecordError("The area isn't in the shared screen.")
         _log(f"recording {crop.width()}x{crop.height()}+{crop.x()}+{crop.y()} of a {frame[0]}x{frame[1]} stream "
-             f"showing {_geom(shown)} (area {_geom(target.rect)} on {target.screen.name() or 'the screen'}, "
-             f"scale {target.screen.devicePixelRatio():g})")
+             f"showing {_geom(shown)}"
+             + (f" (portal: {portal.reported or 'no position or size'}, measured "
+                f"{'x'.join(map(str, portal.frame_size)) if portal.frame_size else 'nothing'})" if portal_used else "")
+             + f"; area {_geom(target.rect)} on {target.screen.name() or 'the screen'}, "
+             f"screenshot scale {target.pixel_scale():g}, Qt scale {target.screen.devicePixelRatio():g}")
         if how == "portal":
             fd = portal.pipewire_fd()
             source = f"pipewiresrc fd={fd} path={portal.node} do-timestamp=true keepalive-time=1000"
