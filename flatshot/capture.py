@@ -378,7 +378,10 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                     errors.append(f"{name}: {e}")
                     continue
                 second.join(5)  # (both ask for the same frame: about as quick as one)
-                last_grab = _describe(name, ", with and without the pointer at once") + (
+                note = _opaque(image)
+                for other in also_pointer:
+                    _opaque(other)
+                last_grab = _describe(name, ", with and without the pointer at once") + note + (
                     "" if also_pointer else " (the one with the pointer failed)")
                 return image
         if name == "qt":
@@ -390,7 +393,8 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                 continue
         try:
             image = fn(pointer)
-            last_grab = _describe(name, ", with the pointer" if pointer else "") + (
+            note = _opaque(image)
+            last_grab = _describe(name, ", with the pointer" if pointer else "") + note + (
                 f" (after {'; '.join(errors)})" if errors else "")
             return image
         except subprocess.CalledProcessError as e:
@@ -399,6 +403,25 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
         except Exception as e:  # noqa: BLE001 — try the next backend
             errors.append(f"{name}: {e}")
     raise CaptureError("could not capture the screen\n  " + "\n  ".join(errors))
+
+
+_OPAQUE = (QImage.Format.Format_ARGB32, QImage.Format.Format_ARGB32_Premultiplied)
+
+
+def _opaque(image: QImage) -> str:
+    """Make a screenshot RGB32, in place, the format Qt shows and draws
+    fastest. A screen is opaque, so ARGB32 is the same bytes and is only
+    relabelled; anything else is converted (about a millisecond). Without
+    this, an ARGB32 picture costs a premultiplying pass over every pixel
+    each time it's made ready to show. Returns a note for --verbose."""
+    fmt = image.format()
+    if fmt == QImage.Format.Format_RGB32:
+        return ""
+    if fmt in _OPAQUE:
+        image.reinterpretAsFormat(QImage.Format.Format_RGB32)
+    else:
+        image.convertTo(QImage.Format.Format_RGB32)
+    return f", {fmt.name.removeprefix('Format_')} as RGB32"
 
 
 def _describe(name: str, what: str) -> str:

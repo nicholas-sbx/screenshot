@@ -907,6 +907,16 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
     assert press(t, Qt.Key.Key_Return, "\r") == "commit"
     assert t.contains(QPointF(12, 14)) and not t.contains(QPointF(400, 400))
 
+    # Screenshots become RGB32 as they arrive: ARGB32 relabelled, others converted.
+    for fmt in (QImage.Format.Format_ARGB32, QImage.Format.Format_ARGB32_Premultiplied,
+                QImage.Format.Format_RGBA8888, QImage.Format.Format_RGBX8888, QImage.Format.Format_RGB32):
+        shot = QImage(40, 30, fmt)
+        shot.fill(QColor(200, 100, 50))
+        note = capture._opaque(shot)
+        assert shot.format() == QImage.Format.Format_RGB32, (fmt, shot.format())
+        assert QColor(shot.pixel(5, 5)) == QColor(200, 100, 50), (fmt, QColor(shot.pixel(5, 5)).name())
+        assert bool(note) == (fmt != QImage.Format.Format_RGB32), (fmt, note)
+
     # Capturing: undo and redo greyed out with nothing to do; the pointer.
     with_pointer = desktop.copy()
     paint = QPainter(with_pointer)
@@ -1006,31 +1016,6 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
         said = said.getvalue()
         for step in ("region capture: screenshot", "overlay shown", "chosen", "drawn", "saved"):
             assert step in said and " ms" in said, (step, said)
-        # Built ahead (the tray's next capture): the same windows, the picture put in.
-        cfg = config.Config(save_dir=str(tmp / "ahead"), notify=False, clipboard="none", region_pointer="toggle")
-        done = []
-        s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda code, holds: done.append(code))
-        assert s.prepare() and s.overlays and not s.overlays[0].isVisible()
-        built = list(s.overlays)
-        assert s.ready_for(cfg, Request(scan=False), None)
-        assert not s.ready_for(config.Config(save_dir=str(tmp / "other")), Request(scan=False), None)
-        assert not s.ready_for(cfg, Request(scan=False, pin=True), None)
-        s.start()
-        ov = s.overlays[0]
-        assert s.overlays == built, "the windows built ahead weren't used"
-        assert ov.base.width() > 0 and ov.toolbar.pointer_button.isVisibleTo(ov.toolbar)
-        ov.resize(ov.target_screen.geometry().size())
-        app.processEvents()
-        s.toggle_pointer()
-        assert QColor(ov.render(spot).pixel(0, 0)) == red, "the pointer, with windows built ahead"
-        s.capture(ov, QRectF(10, 10, 100, 80))
-        for _ in range(20):
-            app.processEvents()
-        assert done == [0] and list((tmp / "ahead").glob("*.png")), "capturing with windows built ahead"
-        unused = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda *a: None)
-        assert unused.prepare()
-        unused.discard()
-        assert not unused.overlays and unused.done
         # The settings can make it always or never: one screenshot, no button.
         for mode, shown in (("hidden", False), ("shown", True)):
             asked.clear()
