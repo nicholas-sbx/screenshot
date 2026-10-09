@@ -128,6 +128,40 @@ def stream_shows(position: tuple[int, int], size: tuple[int, int], scale: float,
     return fits[0] if fits else QRect(x, y, w, h)
 
 
+def stream_measured(measured: tuple[int, int], reported: QRect | None, area: QRect, scale: float,
+                    screens: list[QRect] | None = None) -> QRect | None:
+    """What a stream measured at ``measured`` pixels shows, checked against
+    what the portal ``reported`` (KDE leaves position and size out for a
+    shared workspace): a monitor or the whole workspace whose size, in
+    logical or device pixels, is the stream's. Where two fit (identical
+    monitors), the one with the ``area`` wins. None: nothing fits."""
+    if screens is None:
+        screens = [s.geometry() for s in QGuiApplication.screens()]
+    mw, mh = measured
+    if mw <= 0 or mh <= 0:
+        return reported
+    aspect = mw / mh
+
+    def same_shape(g: QRect) -> bool:
+        return abs(g.width() / max(1, g.height()) - aspect) <= 0.015 * aspect
+
+    if reported is not None and same_shape(reported):
+        return reported
+    workspace = QRect()
+    for g in screens:
+        workspace = workspace.united(g)
+    candidates = []
+    for g in screens + [workspace]:
+        if g not in candidates:
+            candidates.append(g)
+    candidates.sort(key=lambda g: not g.contains(area))  # the area's own first
+    for k in sorted({1.0, scale}):
+        for g in candidates:
+            if abs(g.width() * k - mw) <= 2 and abs(g.height() * k - mh) <= 2:
+                return g
+    return next((g for g in candidates if same_shape(g)), None)
+
+
 # -- tools ----------------------------------------------------------------------
 
 def have(tool: str) -> bool:
@@ -424,6 +458,11 @@ class Portal(QObject):
             (x, y), (w, h) = pos[1], size[1]
             self.reported = f"position {x},{y} size {w}x{h}"
             self.stream_rect = stream_shows((int(x), int(y)), (int(w), int(h)), self.target.pixel_scale())
+        # Whatever the desktop says (or doesn't), the stream's real size counts.
+        self.frame_size = self._measure()
+        if self.frame_size is not None:
+            self.stream_rect = stream_measured(self.frame_size, self.stream_rect, self.target.rect,
+                                               self.target.pixel_scale()) or self.stream_rect
         shared = self._shared_screen()
         if "restore_token" in results and shared is not None:
             tokens = config.load_state().get("screencast_tokens")
@@ -439,8 +478,6 @@ class Portal(QObject):
             what = shared.name() if shared is not None else "a different part of the desktop"
             raise RecordError(f"The shared screen is {what}, but the area is on {name}. "
                               f"Record again and share {name}.")
-        # Whatever the desktop says, the stream's real size is what counts.
-        self.frame_size = self._measure()
 
     def _measure(self) -> tuple[int, int] | None:
         """The stream's size in pixels, from GStreamer's own negotiation (a

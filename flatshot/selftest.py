@@ -755,6 +755,34 @@ def _recording_crop(tmp: Path):
     # KDE sends the whole workspace at scale 1: crop in those pixels, not upscaled.
     assert target.crop_in(QRect(0, 0, 2646, 768), (2646, 768)) == ((2646, 768), QRect(100, 100, 200, 100))
 
+    # What a measured stream shows, when the portal says nothing (KDE sharing the
+    # workspace) or says something that doesn't fit. A reported recording:
+    # HDMI-A-1 1920x1080 at 0,0 with a 1366x768 monitor beside it.
+    hdmi, small = QRect(0, 0, 1920, 1080), QRect(1920, 0, 1366, 768)
+    area = QRect(709, 425, 307, 138)
+    shown = screencast.stream_measured((3286, 1080), None, area, 1.0, [hdmi, small])
+    assert shown == QRect(0, 0, 3286, 1080), shown
+
+    class Hdmi:
+        def geometry(self):
+            return hdmi
+
+        def devicePixelRatio(self):
+            return 1.0
+
+        def name(self):
+            return "HDMI-A-1"
+
+    assert screencast.Target(area, Hdmi(), 1.0).crop_in(shown, (3286, 1080)) == ((3286, 1080), QRect(709, 425, 306, 138))
+    assert screencast.stream_measured((1366, 768), None, area, 1.0, [hdmi, small]) == small  # (no area: refused)
+    assert screencast.stream_measured((1920, 1080), None, area, 1.0, [hdmi, small]) == hdmi
+    assert screencast.stream_measured((3840, 2160), None, area, 2.0, [hdmi, small]) == hdmi  # device pixels
+    twin = QRect(1920, 0, 1920, 1080)  # identical monitors: the one with the area
+    assert screencast.stream_measured((1920, 1080), None, QRect(2000, 10, 50, 50), 1.0, [hdmi, twin]) == twin
+    # A reported monitor that the measured stream doesn't fit is corrected.
+    assert screencast.stream_measured((3286, 1080), hdmi, area, 1.0, [hdmi, small]) == QRect(0, 0, 3286, 1080)
+    assert screencast.stream_measured((1920, 1080), hdmi, area, 1.0, [hdmi, small]) == hdmi
+
     if not (screencast.have("gst-launch-1.0") and screencast.gst_has("videotestsrc") and screencast.have("ffmpeg")
             and screencast._gst_video_encoder("mp4") is not None):
         print("self-test: recording crop skipped (needs GStreamer and ffmpeg)")
