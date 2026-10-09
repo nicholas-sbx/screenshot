@@ -42,6 +42,7 @@ BACKENDS = ("auto", "kwin", "spectacle", "grim", "gnome-screenshot", "qt")
 RECORD_FORMATS = ("mp4", "webm", "gif")
 RECORD_FPS = (24, 30, 60)
 REGION_POINTER = ("toggle", "hidden", "shown")
+SCREENSHOT_METHODS = ("desktop", "screens")
 
 
 @dataclass
@@ -75,6 +76,9 @@ class Config:
     show_codes: bool = True
     toolbar_follows_mouse: bool = True
     backend: str = "auto"  # see BACKENDS
+    # "desktop": one picture of the whole desktop, cut up per screen; "screens":
+    # each screen on its own, at its own scale (KWin, grim), all at once.
+    screenshot_method: str = "desktop"
     include_pointer: bool = False  # draw the mouse pointer into instant (no-UI) captures
     # The pointer when picking a region: "hidden" or "shown" (one
     # screenshot), or "toggle" (hidden at first, the toolbar's button shows
@@ -122,6 +126,8 @@ class Config:
             self.open_after = "none"
         if self.region_pointer not in REGION_POINTER:
             self.region_pointer = "hidden"
+        if self.screenshot_method not in SCREENSHOT_METHODS:
+            self.screenshot_method = "desktop"
         if self.backend not in BACKENDS:
             self.backend = "auto"
         self.dim_opacity = max(0, min(int(self.dim_opacity), 90))

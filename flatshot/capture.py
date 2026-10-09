@@ -130,9 +130,18 @@ def _note_times(started: float, replied: float):
 
 
 def _read_raw(head: bytes, fd: int) -> QImage:
-    """The picture after a "FLATSHOT-RAW w h stride format" line: read from
-    ``fd`` straight into the image's memory where the rows are laid out
-    alike (they are, for KWin's 32-bit formats)."""
+    """The picture after a "FLATSHOT-RAW w h stride format" line, read
+    from ``fd``."""
+    into, finish = _target(head)
+    _read_exactly(fd, into)
+    return finish()
+
+
+def _target(head: bytes):
+    """Where the pixels after a "FLATSHOT-RAW w h stride format" line go:
+    (buffer, finish), finish() giving the picture once they're in. Straight
+    into the image's memory where its rows are laid out alike (they are,
+    for KWin's 32-bit formats)."""
     parts = head.split()
     if len(parts) != 5 or parts[0] != b"FLATSHOT-RAW":
         raise CaptureError("unexpected output from flatshot-kwin-grab: " + head.decode(errors="replace").strip())
@@ -141,11 +150,29 @@ def _read_raw(head: bytes, fd: int) -> QImage:
     if image.isNull():
         raise CaptureError(f"unsupported pixel format {fmt}")
     if image.bytesPerLine() == stride:
-        _read_exactly(fd, _writable(image))
-        return image
+        return _writable(image), lambda: image
     data = bytearray(stride * height)
-    _read_exactly(fd, memoryview(data))
-    return QImage(bytes(data), width, height, stride, QImage.Format(fmt)).copy()
+    return memoryview(data), lambda: QImage(bytes(data), width, height, stride, QImage.Format(fmt)).copy()
+
+
+def _read_many(targets: list[tuple[int, memoryview]], timeout: float = 15.0):
+    """Fill each buffer from its pipe, all side by side: KWin may write
+    them in any order, and a full pipe waits for its reader."""
+    left = {fd: [into, 0] for fd, into in targets}
+    while left:
+        ready, _, _ = select.select(list(left), [], [], timeout)
+        if not ready:
+            raise CaptureError("flatshot-kwin-grab: no picture came")
+        for fd in ready:
+            into, got = left[fd]
+            n = os.readv(fd, [into[got:]])
+            if n == 0:
+                raise CaptureError(f"short image from flatshot-kwin-grab ({got} of {len(into)} bytes)")
+            got += n
+            if got == len(into):
+                del left[fd]
+            else:
+                left[fd][1] = got
 
 
 def _writable(image: QImage) -> memoryview:
@@ -188,7 +215,7 @@ class _KWinServer:
     """flatshot-kwin-grab --serve, started once and kept: a capture then
     costs neither starting a process nor connecting to D-Bus."""
 
-    def __init__(self, helper: str):
+    def __init__(self, helper: str, version: int = 3):
         self.helper = helper
         mine, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         try:
@@ -199,6 +226,7 @@ class _KWinServer:
         mine.settimeout(5)
         self.sock = mine
         self.lock = threading.Lock()
+        self.version = version
         try:
             hello = mine.recv(64)
         except OSError as e:
@@ -232,6 +260,41 @@ class _KWinServer:
             os.close(r)
             if w >= 0:
                 os.close(w)
+
+    def grab_screens(self, wanted: list[tuple[str, bool]]) -> list[QImage]:
+        """Several screens at once, each at its own scale: ``wanted`` is
+        (screen name, with the pointer) for each picture."""
+        pipes = [_big_pipe() for _ in wanted]
+        started = time.monotonic()
+        try:
+            request = "screens\n" + "\n".join(f"{int(pointer)} {name}" for name, pointer in wanted)
+            with self.lock:
+                try:
+                    socket.send_fds(self.sock, [request.encode()], [w for _, w in pipes])
+                    for i, (r, w) in enumerate(pipes):
+                        os.close(w)
+                        pipes[i] = (r, -1)
+                    head = self.sock.recv(16384)
+                except OSError as e:
+                    raise _ServerGone(str(e)) from e
+            if not head:
+                raise _ServerGone("flatshot-kwin-grab --serve stopped")
+            lines = head.splitlines()
+            if len(lines) != len(wanted):
+                raise CaptureError(head.decode(errors="replace").strip() or "no answer for each screen")
+            for (name, _), line in zip(wanted, lines):
+                if line.startswith(b"ERR "):
+                    raise CaptureError(f"{name}: " + line[4:].decode(errors="replace").strip())
+            replied = time.monotonic()
+            targets = [_target(line) for line in lines]
+            _read_many([(r, into) for (r, _), (into, _) in zip(pipes, targets)])
+            _note_times(started, replied)
+            return [finish() for _, finish in targets]
+        finally:
+            for r, w in pipes:
+                os.close(r)
+                if w >= 0:
+                    os.close(w)
 
     def close(self):
         try:
@@ -269,7 +332,7 @@ def _kwin_server(helper: str) -> _KWinServer | None:
             version = subprocess.run([helper, "--version"], capture_output=True, timeout=5).stdout.split()
             if len(version) < 2 or int(version[-1]) < 3:
                 raise _ServerGone("too old to stay running")
-            _server = _KWinServer(helper)
+            _server = _KWinServer(helper, int(version[-1]))
         except (OSError, ValueError, subprocess.SubprocessError, _ServerGone):
             _server_failed.add(key)
             return None
@@ -355,15 +418,117 @@ last_grab = ""
 TWICE = ("kwin", "grim")
 
 
-def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: list | None = None) -> QImage:
+def _kwin_screens(wanted: list[tuple[str, bool]]) -> list[QImage]:
+    helper = kwin_helper()
+    server = _kwin_server(helper) if helper else None
+    if server is None or server.version < 4:
+        raise CaptureError("each screen on its own needs flatshot-kwin-grab 4 or newer, kept running")
+    try:
+        return server.grab_screens(wanted)
+    except _ServerGone as e:
+        _drop_server(server)
+        raise CaptureError(str(e)) from e
+
+
+def _grim_screens(wanted: list[tuple[str, bool]]) -> list[QImage]:
+    out: list = [None] * len(wanted)
+
+    def one(i, name, pointer):
+        try:
+            out[i] = _run_tool(lambda p: ["grim", "-o", name, *(["-c"] if pointer else []), p])
+        except Exception as e:  # noqa: BLE001
+            out[i] = e
+
+    threads = [threading.Thread(target=one, args=(i, n, c), daemon=True) for i, (n, c) in enumerate(wanted)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    for (name, _), result in zip(wanted, out):
+        if not isinstance(result, QImage):
+            raise CaptureError(f"{name}: {result or 'no picture'}")
+    return out
+
+
+# Helpers that can take each screen at its own scale (all at once).
+SCREENS = {"kwin": ("", _kwin_screens), "grim": ("grim", _grim_screens)}
+
+
+def compose(pictures: dict) -> QImage:
+    """The whole desktop from each screen's own picture (``pictures``: screen
+    name -> picture), at the highest of their scales: what's needed where
+    a selection or a window crosses monitors, and to look for codes."""
+    screens = [s for s in QGuiApplication.screens() if s.name() in pictures]
+    virt = virtual_geometry()
+    scale = max(pictures[s.name()].width() / max(1, s.geometry().width()) for s in screens)
+    out = QImage(round(virt.width() * scale), round(virt.height() * scale), QImage.Format.Format_RGB32)
+    out.fill(0)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    for s in screens:
+        g = s.geometry()
+        target = QRectF((g.x() - virt.x()) * scale, (g.y() - virt.y()) * scale, g.width() * scale, g.height() * scale)
+        picture = pictures[s.name()]
+        if abs(target.width() - picture.width()) < 0.5 and abs(target.height() - picture.height()) < 0.5:
+            p.drawImage(target.topLeft(), picture)  # (the same scale: pixel for pixel)
+        else:
+            p.drawImage(target, picture)
+    p.end()
+    return out
+
+
+def _grab_screens(order: list[str], pointer: bool, also_pointer: list | None, screens: dict) -> QImage | None:
+    """Each screen at its own scale, where the first helper that can do it
+    can: fills ``screens`` (name -> picture; ("pointer", name) -> the same
+    with the pointer, with ``also_pointer``) and returns the whole desktop
+    made from them. None (and a reason in last_grab) if it can't."""
+    global last_grab
+    name = next((n for n in order if n in SCREENS), None)
+    if name is None or name != order[0]:
+        return None
+    exe, fn = SCREENS[name]
+    if exe and shutil.which(exe) is None:
+        return None
+    names = [s.name() for s in QGuiApplication.screens()]
+    if not names or len(set(names)) != len(names) or not all(names):
+        return None
+    wanted = [(n, pointer) for n in names] + ([(n, True) for n in names] if also_pointer is not None else [])
+    try:
+        pictures = fn(wanted)
+    except Exception as e:  # noqa: BLE001 — the whole desktop then
+        last_grab = f"each screen failed ({e}), so "
+        return None
+    notes = {_opaque(p) for p in pictures}
+    plain = dict(zip(names, pictures[:len(names)]))
+    screens.update(plain)
+    image = compose(plain)
+    if also_pointer is not None:
+        with_pointer = dict(zip(names, pictures[len(names):]))
+        screens.update({("pointer", n): p for n, p in with_pointer.items()})
+        also_pointer.append(compose(with_pointer))
+    what = ", each screen at its own scale" + (", with and without the pointer" if also_pointer is not None else
+                                               ", with the pointer" if pointer else "")
+    last_grab = _describe(name, what) + "".join(sorted(notes))
+    return image
+
+
+def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: list | None = None,
+                 screens: dict | None = None) -> QImage:
     """Every screen as one image; ``pointer`` draws the mouse pointer in
     (where the helper supports it). With ``also_pointer`` (a list), the
     same moment with the pointer drawn in is appended to it too, where the
-    helper can take both at once."""
+    helper can take both at once. With ``screens`` (a dict), each screen is
+    taken on its own, at its own scale, where the helper can (see
+    _grab_screens); else it's left empty."""
     global last_grab
     last_grab = ""
     order = backend_order() if preferred in ("", "auto") else [preferred]
-    errors = []
+    if screens is not None:
+        image = _grab_screens(order, pointer, also_pointer, screens)
+        if image is not None:
+            return image
+    failed, last_grab = last_grab, ""
+    errors = [failed.removesuffix(", so ")] if failed else []
     for name in order:
         if also_pointer is not None and name in TWICE and not pointer:
             exe, fn = BACKENDS[name]

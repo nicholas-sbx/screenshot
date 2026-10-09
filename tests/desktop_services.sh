@@ -33,7 +33,7 @@ echo "== KWin capture helper (against a fake org.kde.KWin.ScreenShot2)"
 HELPER=$(mktemp -d)/flatshot-kwin-grab
 cc -O2 -Wall -Wextra -Werror -o "$HELPER" native/flatshot-kwin-grab.c $(pkg-config --cflags --libs dbus-1)
 export FLATSHOT_KWIN_GRAB=$HELPER
-$PY tests/fake_kwin_screenshot.py &
+FAKE_KWIN_SCREENS=A:800x600,B:960x720 $PY tests/fake_kwin_screenshot.py &
 pids+=($!)
 sleep 1.5
 for serve in 1 0; do
@@ -57,6 +57,9 @@ img = capture.grab_desktop("kwin", also_pointer=extra)
 assert extra and extra[0].pixel(300, 200) == want, "both at once"
 PYEOF
 done
+
+echo "== each screen at its own scale (1x and 1.5x monitors)"
+QT_QPA_PLATFORM=offscreen:configfile=tests/mixed-scales.json PYTHONPATH=. $PY tests/kwin_screens.py
 
 echo "== screen-cast portal (against a fake xdg-desktop-portal)"
 $PY tests/fake_screencast_portal.py &

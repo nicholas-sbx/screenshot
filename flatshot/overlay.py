@@ -87,6 +87,7 @@ class Overlay(QWidget):
         self.target_screen = screen
         self.base = base
         self.origin = origin  # top-left of this screen in the full capture, physical px
+        self.desktop_scale: float | None = None  # the full capture's pixels per logical px
         self._pixels: QImage | None = None
         self._plain: QPixmap | None = None  # the picture without the pointer, while it's shown
         self._with_pointer: QPixmap | None = None
@@ -302,13 +303,14 @@ class Overlay(QWidget):
     def dpr(self) -> float:
         return self.base.devicePixelRatio()
 
-    def show_pointer(self, desktop: QImage, show: bool):
+    def show_pointer(self, desktop: QImage, show: bool, own: QImage | None = None):
         """Show this screen's part of ``desktop`` (the capture with the mouse
-        pointer in it), or go back to the picture without it."""
+        pointer in it), or this screen's ``own`` picture with it, or go back
+        to the picture without it."""
         if self._plain is None:
             self._plain = self.base
         if show and self._with_pointer is None:
-            pm = QPixmap.fromImage(desktop.copy(QRect(self.origin, self._plain.size())))
+            pm = QPixmap.fromImage(own if own is not None else desktop.copy(QRect(self.origin, self._plain.size())))
             pm.setDevicePixelRatio(self._plain.devicePixelRatio())
             self._with_pointer = pm
         self.base = self._with_pointer if show else self._plain
@@ -323,9 +325,12 @@ class Overlay(QWidget):
     # -- codes -------------------------------------------------------------
 
     def set_codes(self, codes):
-        """Keep codes whose centre lies on this screen, in logical coords."""
-        dpr = self.dpr()
-        phys = QRectF(QRect(self.origin, self.base.size()))
+        """Keep codes whose centre lies on this screen, in logical coords.
+        (They're found in the whole desktop's picture, whose scale may not
+        be this screen's own.)"""
+        dpr = self.desktop_scale or self.dpr()
+        size = self.target_screen.geometry().size()
+        phys = QRectF(QPointF(self.origin), QSizeF(size.width() * dpr, size.height() * dpr))
         for code in codes:
             poly = QPolygonF(code.corners)
             if not phys.contains(poly.boundingRect().center()):

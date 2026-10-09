@@ -607,6 +607,10 @@ class SettingsWindow(QWidget):
         pointer.changed.connect(lambda v: self._save(region_pointer=v))
         card.add(Row("Mouse pointer when selecting", pointer,
                      "Your choice adds a toolbar button (M), but takes a little longer to open."))
+        method = Segmented([("desktop", "Whole desktop"), ("screens", "Each screen")], self.cfg.screenshot_method)
+        method.changed.connect(lambda v: self._save(screenshot_method=v))
+        card.add(Row("Take the screenshot", method,
+                     "Each screen keeps every monitor's own pixels when their scales differ. KDE or grim."))
         card.add(Row("Snap to edges", self._toggle("snap_edges"),
                      "Selections snap to edges in the picture, boxes first. Also the toolbar's magnet "
                      "button, or G; hold Ctrl to place freely."))

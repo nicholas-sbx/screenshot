@@ -126,6 +126,9 @@ class Session:
         # could take it), shown while show_pointer is on.
         self.pointer_image: QImage | None = None
         self._plain_image: QImage | None = None
+        # Each screen's own picture, at its own scale, when they're taken one
+        # by one (screen name -> picture; ("pointer", name) -> with the pointer).
+        self._native: dict = {}
         self.show_pointer = False
         self.done = False
         self.clock = timing.Clock("capture")  # (started again by start())
@@ -169,8 +172,11 @@ class Session:
                 # (Unless the settings say always or never: then one, as it's to be.)
                 extra = [] if not instant and self.cfg.region_pointer == "toggle" else None
                 pointer = self.cfg.include_pointer if instant else self.cfg.region_pointer == "shown"
+                # Each screen on its own, at its own scale, if the settings say so.
+                native = {} if self.cfg.screenshot_method == "screens" else None
                 image = capture.grab_desktop(self.request.backend or self.cfg.backend, pointer=pointer,
-                                             also_pointer=extra)
+                                             also_pointer=extra, **({"screens": native} if native is not None else {}))
+                self._native = native or {}
                 if extra and extra[0].size() == image.size():
                     self.pointer_image = extra[0]
         except capture.CaptureError as e:
@@ -220,7 +226,13 @@ class Session:
                 self.fail("No active window to capture. Active-window capture needs KDE Plasma, Sway or Hyprland.")
                 return
             rect, shot.mode = desktop.active.rect, "window"
-        if rect is not None:
+        native = self._native_part(rect) if rect is not None else None
+        if native is not None:
+            image = native  # (all on one screen: its own pixels, at its own scale)
+            self.clock.step("cropped", f"{image.width()} × {image.height()} from its screen's own picture")
+            if self.mode == "rect":
+                config.update_state(last_region=[rect.x(), rect.y(), rect.width(), rect.height()])
+        elif rect is not None:
             pixels = capture.to_pixels(image, rect)
             if pixels.isEmpty():
                 self.fail(f"{rect.width()}x{rect.height()}+{rect.x()}+{rect.y()} is outside the screens")
@@ -230,6 +242,19 @@ class Session:
             if self.mode == "rect":
                 config.update_state(last_region=[rect.x(), rect.y(), rect.width(), rect.height()])
         self._deliver(image, shot, rect)
+
+    def _native_part(self, rect: QRect) -> QImage | None:
+        """``rect`` (global logical) from the picture of the one screen it's
+        on, when each screen was taken on its own; else None."""
+        for screen in QGuiApplication.screens():
+            picture = self._native.get(screen.name())
+            g = screen.geometry()
+            if picture is not None and g.contains(rect):
+                scale = picture.width() / max(1, g.width())
+                part = QRect(round((rect.x() - g.x()) * scale), round((rect.y() - g.y()) * scale),
+                             round(rect.width() * scale), round(rect.height() * scale)).intersected(picture.rect())
+                return picture.copy(part) if not part.isEmpty() else None
+        return None
 
     def _build_overlays(self, image: QImage):
         if self.request.image:
@@ -241,15 +266,19 @@ class Session:
             self.overlays.append(Overlay(self, screen, pm, QPoint(0, 0)))
         else:
             pictures = []
+            desktop_scale = image.width() / max(1, capture.virtual_geometry().width())
             for screen in QGuiApplication.screens():
                 g = screen.geometry()
                 phys = capture.to_pixels(image, g)
-                pm = QPixmap.fromImage(image.copy(phys))
-                pm.setDevicePixelRatio(phys.width() / max(1, g.width()))
+                own = self._native.get(screen.name())  # (this screen on its own, at its own scale)
+                pm = QPixmap.fromImage(own if own is not None else image.copy(phys))
+                pm.setDevicePixelRatio(pm.width() / max(1, g.width()))
                 pictures.append((screen, pm, phys.topLeft()))
-            self.clock.step("pictures ready")
+            self.clock.step("pictures ready", "each screen's own" if self._native else "")
             for screen, pm, origin in pictures:
-                self.overlays.append(Overlay(self, screen, pm, origin))
+                o = Overlay(self, screen, pm, origin)
+                o.desktop_scale = desktop_scale
+                self.overlays.append(o)
         for o in self.overlays:
             o.add_toolbar()
         self.clock.step("windows built")
@@ -540,7 +569,7 @@ class Session:
             return
         self.show_pointer = not self.show_pointer
         for o in self.overlays:
-            o.show_pointer(self.pointer_image, self.show_pointer)
+            o.show_pointer(self.pointer_image, self.show_pointer, self._native.get(("pointer", o.target_screen.name())))
         if self._desktop_image is not None:
             if self._plain_image is None:
                 self._plain_image = self._desktop_image
@@ -856,6 +885,7 @@ class Session:
         # in the desktop's history.
         self.overlays = []
         self.pointer_image = self._plain_image = None
+        self._native = {}
         self.pointer_overlay = self.toolbar_overlay = self._countdown_overlay = None
         self.history, self.redo_stack, self.text_edit = [], [], None
         self._grabbed = None
