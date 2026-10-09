@@ -255,7 +255,7 @@ KEEP_ABOVE = r"""
     var list = workspace.windowList ? workspace.windowList() : workspace.clientList();  // Plasma 6 / 5
     for (var i = 0; i < list.length; i++) {
         var w = list[i];
-        if (w.pid === %PID% && w.caption === %CAPTION%) {
+        if (w.pid === %PID% && %CAPTIONS%.indexOf(w.caption) >= 0) {
             w.keepAbove = true;
             w.skipTaskbar = true;
             w.skipPager = true;
@@ -270,6 +270,15 @@ KEEP_ABOVE = r"""
 """
 
 
+def shown_titles(title: str) -> list[str]:
+    """The captions a window titled ``title`` can have: Qt adds the app's
+    name ("Flatshot pin 1 — Flatshot") unless the title already ends with it."""
+    from flatshot.qt import QGuiApplication
+
+    name = QGuiApplication.applicationDisplayName()
+    return [title] + ([f"{title} \u2014 {name}"] if name and not title.endswith(name) else [])
+
+
 def keep_above(caption: str, geometry: QRect | None = None) -> bool:
     """Ask KWin to keep this process's window titled ``caption`` above others,
     and optionally place it (Wayland has no protocol for either). False when
@@ -278,7 +287,7 @@ def keep_above(caption: str, geometry: QRect | None = None) -> bool:
         return False
     g = "null" if geometry is None else json.dumps(
         {"x": geometry.x(), "y": geometry.y(), "width": geometry.width(), "height": geometry.height()})
-    script = (KEEP_ABOVE.replace("%PID%", str(os.getpid())).replace("%CAPTION%", json.dumps(caption))
+    script = (KEEP_ABOVE.replace("%PID%", str(os.getpid())).replace("%CAPTIONS%", json.dumps(shown_titles(caption)))
               .replace("%GEOMETRY%", g))
     fd, path = tempfile.mkstemp(prefix="flatshot-pin-", suffix=".js")
     with os.fdopen(fd, "w") as f:

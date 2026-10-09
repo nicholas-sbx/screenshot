@@ -522,6 +522,8 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
                             Qt.MouseButton.NoButton if kind == "release" else left, Qt.KeyboardModifier.NoModifier)
         {"press": ov.mousePressEvent, "move": ov.mouseMoveEvent, "release": ov.mouseReleaseEvent}[kind](event)
 
+    _recording_crop(tmp)
+
     # Annotating a file can't record.
     src = tmp / "desktop.png"
     s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(src), scan=False),
@@ -716,3 +718,53 @@ def replace_cfg(cfg, **changes):
     from dataclasses import replace
 
     return replace(cfg, **changes)
+
+
+def _recording_crop(tmp: Path):
+    """The GStreamer crop, with the stream as the desktop may really send it:
+    the whole workspace of two monitors, and at a different size than
+    expected. The video must be exactly the area, unstretched."""
+    import shutil
+    import subprocess
+
+    from flatshot import screencast
+    from flatshot.qt import QRect
+
+    if not (screencast.have("gst-launch-1.0") and screencast.gst_has("videotestsrc") and screencast.have("ffmpeg")
+            and screencast._gst_video_encoder("mp4") is not None):
+        print("self-test: recording crop skipped (needs GStreamer and ffmpeg)")
+        return
+
+    class Screen:  # a 1920 x 1080 monitor at scale 1, left of a 1366-wide one
+        def geometry(self):
+            return QRect(0, 0, 1920, 1080)
+
+        def devicePixelRatio(self):
+            return 1.0
+
+        def name(self):
+            return "DP-1"
+
+    workspace = QRect(0, 0, 1920 + 1366, 1080)
+    area = QRect(400, 100, 298, 152)  # across the first colour bar's edge, at x = 3286 / 7 ≈ 469
+    target = screencast.Target(area, Screen())
+    frame, crop = target.crop_in(workspace)
+    assert frame == (3286, 1080) and crop == QRect(400, 100, 298, 152), (frame, crop)
+    for sent in ((3286, 1080), (1643, 540)):  # as expected, and at half the size
+        out = tmp / f"crop-{sent[0]}.mp4"
+        source = (f"videotestsrc num-buffers=15 pattern=smpte ! video/x-raw,width={sent[0]},height={sent[1]},"
+                  f"framerate=30/1")
+        pipeline = screencast.gst_pipeline(source, frame, crop, screencast.Options(format="mp4"), str(out))
+        subprocess.run(["gst-launch-1.0", "-q"] + screencast._split(pipeline), check=True, timeout=60,
+                       stdout=subprocess.DEVNULL)
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height,sample_aspect_ratio",
+                                "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout.strip()
+        assert probe.split(",")[:2] == ["298", "152"] and probe.split(",")[2:] in ([], ["1:1"], ["N/A"]), probe
+        png = tmp / f"crop-{sent[0]}.png"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(out), "-frames:v", "1", str(png)], check=True)
+        img = QImage(str(png))
+        edge = 3286 / 7 - 400  # where the white bar turns yellow, in the video
+        white, yellow = img.pixelColor(round(edge) - 12, 70), img.pixelColor(round(edge) + 12, 70)
+        assert white.blue() > 150 and yellow.blue() < 90 and yellow.red() > 150, (sent, white.name(), yellow.name())
+    shutil.rmtree(tmp / "crop", ignore_errors=True)
+    print("self-test: recording crop of a two-monitor stream ok")

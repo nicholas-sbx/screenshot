@@ -76,18 +76,19 @@ class Target:
     rect: QRect
     screen: object  # QScreen
 
-    def local_pixels(self) -> QRect:
-        """The area in the screen's own pixels, with an even size (H.264
-        and VP8 need one), kept inside the screen."""
-        g, dpr = self.screen.geometry(), self.screen.devicePixelRatio()
-        full = QRect(0, 0, round(g.width() * dpr), round(g.height() * dpr))
-        r = QRect(round((self.rect.x() - g.x()) * dpr), round((self.rect.y() - g.y()) * dpr),
-                  round(self.rect.width() * dpr), round(self.rect.height() * dpr)).intersected(full)
-        return QRect(r.x(), r.y(), r.width() & ~1, r.height() & ~1)
+    def crop_in(self, frame: QRect) -> tuple[tuple[int, int], QRect]:
+        """For video of ``frame`` (global logical coordinates, at this
+        screen's scale): the frame's size in pixels, and the area within it
+        with an even size (H.264 and VP8 need one), kept inside it."""
+        dpr = self.screen.devicePixelRatio()
+        size = (round(frame.width() * dpr), round(frame.height() * dpr))
+        r = QRect(round((self.rect.x() - frame.x()) * dpr), round((self.rect.y() - frame.y()) * dpr),
+                  round(self.rect.width() * dpr), round(self.rect.height() * dpr)).intersected(QRect(0, 0, *size))
+        return size, QRect(r.x(), r.y(), r.width() & ~1, r.height() & ~1)
 
-    def screen_pixels(self) -> tuple[int, int]:
-        g, dpr = self.screen.geometry(), self.screen.devicePixelRatio()
-        return round(g.width() * dpr), round(g.height() * dpr)
+    def local_pixels(self) -> QRect:
+        """The area in the screen's own pixels."""
+        return self.crop_in(self.screen.geometry())[1]
 
 
 # -- tools ----------------------------------------------------------------------
@@ -237,10 +238,13 @@ def gst_pipeline(source: str, frame: tuple[int, int], crop: QRect, opts: Options
     left, top = crop.x(), crop.y()
     right, bottom = max(0, w - crop.x() - crop.width()), max(0, h - crop.y() - crop.height())
     mux = "webmmux" if fmt == "webm" else "mp4mux fragment-duration=1000"
-    # The scale only matters if the stream isn't quite the size Qt reports:
-    # the output keeps the even size encoders need.
-    parts = [f"{source} ! videoconvert ! videocrop left={left} top={top} right={right} bottom={bottom} "
-             f"! videoscale ! video/x-raw,width={crop.width()},height={crop.height()} "
+    # The first scale brings the stream to the size the crop is worked out
+    # for, whatever size the desktop sends (a no-op when it's as expected),
+    # so the crop is always the area. Square pixels throughout, so players
+    # never stretch the result.
+    parts = [f"{source} ! videoconvert ! videoscale ! video/x-raw,width={w},height={h},pixel-aspect-ratio=1/1 "
+             f"! videocrop left={left} top={top} right={right} bottom={bottom} "
+             f"! videoscale ! video/x-raw,width={crop.width()},height={crop.height()},pixel-aspect-ratio=1/1 "
              f"! videorate ! video/x-raw,framerate={opts.fps}/1 ! videoconvert ! video/x-raw,format=I420 "
              f"! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 "
              f"! {encoder.format(kbps=kbps, bps=kbps * 1000)} ! queue ! {mux} name=mux ! filesink location={_quote(path)}"]
@@ -386,8 +390,14 @@ class Portal(QObject):
             tokens = tokens if isinstance(tokens, dict) else {}
             tokens[shared.name()] = results["restore_token"][1]
             config.update_state(screencast_tokens=tokens)
-        if shared is not None and shared is not self.target.screen:
-            raise RecordError(f"The shared screen is {shared.name()}, but the area is on {name}. "
+        # A stream of the whole workspace is fine too, as long as the area is in it.
+        if self.stream_rect is not None:
+            shows_area = self.stream_rect.contains(self.target.rect)
+        else:
+            shows_area = shared is None or shared is self.target.screen
+        if not shows_area:
+            what = shared.name() if shared is not None else "a different part of the desktop"
+            raise RecordError(f"The shared screen is {what}, but the area is on {name}. "
                               f"Record again and share {name}.")
 
     def _shared_screen(self):
@@ -465,7 +475,15 @@ def launch(how: str, target: Target, opts: Options, path: str, portal: Portal | 
             argv.append(f"--audio={audio[0]}")  # wf-recorder records one source
         return Launch(argv, stop_signal="INT")
     if how in ("portal", "test-gst"):
-        frame = target.screen_pixels()
+        # What the stream shows: the portal says, else assume the area's screen.
+        shown = portal.stream_rect if how == "portal" and portal.stream_rect is not None \
+            else target.screen.geometry()
+        frame, crop = target.crop_in(shown)
+        if crop.width() < 2 or crop.height() < 2:
+            raise RecordError("The area isn't in the shared screen.")
+        _log(f"recording {crop.width()}x{crop.height()}+{crop.x()}+{crop.y()} of a {frame[0]}x{frame[1]} stream "
+             f"showing {_geom(shown)} (area {_geom(target.rect)} on {target.screen.name() or 'the screen'}, "
+             f"scale {target.screen.devicePixelRatio():g})")
         if how == "portal":
             fd = portal.pipewire_fd()
             source = f"pipewiresrc fd={fd} path={portal.node} do-timestamp=true keepalive-time=1000"
@@ -477,6 +495,17 @@ def launch(how: str, target: Target, opts: Options, path: str, portal: Portal | 
         pipeline = gst_pipeline(source, frame, crop, opts, path)
         return Launch(["gst-launch-1.0", "-e", "-q"] + _split(pipeline), pass_fds=fds)
     raise RecordError(f"unknown recorder {how!r}")
+
+
+def _geom(r: QRect) -> str:
+    return f"{r.width()}x{r.height()}{r.x():+d}{r.y():+d}"
+
+
+def _log(message: str) -> None:
+    """One line for the journal, to tell what a recording was set up as."""
+    import sys
+
+    print(f"flatshot: {message}", file=sys.stderr, flush=True)
 
 
 def _split(pipeline: str) -> list[str]:
