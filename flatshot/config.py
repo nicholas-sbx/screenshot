@@ -8,7 +8,7 @@ import os
 import re
 import sys
 import tempfile
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from flatshot.qt import QStandardPaths
@@ -78,6 +78,7 @@ class Config:
     default_tool: str = "region"
     default_color: int = 0  # 0-6 the toolbar's colours, 7 your own (custom_color)
     custom_color: str = "#FF4FA3"  # your own colour, the toolbar's eighth: #RRGGBB
+    keys: dict = field(default_factory=dict)  # keys in Flatshot's windows you changed: action -> key (keys.py)
     default_size: int = 1
     # Screen recording
     record_dir: str = ""
@@ -104,6 +105,9 @@ class Config:
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(self.custom_color)):
             self.custom_color = "#FF4FA3"
         self.custom_color = self.custom_color.upper()
+        if not isinstance(self.keys, dict):
+            self.keys = {}
+        self.keys = {str(k): v for k, v in self.keys.items() if isinstance(v, str)}
         if self.copy_to_clipboard is False:
             self.clipboard = "none"
         self.copy_to_clipboard = None

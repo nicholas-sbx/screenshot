@@ -94,6 +94,19 @@ def _eyedropper(p, c):
     p.restore()
 
 
+def _save(p, c):
+    # Down into a tray.
+    p.drawPath(_path([(12, 4), (12, 14)], [(7.5, 9.5), (12, 14), (16.5, 9.5)], [(4, 14), (4, 19.5), (20, 19.5), (20, 14)]))
+
+
+def _save_as(p, c):
+    # A pencil writing into a tray.
+    p.drawPath(_path([(4, 14), (4, 19.5), (20, 19.5), (20, 14)]))
+    body = _path([(8, 15.5), (8.7, 12.4), (15.6, 5.5), (18.5, 8.4), (11.6, 15.3)])
+    body.closeSubpath()
+    p.drawPath(body)
+
+
 def _fit(p, c):
     # Arrows out to the corners: the whole picture in the window.
     p.drawPath(_path([(4, 9), (4, 4), (9, 4)], [(15, 4), (20, 4), (20, 9)], [(20, 15), (20, 20), (15, 20)],
@@ -259,7 +272,8 @@ _ICONS = {
     "copy": _copy, "open": _open, "close": _close, "check": _check,
     "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
     "speaker": _speaker, "cursor": _cursor, "pause": _pause, "resume": _resume, "stop": _stop, "trash": _trash,
-    "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit,
+    "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit, "save": _save,
+    "save-as": _save_as,
 }
 
 

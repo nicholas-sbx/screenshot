@@ -26,7 +26,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Mouse pointer** can be included in instant captures (off by default).
 - **Capture sound** (off by default): plays the desktop's screenshot sound, or a file you choose, after each capture. It uses an audio player you already have (`pw-play`, `paplay`, `ffplay` or `canberra-gtk-play`), runs in the background and never delays the capture.
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons. **Pin** opens the pin where the screenshot was taken (unless your monitors have changed since).
-- **Annotation editor**: **Annotate** (on a notification, in the tray menu, or `flatshot -i image.png`) opens the picture in a window of its own with the same drawing tools, colours and sizes as the toolbar, undo and redo, and **Copy**, **Save as** and **Save** (back to the file). Scroll to move around, <kbd>Ctrl</kbd>+scroll to zoom (pinch on a touchpad), hold <kbd>Space</kbd> or the middle button and drag to pan, <kbd>Ctrl</kbd>+<kbd>0</kbd> fits the picture in the window. Open as many as you like; closing one with unsaved changes asks first.
+- **Annotation editor**: **Annotate** (on a notification, in the tray menu, or `flatshot -i image.png`) opens the picture in a window of its own with the same drawing tools, colours and sizes as the toolbar, undo and redo, and **Copy**, **Save as** and **Save** (back to the file; it's highlighted while there are unsaved changes, and the title starts with ●). Scroll to move around, <kbd>Ctrl</kbd>+scroll to zoom (pinch on a touchpad), hold <kbd>Space</kbd> or the middle button and drag to pan, <kbd>Ctrl</kbd>+<kbd>0</kbd> fits the picture in the window. Open as many as you like; closing one with unsaved changes asks first.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Screen recording**: pick the toolbar's record button (or press <kbd>V</kbd>), then drag an area, click a window, or press <kbd>Enter</kbd> for the whole screen. Drag the edges to adjust it. Under the area you can turn the **microphone**, the **computer's sound** and the **mouse pointer** on or off, and choose **MP4, WebM or GIF** and **24, 30 or 60 fps**; Flatshot remembers these. Press **Record** or <kbd>Enter</kbd>, and after a short countdown a small bar outside the area shows the time, with **pause**, **stop** and **discard**. The finished video goes to `~/Videos/Screencasts`, the file is copied to the clipboard, and a system notification offers **Open** and **Show in folder**. While recording, the tray icon turns into a stop button; clicking it, or pressing the "Record screen" shortcut again, stops and saves.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate and blur (for hiding secrets) and numbered counters. It has 7 colours plus one of your own, 3 stroke sizes, and undo/redo. Picking a colour while capturing (or pixelating or blurring) switches back to the drawing tool you used last, so the colour gets used.
@@ -132,6 +132,8 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>U</kbd> <kbd>N</kbd> | pen, line, arrow, box, ellipse, highlighter, text, pixelate, blur, counter |
 | <kbd>Shift</kbd> while drawing | snap lines to 45° and make boxes/ellipses square/round |
 | <kbd>1</kbd>–<kbd>7</kbd>, <kbd>8</kbd> | colour, your own colour |
+
+All of these keys (but <kbd>Esc</kbd>, <kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>C</kbd> to capture) can be changed under **Settings → Shortcuts → Keys in Flatshot**, separately from the global shortcuts. So can the annotation editor's: save <kbd>Ctrl</kbd>+<kbd>S</kbd>, save as <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, copy <kbd>Ctrl</kbd>+<kbd>C</kbd>, fit <kbd>Ctrl</kbd>+<kbd>0</kbd>, actual size <kbd>Ctrl</kbd>+<kbd>1</kbd>, zoom <kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>-</kbd>, close <kbd>Ctrl</kbd>+<kbd>W</kbd>.
 | <kbd>[</kbd> <kbd>]</kbd> | stroke size |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | undo / redo |
 
@@ -196,6 +198,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "default_tool": "region",
   "default_color": 0,
   "custom_color": "#FF4FA3",
+  "keys": {},
   "default_size": 1,
   "record_dir": "~/Videos/Screencasts",
   "record_filename": "Recording_%Y-%m-%d_%H-%M-%S",
@@ -234,6 +237,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
 - `record_dir` and `record_filename`: where recordings go, with the same codes as `save_dir` and `filename`. `record_format` is `mp4`, `webm` or `gif`; `record_fps` is `24`, `30` or `60`. `record_mic`, `record_system_audio` and `record_cursor` are the switches under the area (a GIF has no sound). `record_countdown` is in seconds (0–10, 0 for none). After a recording, `clipboard` (`image` copies the video file), `notify`, `open_after` and `run_command` apply as for screenshots.
 - `theme`: `ember`, `graphite`, `nord`, `dusk` or `paper`. It changes the app's own panels only; drawing colours and what's saved stay the same.
+- `keys`: the keys in Flatshot's own windows you changed, as `{"tool.pen": "J"}` (`""` for none); the names are in `flatshot/keys.py`. Settings → Shortcuts sets them.
 - `custom_color`: your own drawing colour (`#RRGGBB`), the toolbar's eighth; the picker sets it. `default_color` 7 starts with it.
 
 `flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file. The last region, the `{n}` counter and the screen-cast portal's restore tokens are kept in `~/.local/state/flatshot/state.json`.

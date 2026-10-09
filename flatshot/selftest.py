@@ -776,6 +776,8 @@ def _editor(app, tmp: Path, out_dir):
     mouse("move", QPointF(120, 90))
     mouse("release", QPointF(120, 90))
     assert len(ed.annotations) == 1 and ed.dirty and ed.windowTitle().startswith("●"), ed.windowTitle()
+    assert ed.bar.save_button.text == "Save" and ed.bar.save_button.strong
+    width = ed.bar.save_button.width()
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
     assert not ed.annotations
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
@@ -824,6 +826,8 @@ def _editor(app, tmp: Path, out_dir):
     # Save writes back to the file; Save as to another, which Save then uses.
     key(Qt.Key.Key_S, "", Qt.KeyboardModifier.ControlModifier)
     assert not ed.dirty and not ed.windowTitle().startswith("●")
+    assert ed.bar.save_button.text == "Saved" and not ed.bar.save_button.strong
+    assert ed.bar.save_button.width() == width, "Save changed width (the toolbar shifts)"
     saved = QImage(str(src))
     k_px = round(20 * k)
     assert QColor(saved.pixel(k_px, k_px)) != QColor("#808080"), "the box isn't in the saved file"
@@ -1313,6 +1317,49 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     assert not s.done
     s.cancel()
     print("self-test: your own colour ok")
+
+    # Keys in Flatshot's windows can be changed: the new key works, the old
+    # one doesn't, and the toolbar's tips say so.
+    from flatshot import keys as keymod
+
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False, keys={"tool.pen": "J", "tool.line": "",
+                                                                             "undo": "Alt+U"}),
+                Request(image=str(flat_src), scan=False), Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    press(ov, Qt.Key.Key_J, "j")
+    assert s.tool == "pen", s.tool
+    press(ov, Qt.Key.Key_L, "l")
+    assert s.tool == "pen", "an unset key still works"
+    press(ov, Qt.Key.Key_P, "p")
+    assert s.tool == "pen"
+    s.set_tool("rect")
+    press(ov, Qt.Key.Key_P, "p")
+    assert s.tool == "rect", "the old key still works"
+    assert ov.toolbar.tools["pen"].hint.endswith("J"), ov.toolbar.tools["pen"].hint
+    assert ov.toolbar.tools["line"].hint == "Line", ov.toolbar.tools["line"].hint
+    km = keymod.Keymap({"redo": "Ctrl+Shift+Z"})
+    shift_z = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier
+                        | Qt.KeyboardModifier.ShiftModifier, "Z")
+    assert km.action(shift_z, keymod.CAPTURE) == "redo"
+    shifted_bracket = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_BracketRight, Qt.KeyboardModifier.ShiftModifier, "]")
+    assert km.action(shifted_bracket, keymod.EDITOR) == "size.up", "a key that needs Shift to type it"
+    save = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier, "")
+    assert km.action(save, keymod.EDITOR) == "save" and km.action(save, keymod.CAPTURE) is None
+    s.cancel()
+    from flatshot.settings import SettingsWindow
+
+    settings = SettingsWindow(config.load(), shortcuts=None)
+    settings._assign_key("tool.pen", "B")  # Rectangle's
+    assert settings.key_rows["tool.pen"].error.isVisibleTo(settings) or "already" in \
+        settings.key_rows["tool.pen"].error.text(), "a clash wasn't caught"
+    settings._assign_key("save", "B")  # only in the editor, and B draws boxes there too
+    assert "already" in settings.key_rows["save"].error.text()
+    settings._assign_key("codes", "J")
+    assert config.load().keys.get("codes") == "J"
+    settings._reset_keys()
+    assert config.load().keys == {}
+    settings.close()
 
     # Rainbow: the crosshair's colour moves on its own, and only with the setting.
     s, ov = session(rainbow=True)

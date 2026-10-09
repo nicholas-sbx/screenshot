@@ -17,11 +17,11 @@ from flatshot.widgets import CodeChip, Toolbar
 
 HINTS = {
     "region": "Drag to capture  ·  Click for whole screen  ·  Esc to cancel",
-    "codes": "Drag to capture  ·  Q hides detected codes  ·  Esc to cancel",
+    "codes": "Drag to capture  ·  {codes} hides detected codes  ·  Esc to cancel",
     "windows": "Drag to capture  ·  Click a window to capture it  ·  Esc to cancel",
-    "text": "Click to place text  ·  Enter to finish  ·  R to capture",
+    "text": "Click to place text  ·  Enter to finish  ·  {tool.region} to capture",
 }
-PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  K to save instead"
+PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  {pin} to save instead"
 EYEDROPPER_HINT = "Click a pixel to make it your colour  ·  Esc to stop"
 RECORD_HINTS = {
     "pick": "Drag the area to record  ·  Click for whole screen  ·  Esc to cancel",
@@ -51,7 +51,7 @@ def _buffer(image: QImage) -> memoryview:
     if hasattr(bits, "setsize"):
         bits.setsize(image.sizeInBytes())
     return memoryview(bits).cast("B")
-DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
+DRAW_HINT = "Draw on the screen  ·  {tool.region} then drag to capture  ·  Enter for whole screen"
 LOUPE_ZOOM = (3.0, 40.0)  # magnifier zoom range, screen px per captured pixel
 LOUPE_EDGE = QColor(0, 0, 0, 120)  # the thin dark edge of the magnifier's square and crosshair
 
@@ -794,9 +794,8 @@ class Overlay(QWidget):
                 continue
             box = _code_box(poly)
             p.drawRoundedRect(box, min(8.0, box.height() / 3), min(8.0, box.height() / 3))
-        if hovered is not None:  # on top of the others
+        if hovered is not None:  # on top of the others, looking the same (it isn't a button)
             box = _code_box(hovered)
-            p.setBrush(QColor(C.CODE.red(), C.CODE.green(), C.CODE.blue(), 80))
             p.drawRoundedRect(box, min(8.0, box.height() / 3), min(8.0, box.height() / 3))
         p.restore()
 
@@ -997,7 +996,8 @@ class Overlay(QWidget):
         elif self.ctl.eyedropper:
             text = self.ctl.hint or EYEDROPPER_HINT
         else:
-            text = self.ctl.hint or (PIN_HINT if tool == "pin" else HINTS.get(tool, DRAW_HINT))
+            text = self.ctl.hint or _with_keys(PIN_HINT if tool == "pin" else HINTS.get(tool, DRAW_HINT),
+                                               self.ctl.keymap)
         # In the middle of the screen, faded while the pointer is near it.
         fm = QFontMetricsF(font(12, QFont.Weight.Medium))
         width = fm.horizontalAdvance(text) + 28
@@ -1130,6 +1130,20 @@ def _pick(xs, ys, tolerance: int, rounding: int = 0, edge_at=None) -> tuple[int 
             if score > best_score:
                 best, best_score = (vx[1] if vx else None, hy[1] if hy else None), score
     return best
+
+
+def _with_keys(text: str, keymap) -> str:
+    """A hint with its {action} keys filled in; a part whose key is unset goes."""
+    parts = []
+    for part in text.split("  ·  "):
+        if "{" in part:
+            action = part[part.index("{") + 1:part.index("}")]
+            key = keymap.label(action)
+            if not key:
+                continue
+            part = part.replace("{" + action + "}", key)
+        parts.append(part)
+    return "  ·  ".join(parts)
 
 
 def _code_box(poly: QPolygonF) -> QRectF:

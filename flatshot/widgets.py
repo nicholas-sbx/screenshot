@@ -1,8 +1,8 @@
 """Custom-painted controls. Nothing here uses the Qt style for drawing."""
 
 from flatshot.qt import (
-    QAbstractButton, QColor, QConicalGradient, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QRectF, Qt,
-    QWidget,
+    QAbstractButton, QColor, QConicalGradient, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QPointF,
+    QRectF, Qt, QWidget,
 )
 
 from flatshot import icons
@@ -100,7 +100,7 @@ class IconButton(_Button):
 
 class Swatch(_Button):
     def __init__(self, ctl, index: int, parent=None):
-        super().__init__(ctl, f"Colour  ·  {index + 1}", parent)
+        super().__init__(ctl, ctl.keymap.hint("Colour", f"color.{index + 1}"), parent)
         self.index = index
         self.selected = False
         self.setFixedSize(26, 36)
@@ -132,29 +132,28 @@ class Swatch(_Button):
 
 class CustomSwatch(Swatch):
     """Your own colour, after the others: a click picks it and opens the
-    picker. A thin rainbow round it says any colour goes here."""
+    picker. A small rainbow dot in its corner says any colour goes here
+    (only the usual ring says it's the one in use)."""
 
     def __init__(self, ctl, parent=None):
         super().__init__(ctl, len(SWATCHES), parent)
-        self.hint = f"Your own colour  ·  {len(SWATCHES) + 1}  ·  click to choose it"
+        self.hint = ctl.keymap.hint("Your own colour", f"color.{len(SWATCHES) + 1}") + "  ·  click to choose it"
 
     def color(self) -> QColor:
         return self.ctl.custom_color
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.selected or self.underMouse():
-            return
         p = self._painter()
         if not self.isEnabled():
             p.setOpacity(0.3)
-        c = QRectF(self.rect()).center()
-        ring = QConicalGradient(c, 90)
+        c = QRectF(self.rect()).center() + QPointF(6, 6)
+        wheel = QConicalGradient(c, 90)
         for i in range(7):
-            ring.setColorAt(i / 6, QColor.fromHsvF((i / 6) % 1.0, 0.7, 1.0))
-        p.setPen(QPen(ring, 1.6))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(QRectF(c.x() - 10, c.y() - 10, 20, 20), 6.5, 6.5)
+            wheel.setColorAt(i / 6, QColor.fromHsvF((i / 6) % 1.0, 0.8, 1.0))
+        p.setPen(QPen(C.BASE, 1.5))
+        p.setBrush(wheel)
+        p.drawEllipse(c, 3.6, 3.6)
 
 
 class SizeButton(_Button):
@@ -162,7 +161,8 @@ class SizeButton(_Button):
     GAP = 4.0  # between neighbouring dots, edge to edge
 
     def __init__(self, ctl, parent=None):
-        super().__init__(ctl, "Stroke size  ·  [ ]", parent)
+        keys = " ".join(k for k in (ctl.keymap.label("size.down"), ctl.keymap.label("size.up")) if k)
+        super().__init__(ctl, f"Stroke size  ·  {keys}" if keys else "Stroke size", parent)
         self.size = 1
         self.setFixedSize(40, 36)
 
@@ -321,7 +321,7 @@ class Toolbar(_Draggable):
         row.addWidget(Grip(self))
         self.tools = {}
         for name, label, key in TOOLS:
-            b = IconButton(ctl, name, f"{label}  ·  {key}", self)
+            b = IconButton(ctl, name, ctl.keymap.hint(label, f"tool.{name}"), self)
             b.clicked.connect(lambda _=False, n=name: ctl.set_tool(n))
             self.tools[name] = b
             row.addWidget(b)
@@ -355,8 +355,8 @@ class Toolbar(_Draggable):
 
         self.history_buttons = []
         for icon, hint, slot in [
-            ("undo", "Undo  ·  Ctrl+Z", ctl.undo),
-            ("redo", "Redo  ·  Ctrl+Shift+Z", ctl.redo),
+            ("undo", ctl.keymap.hint("Undo", "undo"), ctl.undo),
+            ("redo", ctl.keymap.hint("Redo", "redo"), ctl.redo),
         ]:
             b = IconButton(ctl, icon, hint, self)
             b.clicked.connect(slot)
@@ -391,17 +391,18 @@ class Toolbar(_Draggable):
             s.set_selected(s.index == self.ctl.color_index)
         self.size_button.set_size(self.ctl.size)
         self.pin_button.set_active(self.ctl.pin_mode)
-        self.pin_button.hint = ("Pinning: the capture stays on screen, not saved  ·  K" if self.ctl.pin_mode
-                                else "Pin the capture to the screen instead of saving it  ·  K")
+        km = self.ctl.keymap
+        self.pin_button.hint = km.hint("Pinning: the capture stays on screen, not saved" if self.ctl.pin_mode
+                                       else "Pin the capture to the screen instead of saving it", "pin")
         self.snap_button.set_toggle(self.ctl.snap_edges, "magnet",
-                                    "Snap selections to edges in the picture  ·  G  ·  "
+                                    km.hint("Snap selections to edges in the picture", "snap") + "  ·  "
                                     + ("on (hold Ctrl to place freely)" if self.ctl.snap_edges else "off"))
         n = self.ctl.code_count()
         found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
         if self.ctl.codes_visible:
-            self.codes_button.set_toggle(True, "codes", f"Hide QR / barcodes  ·  Q  ·  {found}")
+            self.codes_button.set_toggle(True, "codes", km.hint("Hide QR / barcodes", "codes") + f"  ·  {found}")
         else:
-            self.codes_button.set_toggle(False, "codes-off", f"Show QR / barcodes  ·  Q  ·  {found}")
+            self.codes_button.set_toggle(False, "codes-off", km.hint("Show QR / barcodes", "codes") + f"  ·  {found}")
 
     def place(self):
         bounds = self.parentWidget().rect()

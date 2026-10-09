@@ -66,6 +66,7 @@ class TrayApp(QObject):
         self.settings = None
         self.tray: QSystemTrayIcon | None = None
         self.menu_actions: dict[str, QAction] = {}
+        self._image_dialog = None  # "Annotate an image…", while it's open
 
     def start(self) -> bool:
         if not self.server.listen():
@@ -240,13 +241,27 @@ class TrayApp(QObject):
         editor.open_file(path)
 
     def _choose_image(self):
+        # After the menu is done with the click, and without blocking: a
+        # modal dialog run from inside the tray menu's D-Bus call (or the
+        # desktop's through the portal) can leave the app hanging.
+        QTimer.singleShot(0, self._open_image_dialog)
+
+    def _open_image_dialog(self):
         from flatshot.qt import QFileDialog
 
-        start = str(output.base_folder(config.load()))
-        chosen, _ = QFileDialog.getOpenFileName(None, "Annotate an image", start,
-                                                "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.avif *.jxl)")
-        if chosen:
-            self.edit(chosen)
+        if self._image_dialog is not None:
+            self._image_dialog.raise_()
+            self._image_dialog.activateWindow()
+            return
+        dialog = QFileDialog(None, "Annotate an image", str(output.base_folder(config.load())),
+                             "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.avif *.jxl)")
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.fileSelected.connect(self.edit)
+        dialog.finished.connect(lambda _: setattr(self, "_image_dialog", None))
+        self._image_dialog = dialog
+        dialog.open()
 
     def show_settings(self):
         from flatshot.settings import SettingsWindow

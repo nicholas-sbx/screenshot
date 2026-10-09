@@ -1,7 +1,7 @@
 """Settings window: a sidebar of pages, each a stack of quiet grouped cards.
 Changes are saved as they're made and apply from the next capture."""
 
-from flatshot import __version__, autostart, config, output, theme
+from flatshot import __version__, autostart, config, keys, output, theme
 from flatshot.qt import (
     QAbstractButton, QApplication, QColor, QComboBox, QFileDialog, QFont, QFontMetrics, QHBoxLayout, QIcon,
     QKeySequence, QLabel, QLineEdit, QPainter, QPen, QPointF, QPolygonF, QRectF, QScrollArea, QSize, QStackedWidget, Qt, QVBoxLayout,
@@ -805,6 +805,56 @@ class SettingsWindow(QWidget):
             note = ("Global shortcuts need KDE Plasma (" + (self.shortcuts.error or "unavailable") + "). "
                     "Elsewhere, bind the command  flatshot  in your desktop's keyboard settings.")
         self._col.addWidget(_label(note, "hint", wrap=True))
+        self._window_keys()
+
+    def _window_keys(self):
+        """Keys inside Flatshot's own windows (the capture screen and the
+        annotation editor): separate from the global shortcuts above."""
+        self._col.addSpacing(16)
+        self._col.addWidget(_label("Keys in Flatshot", "title"))
+        self._col.addWidget(_label("While capturing and in the annotation editor. Click one and press a new key; "
+                                   "Backspace clears it. Esc, Enter, and Ctrl+S / Ctrl+C to capture, stay as they "
+                                   "are.", "hint", wrap=True))
+        self.key_fields, self.key_rows = {}, {}
+        keymap = keys.Keymap(self.cfg.keys)
+        for heading, actions in keys.GROUPS:
+            card = self._card(heading)
+            for action in actions:
+                field = ShortcutField(keymap.keys[action], True)
+                field.chosen.connect(lambda seq, a=action: self._assign_key(a, seq))
+                self.key_fields[action] = field
+                self.key_rows[action] = card.add(Row(keys.BINDINGS[action][0], field))
+        reset = Button("Reset all to defaults")
+        reset.clicked.connect(self._reset_keys)
+        self._col.addWidget(reset, 0, Qt.AlignmentFlag.AlignLeft)
+
+    def _assign_key(self, action: str, sequence: str):
+        error = self.key_rows[action].error
+        if keys.label(sequence) in ("Esc", "Return", "Enter") or sequence in ("Esc", "Return", "Enter"):
+            error.setText(f"{sequence} is kept for cancelling and capturing.")
+            error.show()
+            return
+        current = keys.Keymap(self.cfg.keys).keys
+        clash = next((a for a, k in current.items() if a != action and k and sequence
+                      and keys.label(k) == keys.label(sequence) and keys.overlaps(a, action)), None)
+        if clash:
+            error.setText(f"{keys.label(sequence)} is already {keys.BINDINGS[clash][0]}.")
+            error.show()
+            return
+        error.hide()
+        changed = dict(self.cfg.keys)
+        if sequence == keys.BINDINGS[action][1]:
+            changed.pop(action, None)  # back to the default
+        else:
+            changed[action] = sequence
+        self._save(keys=changed)
+        self.key_fields[action].set_sequence(sequence)
+
+    def _reset_keys(self):
+        self._save(keys={})
+        for action, field in self.key_fields.items():
+            field.set_sequence(keys.BINDINGS[action][1])
+            self.key_rows[action].error.hide()
 
     def _assign(self, action: str, sequence: str):
         error = self.shortcut_rows[action].error

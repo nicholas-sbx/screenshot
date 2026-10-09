@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from flatshot import capture, config, output, pin, scanner, shapes, theme, windows
+from flatshot import capture, config, keys, output, pin, scanner, shapes, theme, windows
 from flatshot.notify import Notifier
 from flatshot.overlay import Overlay
 from flatshot.qt import (
@@ -17,10 +17,7 @@ from flatshot.qt import (
 )
 from flatshot.widgets import TOOLS
 
-TOOL_KEYS = {keyval(getattr(Qt.Key, f"Key_{key}")): name for name, _, key in TOOLS}
-K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in
-     ["Escape", "Return", "Enter", "Backspace", "Z", "Y", "S", "C", "Q", "I", "K", "G", "1", "BracketLeft",
-      "BracketRight"]}
+K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in ["Escape", "Return", "Enter", "Backspace", "Y", "S", "C"]}
 # The tools that draw in the chosen colour: picking a colour switches to one.
 COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
 CUSTOM = len(theme.SWATCHES)  # the colour index of your own colour, after the toolbar's others
@@ -98,6 +95,7 @@ class Session:
         self.recording = None  # the recording this session started
         self.color_index = min(max(cfg.default_color, 0), CUSTOM)
         self.custom_color = QColor(cfg.custom_color)
+        self.keymap = keys.Keymap(cfg.keys)
         self.eyedropper = False  # the next click takes your own colour from the screen
         self.size = min(max(cfg.default_size, 0), len(theme.SIZES) - 1)
         self.dim = QColor(theme.C.DIM)
@@ -710,27 +708,34 @@ class Session:
                 self.whole_screen(target)
         elif self.tool == "record" and ctrl and k in (K["S"], K["C"]):
             pass
-        elif ctrl and k == K["Z"]:
-            self.redo() if shift else self.undo()
+        elif (action := self.keymap.action(event, keys.CAPTURE)) is not None:
+            self._do(action, target)
         elif ctrl and k == K["Y"]:
-            self.redo()
+            self.redo()  # (besides the Redo key)
         elif enter or (ctrl and k in (K["S"], K["C"])):
             self.capture(target, None)
-        elif not ctrl and k == K["Q"]:
+
+    def _do(self, action: str, target: Overlay):
+        """A key's action (keys.BINDINGS) while capturing."""
+        if action == "undo":
+            self.undo()
+        elif action == "redo":
+            self.redo()
+        elif action == "codes":
             self.toggle_codes()
-        elif not ctrl and k == K["K"]:
+        elif action == "pin":
             self.toggle_pin()
-        elif not ctrl and k == K["G"]:
+        elif action == "snap":
             self.toggle_snap()
-        elif not ctrl and k == K["I"]:
+        elif action == "copy_color":
             self.copy_color(target)
-        elif not ctrl and k in TOOL_KEYS:
-            self.set_tool(TOOL_KEYS[k])
-        elif not ctrl and K["1"] <= k <= K["1"] + CUSTOM:
-            self.set_color(k - K["1"])
-        elif k == K["BracketLeft"]:
+        elif action.startswith("tool."):
+            self.set_tool(action[5:])
+        elif action.startswith("color."):
+            self.set_color(int(action[6:]) - 1)
+        elif action == "size.down":
             self.set_size(self.size - 1)
-        elif k == K["BracketRight"]:
+        elif action == "size.up":
             self.set_size(self.size + 1)
 
     def key_release(self, overlay: Overlay, event):

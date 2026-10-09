@@ -6,17 +6,16 @@ and any number of editors can be open at once. Loaded only when one opens."""
 import sys
 from pathlib import Path
 
-from flatshot import config, output, shapes, theme
+from flatshot import config, icons, keys, output, shapes, theme
 from flatshot.qt import (
     QColor, QEvent, QFileDialog, QFont, QFontMetricsF, QHBoxLayout, QImage, QMessageBox, QPainter, QPen, QPixmap,
     QPoint, QPointF, QRectF, QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
 )
 from flatshot.theme import C, SWATCHES, font
-from flatshot.widgets import TOOLS, Chip, CustomSwatch, Divider, IconButton, SizeButton, Swatch
+from flatshot.widgets import TOOLS, CustomSwatch, Divider, IconButton, SizeButton, Swatch, _Button
 
 # The overlay's drawing tools (not capturing or recording).
 EDIT_TOOLS = [t for t in TOOLS if t[0] not in ("region", "record")]
-TOOL_KEYS = {keyval(getattr(Qt.Key, f"Key_{key}")): name for name, _, key in EDIT_TOOLS}
 COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
 CUSTOM = len(SWATCHES)  # the colour index of your own colour
 ZOOM = (0.05, 32.0)
@@ -75,6 +74,7 @@ class Editor(QWidget):
         self.colour_tool = self.tool
         self.color_index = min(max(self.cfg.default_color, 0), CUSTOM)
         self.custom_color = QColor(self.cfg.custom_color)
+        self.keymap = keys.Keymap(self.cfg.keys)
         self.size = min(max(self.cfg.default_size, 0), len(theme.SIZES) - 1)
         self.eyedropper = False
         self.picker = None
@@ -231,6 +231,7 @@ class Editor(QWidget):
 
     def _changed(self):
         self.dirty = True
+        self.bar.refresh()
         self._title()
         self.refresh()
 
@@ -260,10 +261,16 @@ class Editor(QWidget):
     def save(self) -> bool:
         return self._save_to(self.path)
 
-    def save_as(self) -> bool:
-        kinds = ";;".join(f"{label} (*.{key})" for key, label, _, _ in output.writable_formats())
-        chosen, _ = QFileDialog.getSaveFileName(self, "Save as", str(self.path), kinds)
-        return bool(chosen) and self._save_to(Path(chosen))
+    def save_as(self):
+        """Ask where to (Qt's own dialog, without blocking: the desktop's
+        through the portal can hang a tray app), then save there."""
+        dialog = QFileDialog(self, "Save as", str(self.path))
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setNameFilters([f"{label} (*.{key})" for key, label, _, _ in output.writable_formats()])
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.fileSelected.connect(lambda chosen: chosen and self._save_to(Path(chosen)))
+        dialog.open()
 
     def _save_to(self, path: Path) -> bool:
         try:
@@ -273,6 +280,7 @@ class Editor(QWidget):
             return False
         self.path, self.dirty = written, False
         self._title()
+        self.bar.refresh()
         self._say(f"Saved to {written}")
         return True
 
@@ -294,58 +302,49 @@ class Editor(QWidget):
 
     def keyPressEvent(self, event):
         k = keyval(event.key())
-        mods = event.modifiers()
-        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-        K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in (
-            "Return", "Enter", "Escape", "Backspace", "Space", "S", "C", "Z", "Y", "W", "0", "1", "Plus", "Equal",
-            "Minus", "BracketLeft", "BracketRight")}
-        enter = k in (K["Return"], K["Enter"])
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        enter = k in (keyval(Qt.Key.Key_Return), keyval(Qt.Key.Key_Enter))
         if self.text_edit is not None and not ctrl:
             shape = self.text_edit
-            if k == K["Escape"] or (enter and not shift):
+            if k == keyval(Qt.Key.Key_Escape) or (enter and not shift):
                 self.commit_text()
             elif enter:
                 shape.text += "\n"
-            elif k == K["Backspace"]:
+            elif k == keyval(Qt.Key.Key_Backspace):
                 shape.text = shape.text[:-1]
             elif event.text() and event.text().isprintable():
                 shape.text += event.text()
             self.canvas.update()
             return
-        if k == K["Space"] and not event.isAutoRepeat():
+        if k == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
             self.canvas.set_space(True)
-        elif k == K["Escape"]:
+        elif k == keyval(Qt.Key.Key_Escape):
             if not (self.close_picker() or self.canvas.cancel()):
                 self.close()
-        elif ctrl and k == K["S"]:
-            self.save_as() if shift else self.save()
-        elif ctrl and k == K["C"]:
-            self.copy()
-        elif ctrl and k == K["Z"]:
-            self.redo() if shift else self.undo()
-        elif ctrl and k == K["Y"]:
-            self.redo()
-        elif ctrl and k == K["W"]:
-            self.close()
-        elif ctrl and k == K["0"]:
-            self.canvas.fit()
-        elif ctrl and k == K["1"]:
-            self.canvas.zoom_to(1.0)
-        elif ctrl and k in (K["Plus"], K["Equal"]):
-            self.canvas.zoom_to(self.canvas.zoom * 1.25)
-        elif ctrl and k == K["Minus"]:
-            self.canvas.zoom_to(self.canvas.zoom / 1.25)
-        elif not ctrl and k in TOOL_KEYS:
-            self.set_tool(TOOL_KEYS[k])
-        elif not ctrl and keyval(Qt.Key.Key_1) <= k <= keyval(Qt.Key.Key_1) + CUSTOM:
-            self.set_color(k - keyval(Qt.Key.Key_1))
-        elif k == K["BracketLeft"]:
-            self.set_size(self.size - 1)
-        elif k == K["BracketRight"]:
-            self.set_size(self.size + 1)
+        elif (action := self.keymap.action(event, keys.EDITOR)) is not None:
+            self._do(action)
+        elif ctrl and k == keyval(Qt.Key.Key_Y):
+            self.redo()  # (besides the Redo key)
+        elif ctrl and k == keyval(Qt.Key.Key_Plus):
+            self.canvas.zoom_to(self.canvas.zoom * 1.25)  # (Ctrl+= typed with Shift)
         else:
             super().keyPressEvent(event)
+
+    def _do(self, action: str):
+        """A key's action (keys.BINDINGS) in the editor."""
+        canvas = self.canvas
+        simple = {"undo": self.undo, "redo": self.redo, "save": self.save, "save_as": self.save_as,
+                  "copy": self.copy, "fit": canvas.fit, "actual_size": lambda: canvas.zoom_to(1.0),
+                  "zoom_in": lambda: canvas.zoom_to(canvas.zoom * 1.25),
+                  "zoom_out": lambda: canvas.zoom_to(canvas.zoom / 1.25), "close": self.close,
+                  "size.down": lambda: self.set_size(self.size - 1), "size.up": lambda: self.set_size(self.size + 1)}
+        if action in simple:
+            simple[action]()
+        elif action.startswith("tool."):
+            self.set_tool(action[5:])
+        elif action.startswith("color."):
+            self.set_color(int(action[6:]) - 1)
 
     def keyReleaseEvent(self, event):
         if keyval(event.key()) == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
@@ -391,7 +390,7 @@ class _Bar(QWidget):
         row.setSpacing(2)
         self.tools = {}
         for name, label, key in EDIT_TOOLS:
-            b = IconButton(ed, name, f"{label}  ·  {key}", self)
+            b = IconButton(ed, name, ed.keymap.hint(label, f"tool.{name}"), self)
             b.clicked.connect(lambda _=False, n=name: ed.set_tool(n))
             self.tools[name] = b
             row.addWidget(b)
@@ -410,20 +409,22 @@ class _Bar(QWidget):
         self.size_button.clicked.connect(ed.cycle_size)
         row.addWidget(self.size_button)
         row.addWidget(Divider(self))
-        for icon, hint, slot in (("undo", "Undo  ·  Ctrl+Z", ed.undo), ("redo", "Redo  ·  Ctrl+Shift+Z", ed.redo),
-                                 ("fit", "Fit the picture in the window  ·  Ctrl+0", lambda: ed.canvas.fit())):
+        km = ed.keymap
+        for icon, hint, slot in (("undo", km.hint("Undo", "undo"), ed.undo), ("redo", km.hint("Redo", "redo"), ed.redo),
+                                 ("fit", km.hint("Fit the picture in the window", "fit"), lambda: ed.canvas.fit())):
             b = IconButton(ed, icon, hint, self)
             b.clicked.connect(slot)
             row.addWidget(b)
         row.addStretch(1)
-        for text, hint, slot, primary in (("Copy", "Copy the picture  ·  Ctrl+C", ed.copy, False),
-                                          ("Save as…", "Save to another file  ·  Ctrl+Shift+S", ed.save_as, False),
-                                          ("Save", "", ed.save, True)):
-            chip = Chip(ed, text, hint, self, primary=primary)
-            chip.clicked.connect(slot)
-            row.addWidget(chip)
-            if primary:
-                self.save_chip = chip
+        row.setSpacing(4)
+        copy = ActionButton(ed, "Copy", "copy", km.hint("Copy the picture", "copy"), self)
+        copy.clicked.connect(ed.copy)
+        save_as = ActionButton(ed, "Save as", "save-as", km.hint("Save to another file", "save_as"), self)
+        save_as.clicked.connect(ed.save_as)
+        self.save_button = ActionButton(ed, "Save", "save", "", self, also=("Saved",))
+        self.save_button.clicked.connect(ed.save)
+        for b in (copy, save_as, self.save_button):
+            row.addWidget(b)
         self.setFixedHeight(48)
 
     def refresh(self):
@@ -433,12 +434,55 @@ class _Bar(QWidget):
             s.set_selected(s.index == self.ed.color_index)
             s.update()
         self.size_button.set_size(self.ed.size)
-        self.save_chip.hint = f"Save to {self.ed.path}  ·  Ctrl+S"
+        # Save stands out only while there's something to save; then it
+        # says so (that, and the window's title, are the unsaved mark).
+        unsaved = self.ed.dirty
+        self.save_button.set_look("Save" if unsaved else "Saved", "save" if unsaved else "check", unsaved)
+        self.save_button.hint = self.ed.keymap.hint(f"Save to {self.ed.path}", "save") if unsaved \
+            else f"Saved in {self.ed.path}"
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.fillRect(self.rect(), C.BASE)
         p.fillRect(QRectF(0, self.height() - 1, self.width(), 1), C.LINE)
+
+
+class ActionButton(_Button):
+    """Copy, Save as and Save: an icon and a word, all alike; ``strong``
+    fills it with the accent (Save, while there's something to save)."""
+
+    def __init__(self, ed, text: str, icon: str, hint: str, parent=None, also: tuple[str, ...] = ()):
+        """``also``: other words it may show; it's as wide as the widest,
+        so changing words never moves anything."""
+        super().__init__(ed, hint, parent)
+        self.text, self.icon, self.strong = text, icon, False
+        self._words = (text, *also)
+        self._font = font(13, QFont.Weight.DemiBold)
+        self._fit()
+
+    def set_look(self, text: str, icon: str, strong: bool):
+        if (text, icon, strong) != (self.text, self.icon, self.strong):
+            self.text, self.icon, self.strong = text, icon, strong
+            self.update()
+
+    def _fit(self):
+        fm = QFontMetricsF(self._font)
+        self.setFixedSize(round(max(fm.horizontalAdvance(w) for w in self._words)) + 46, 34)
+
+    def paintEvent(self, event):
+        p = self._painter()
+        hover = self.underMouse()
+        if self.strong:
+            p.setBrush(C.ACCENT.lighter(108) if hover else C.ACCENT)
+            fg = C.ON_ACCENT
+        else:
+            p.setBrush(C.HOVER if hover else C.RAISED)
+            fg = C.TEXT if hover else C.SOFT
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        icons.paint(p, self.icon, QRectF(10, (self.height() - 18) / 2, 18, 18), fg)
+        p.setFont(self._font)
+        p.setPen(fg)
+        p.drawText(QRectF(34, 0, self.width() - 40, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text)
 
 
 class _Status(QWidget):
