@@ -712,7 +712,13 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
         assert pin._open[-1].at == where, pin._open[-1].at
         tray._on_action("pin", shot_file, at=where, layout=(("gone", (0, 0, 640, 480), 1.0),))
         assert pin._open[-1].at is None, "pinned where it was although the monitors changed"
-        for w in pin._open[-2:]:
+        assert pin._open[-1].size() == where.size(), "the pin lost the captured size"
+        # The pin is as big as the area captured, whatever its pixels: KWin's
+        # can be at another scale than the monitor the pin is on.
+        where = QRect(30, 40, 32, 24)  # 40 x 30 pixels: taken at 1.25
+        tray._on_action("pin", shot_file, at=where, layout=pin.screen_layout())
+        assert pin._open[-1].size() == where.size(), (pin._open[-1].size(), where.size())
+        for w in pin._open[-3:]:
             w.close()
         tray.record()
         assert wait(lambda: tray.session is not None and tray.session.overlays)
@@ -1253,6 +1259,14 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     assert ov.cursor_pos == QPointF(button.mapTo(ov, QPoint(5, 7))), ov.cursor_pos
     move(button, QPoint(20, 9))
     assert ov.cursor_pos == QPointF(button.mapTo(ov, QPoint(20, 9))), ov.cursor_pos
+    # A finger on a button isn't a pointer: the crosshair stays where it was.
+    finger = qt.QPointingDevice("flatshot test touchscreen", 99, qt.QInputDevice.DeviceType.TouchScreen,
+                                qt.QPointingDevice.PointerType.Finger, qt.QInputDevice.Capability.Position, 10, 0)
+    pos = QPointF(30, 12)
+    qt.QApplication.sendEvent(button, QMouseEvent(QEvent.Type.MouseMove, pos, QPointF(button.mapToGlobal(pos)),
+                                                  Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                                                  Qt.KeyboardModifier.NoModifier, finger))
+    assert ov.cursor_pos == QPointF(button.mapTo(ov, QPoint(20, 9))), "a tap moved the crosshair"
 
     # Picking a colour from a tool without one goes back to the last drawing tool.
     s.set_tool("arrow")

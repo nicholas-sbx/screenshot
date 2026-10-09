@@ -234,7 +234,8 @@ class TrayApp(QObject):
             if not image.isNull():
                 # Where it was taken, unless the monitors changed since: then
                 # the desktop places it.
-                pin.show(image, at if at is not None and layout == pin.screen_layout() else None)
+                same = at is not None and layout == pin.screen_layout()
+                pin.show(image, at if same else None, size=at.size() if at is not None else None)
 
     def edit(self, path: str):
         """Open ``path`` in an annotation editor (a window of its own)."""

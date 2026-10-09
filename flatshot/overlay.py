@@ -7,7 +7,7 @@ import threading
 import time
 
 from flatshot.qt import (
-    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap,
+    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QImage, QInputDevice, QPainter, QPainterPath, QPen, QPixmap,
     QPoint, QPointF, QPolygonF, QRect, QRectF, QSizeF, Qt, QTimer, QWidget,
 )
 
@@ -175,7 +175,9 @@ class Overlay(QWidget):
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.Move and obj is self.toolbar and self.picker_open():
             self.show_picker()  # (the toolbar was dragged: the picker stays under it)
-        if event.type() == QEvent.Type.MouseMove and isinstance(obj, QWidget):
+        if event.type() == QEvent.Type.MouseMove and isinstance(obj, QWidget) and not _by_touch(event):
+            # (A finger on a button isn't a pointer: the crosshair and the
+            # magnifier stay where they were.)
             self.cursor_pos = QPointF(obj.mapTo(self, event.position().toPoint()))
             self._snap_point = None
             self.ctl.activate(self)
@@ -1225,6 +1227,14 @@ def _pick(xs, ys, tolerance: int, rounding: int = 0, edge_at=None) -> tuple[int 
             if score > best_score:
                 best, best_score = (vx[1] if vx else None, hy[1] if hy else None), score
     return best
+
+
+def _by_touch(event) -> bool:
+    """Did a finger (a touchscreen) make this mouse event, not a mouse?"""
+    device = event.pointingDevice() if hasattr(event, "pointingDevice") else None
+    if device is not None:
+        return device.type() == QInputDevice.DeviceType.TouchScreen
+    return event.source() != Qt.MouseEventSource.MouseEventNotSynthesized
 
 
 def _with_keys(text: str, keymap) -> str:

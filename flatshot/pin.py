@@ -31,17 +31,19 @@ def when_all_closed(callback) -> None:
     _on_all_closed.append(callback)
 
 
-def show(image: QImage, at: QRect | None = None) -> "PinWindow":
+def show(image: QImage, at: QRect | None = None, size: QSize | None = None) -> "PinWindow":
     """Pin ``image``. ``at`` is where it was captured (global logical coords);
-    the pin opens right there when the desktop allows placing windows."""
-    pin = PinWindow(image, at)
+    the pin opens right there when the desktop allows placing windows, at
+    that size. ``size``: the size it was captured at, when where can't be
+    used (the monitors changed since)."""
+    pin = PinWindow(image, at, size)
     pin.show()
     _open.append(pin)
     return pin
 
 
 class PinWindow(QWidget):
-    def __init__(self, image: QImage, at: QRect | None):
+    def __init__(self, image: QImage, at: QRect | None, size: QSize | None = None):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -51,8 +53,14 @@ class PinWindow(QWidget):
         self.setWindowTitle(f"Flatshot pin {next(_ids)}")
         screen = (QGuiApplication.screenAt(at.center()) if at else None) \
             or QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-        dpr = screen.devicePixelRatio()
-        self.base = QSizeF(image.width() / dpr, image.height() / dpr)  # natural logical size
+        # Its natural (logical) size: that of the area captured. Its pixels
+        # are no guide: KWin takes the whole desktop at the highest scale of
+        # any monitor, so they needn't match this monitor's scale.
+        if at is not None or size is not None:
+            self.base = QSizeF(at.size() if at is not None else size)
+        else:
+            dpr = screen.devicePixelRatio()
+            self.base = QSizeF(image.width() / dpr, image.height() / dpr)
         avail = screen.availableGeometry()
         self.zoom = min(1.0, avail.width() * 0.9 / max(1, self.base.width()),
                         avail.height() * 0.9 / max(1, self.base.height()))
@@ -145,7 +153,8 @@ class PinWindow(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom != 1.0)
+        # Smooth at any size: the picture's pixels seldom match this screen's.
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.drawPixmap(QRectF(self.rect()), self.pixmap, QRectF(self.pixmap.rect()))
         edge = QColor(C.ACCENT)
         edge.setAlpha(170)
