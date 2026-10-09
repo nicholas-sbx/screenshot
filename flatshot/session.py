@@ -304,9 +304,28 @@ class Session:
         return self.cfg.span_monitors and not self.request.image and len(self.overlays) > 1
 
     def spans(self) -> bool:
-        """Can a selection (or a clicked window) cross monitors now? Captures
-        only: a recording area stays on one monitor."""
-        return self._desktop_image is not None and self.tool == "region"
+        """Can a selection (or a clicked window) cross monitors now? For a
+        recording, only where the recorder can take that."""
+        if self._desktop_image is None or self.tool not in ("region", "record"):
+            return False
+        if self.tool == "record":
+            from flatshot import screencast
+
+            return screencast.can_span()
+        return True
+
+    def area_moved(self, origin: Overlay):
+        """The area to record, chosen on ``origin``, changed: show its part
+        on the other monitors."""
+        g = origin.target_screen.geometry()
+        area = origin.rec_rect.translated(QPointF(g.topLeft())) if origin.rec_rect is not None else None
+        for o in self.overlays:
+            if o is not origin:
+                og = QRectF(o.target_screen.geometry())
+                part = area.translated(-og.topLeft()) if area is not None and area.intersects(og) else None
+                if part != o.span_rect:
+                    o.span_rect = part
+                    o.update()
 
     def selection_moved(self, origin: Overlay, pointer: QPointF | None):
         """``origin``'s selection changed: show its part on the other
@@ -380,6 +399,8 @@ class Session:
         if tool == "record" and not self.can_record:
             return
         self.commit_text()
+        if self.tool == "record" and tool != "record":
+            self.disarm()
         self.tool = tool
         if tool in COLOUR_TOOLS:
             self.colour_tool = tool
@@ -528,7 +549,8 @@ class Session:
     def disarm(self):
         """Forget the area chosen for recording (on every monitor)."""
         for o in self.overlays:
-            o.rec_rect = o.rec_window = None
+            o.rec_rect = o.rec_window = o.span_rect = None
+            o.update()
 
     def whole_screen(self, overlay: Overlay):
         """The toolbar's screen button: capture, or choose the screen to record."""
@@ -590,7 +612,9 @@ class Session:
         source = window or (self._desktop.active if self._desktop else None)
         if source:
             shot.app, shot.title = source.app, source.title
-        thumbnail = overlay.render(rect)
+        spanning = not g.contains(area)
+        thumbnail = self._render_desktop(area) if spanning and self._desktop_image is not None \
+            else overlay.render(rect)
         opts = screencast.Options(**vars(self.rec_opts))
         self._close_overlays()
         # The screen's real scale is the screenshot's: Qt's can be rounded.

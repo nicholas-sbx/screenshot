@@ -411,14 +411,19 @@ class Overlay(QWidget):
             return True
         if self.rec_rect is not None:
             self.rec_rect = self.rec_window = None
+            self.ctl.area_moved(self)
             self.ctl.refresh()
             return True
         return False
 
     def arm(self, rect: QRectF, window=None):
-        """Choose ``rect`` (logical, this screen) to record."""
-        self.rec_rect = QRectF(rect).intersected(QRectF(self.rect()))
+        """Choose ``rect`` (logical, this screen's coordinates) to record. It
+        may cross onto other monitors where the recorder can take that."""
+        self.rec_rect = QRectF(rect).intersected(self._drag_bounds())
         self.rec_window = window
+        if self.ctl.spans():
+            self.ctl.selection_moved(self, None)  # (the drag that chose it is over)
+        self.ctl.area_moved(self)
         self.ctl.refresh()
 
     # -- snapping to edges in the picture -------------------------------------
@@ -525,7 +530,7 @@ class Overlay(QWidget):
         handle, start, r0 = self._rec_drag
         d = pos - start
         r = QRectF(r0)
-        bounds = QRectF(self.rect())
+        bounds = self._drag_bounds()
         if handle == "move":
             r.translate(d)
             r.moveLeft(max(bounds.left(), min(r.left(), bounds.right() - r.width())))
@@ -544,6 +549,7 @@ class Overlay(QWidget):
             r = r.normalized().intersected(bounds)
         self.rec_rect = r
         self.rec_window = None
+        self.ctl.area_moved(self)
 
     # -- output ------------------------------------------------------------
 
@@ -639,6 +645,8 @@ class Overlay(QWidget):
                 rect, window = self.hover_window if self.hover_window else (None, None)
             g = self.target_screen.geometry()
             if self.ctl.tool == "record":
+                if window is not None and self.ctl.spans():  # all of a window that crosses monitors
+                    rect = QRectF(window.rect.translated(-g.topLeft()))
                 self.arm(rect if rect is not None else QRectF(self.rect()), window)
             elif self.ctl.spans() and window is not None and not g.contains(window.rect):
                 self.ctl.capture_span(window.rect, window)  # all of a window that crosses monitors

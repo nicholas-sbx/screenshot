@@ -122,13 +122,41 @@ assert left.sel_rect is None and right.span_rect is None and not s.done
 s.cancel()
 print("ok   Esc clears a selection across monitors")
 
-# With the setting off, or recording, a drag stays on its monitor.
+# With the setting off, a drag stays on its monitor.
 s, done = session(span_monitors=False)
 left, right = s.overlays
 mouse(left, "press", 700, 100)
 mouse(left, "move", 900, 300)
 assert left.sel_rect == QRectF(700, 100, 100, 200) and right.span_rect is None, (left.sel_rect, right.span_rect)
 s.cancel()
+print("ok   with the setting off, a drag stays on one monitor")
+
+# An area to record may cross monitors too (the portal shares the full
+# workspace; X11 records the whole desktop), and is cut from all of it.
+from flatshot import screencast  # noqa: E402
+
+os.environ["FLATSHOT_RECORDER"] = "test-gst"
+s, done = session()
+left, right = s.overlays
+s.set_tool("record")
+mouse(left, "press", 700, 100)
+mouse(left, "move", 900, 300)
+mouse(left, "release", 900, 300)
+assert left.rec_rect == QRectF(700, 100, 200, 200), left.rec_rect
+assert right.span_rect == QRectF(-100, 100, 200, 200), right.span_rect  # its part shows on the right
+target = screencast.Target(left.rec_rect.toAlignedRect(), left.target_screen, 1.0)
+assert target.spans() and target.shown_area() == QRect(0, 0, 1440, 600)
+frame, crop = target.crop_in(target.shown_area())
+assert frame == (1440, 600) and crop == QRect(700, 100, 200, 200), (frame, crop)
+argv = " ".join(screencast.launch("test-gst", target, screencast.Options(), str(tmp / "x.mkv")).argv)
+assert "width=1440,height=600" in argv and "left=700" in argv, argv
+argv = screencast.launch("x11", target, screencast.Options(), str(tmp / "x.mkv")).argv
+assert "200x200" in argv and any(a.endswith("+700,100") for a in argv), argv
+s.set_tool("region")  # leaving the record tool clears the area everywhere
+assert left.rec_rect is None and right.span_rect is None
+s.cancel()
+# wf-recorder records one output: there the area stays on its monitor.
+os.environ["FLATSHOT_RECORDER"] = "wf-recorder"
 s, done = session()
 left, right = s.overlays
 s.set_tool("record")
@@ -136,5 +164,6 @@ mouse(left, "press", 700, 100)
 mouse(left, "move", 900, 300)
 assert left.sel_rect == QRectF(700, 100, 100, 200) and right.span_rect is None, (left.sel_rect, right.span_rect)
 s.cancel()
-print("ok   off, or for a recording, a drag stays on one monitor")
+os.environ.pop("FLATSHOT_RECORDER")
+print("ok   a recording area crosses monitors where the recorder can take it")
 print("selections across monitors ok")

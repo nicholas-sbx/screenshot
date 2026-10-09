@@ -401,6 +401,8 @@ class Recording(QObject):
         size = self.bar.sizeHint()
         self.bar.resize(size)
         spot = _bar_spot(area, screen, size)
+        for g in [s.geometry() for s in QGuiApplication.screens() if s is not self.target.screen]:
+            spot = spot or _bar_spot(area, g, size)  # (an area across monitors: beside it on another)
         if spot is None:
             others = [s.geometry() for s in QGuiApplication.screens() if s is not self.target.screen]
             if others:
@@ -421,7 +423,7 @@ class Recording(QObject):
                 _place(self.bar, spot)
             else:
                 self.bar.show()
-        if _can_place() and _frame_fits(area, screen):
+        if _can_place() and _frame_fits(area, screen if not self.target.spans() else screencast.workspace()):
             # Four small windows wholly outside the area: nothing Flatshot
             # shows can end up in the video, compositor or not.
             out = area.adjusted(-FRAME_GAP - MARK_WIDTH, -FRAME_GAP - MARK_WIDTH,

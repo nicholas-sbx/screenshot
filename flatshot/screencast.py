@@ -41,6 +41,7 @@ SESSION = "org.freedesktop.portal.Session"
 MONITOR = 1
 CURSOR_HIDDEN, CURSOR_EMBEDDED = 1, 2
 PERSIST_UNTIL_REVOKED = 2
+WORKSPACE = "workspace"  # the restore token for sharing all the monitors (an area across them)
 
 
 class RecordError(RuntimeError):
@@ -72,7 +73,9 @@ class Options:
 
 @dataclass
 class Target:
-    """What to record: ``rect`` in global logical coordinates, all on ``screen``."""
+    """What to record: ``rect`` in global logical coordinates, on ``screen``
+    or, when it crosses monitors, on several (``screen`` is where it was
+    chosen)."""
     rect: QRect
     screen: object  # QScreen
     # The screen's real pixels per logical pixel, as measured from the screenshot
@@ -95,9 +98,26 @@ class Target:
                   round(self.rect.width() * sx), round(self.rect.height() * sy)).intersected(QRect(0, 0, *size))
         return size, QRect(r.x(), r.y(), r.width() & ~1, r.height() & ~1)
 
+    def spans(self) -> bool:
+        return not self.screen.geometry().contains(self.rect)
+
+    def shown_area(self) -> QRect:
+        """Its screen, or the whole desktop when the area crosses monitors."""
+        if not self.spans():
+            return self.screen.geometry()
+        return workspace()
+
     def local_pixels(self) -> QRect:
-        """The area in the screen's own pixels."""
-        return self.crop_in(self.screen.geometry())[1]
+        """The area in the pixels of its screen (or of the whole desktop)."""
+        return self.crop_in(self.shown_area())[1]
+
+
+def workspace(screens: list[QRect] | None = None) -> QRect:
+    """All the monitors together (global logical coordinates)."""
+    total = QRect()
+    for g in screens if screens is not None else [s.geometry() for s in QGuiApplication.screens()]:
+        total = total.united(g)
+    return total
 
 
 def stream_shows(position: tuple[int, int], size: tuple[int, int], scale: float,
@@ -208,6 +228,13 @@ METHOD_LABELS = {
     "test": "Test pattern (ffmpeg)",
     "test-gst": "Test pattern (GStreamer)",
 }
+
+
+def can_span(how: str | None = None) -> bool:
+    """Can this recorder take an area across monitors? The screen-cast
+    portal (share the full workspace) and X11 can; wf-recorder records one
+    output."""
+    return (how or method()) in ("portal", "x11", "test", "test-gst")
 
 
 def problem(fmt: str = "mp4") -> str | None:
@@ -440,9 +467,10 @@ class Portal(QObject):
         if cursors & wanted:
             options["cursor_mode"] = ("u", wanted)
         name = self.target.screen.name()
+        key = WORKSPACE if self.target.spans() else name  # what was shared last time, for this kind of area
         if version >= 4:
             options["persist_mode"] = ("u", PERSIST_UNTIL_REVOKED)
-            token = (config.load_state().get("screencast_tokens") or {}).get(name)
+            token = (config.load_state().get("screencast_tokens") or {}).get(key)
             if isinstance(token, str) and token:
                 options["restore_token"] = ("s", token)
         self._request("SelectSources", "oa{sv}", self._session, options)
@@ -464,10 +492,12 @@ class Portal(QObject):
             self.stream_rect = stream_measured(self.frame_size, self.stream_rect, self.target.rect,
                                                self.target.pixel_scale()) or self.stream_rect
         shared = self._shared_screen()
-        if "restore_token" in results and shared is not None:
+        whole = self.stream_rect is not None and len(QGuiApplication.screens()) > 1 \
+            and self.stream_rect == workspace()
+        if "restore_token" in results and (shared is not None or whole):
             tokens = config.load_state().get("screencast_tokens")
             tokens = tokens if isinstance(tokens, dict) else {}
-            tokens[shared.name()] = results["restore_token"][1]
+            tokens[WORKSPACE if whole else shared.name()] = results["restore_token"][1]
             config.update_state(screencast_tokens=tokens)
         # A stream of the whole workspace is fine too, as long as the area is in it.
         if self.stream_rect is not None:
@@ -476,6 +506,11 @@ class Portal(QObject):
             shows_area = shared is None or shared is self.target.screen
         if not shows_area:
             what = shared.name() if shared is not None else "a different part of the desktop"
+            if self.target.spans():
+                on = ", ".join(s.name() for s in QGuiApplication.screens()
+                               if s.geometry().intersects(self.target.rect))
+                raise RecordError(f"The shared screen is {what}, but the area crosses {on}. "
+                                  "Record again and share the full workspace.")
             raise RecordError(f"The shared screen is {what}, but the area is on {name}. "
                               f"Record again and share {name}.")
 
@@ -513,10 +548,9 @@ class Portal(QObject):
     def _shared_screen(self):
         screens = QGuiApplication.screens()
         if self.stream_rect is not None:
-            for s in screens:
-                if s.geometry().topLeft() == self.stream_rect.topLeft():
-                    return s
-            return None
+            if len(screens) > 1 and self.stream_rect == workspace():
+                return None  # all of them (it starts where a monitor does)
+            return next((s for s in screens if s.geometry().topLeft() == self.stream_rect.topLeft()), None)
         return screens[0] if len(screens) == 1 else self.target.screen
 
     def pipewire_fd(self) -> int:
@@ -560,7 +594,7 @@ def launch(how: str, target: Target, opts: Options, path: str, portal: Portal | 
     ext = segment_extension(opts.format)
     if how in ("x11", "test"):
         if how == "x11":
-            g = target.screen.geometry()
+            g = target.shown_area()
             # Qt keeps an X11 screen's origin in device pixels.
             x, y = g.x() + crop.x(), g.y() + crop.y()
             display = os.environ.get("DISPLAY", ":0")
@@ -588,7 +622,7 @@ def launch(how: str, target: Target, opts: Options, path: str, portal: Portal | 
         # What the stream shows (the portal says, else the area's screen), at
         # the size it really is (measured, else that part at the screen's scale).
         portal_used = how == "portal" and portal is not None
-        shown = portal.stream_rect if portal_used and portal.stream_rect is not None else target.screen.geometry()
+        shown = portal.stream_rect if portal_used and portal.stream_rect is not None else target.shown_area()
         frame, crop = target.crop_in(shown, portal.frame_size if portal_used else None)
         if crop.width() < 2 or crop.height() < 2:
             raise RecordError("The area isn't in the shared screen.")
