@@ -64,6 +64,9 @@ class Config:
     show_crosshair: bool = True
     rainbow: bool = False  # the crosshair and the magnifier's square cycle through colours
     snap_edges: bool = False  # selections snap to edges in the picture (toolbar toggle, G)
+    snap_distance: int = 10  # how close (logical px) the pointer must be to an edge
+    snap_sensitivity: int = 5  # 1-10: higher snaps to fainter and shorter edges
+    span_monitors: bool = True  # a selection or a clicked window may cross monitors
     detect_windows: bool = True  # hover + click a window to capture it (KDE)
     scan_codes: bool = True
     show_codes: bool = True
@@ -93,6 +96,8 @@ class Config:
         if self.record_fps not in RECORD_FPS:
             self.record_fps = 30
         self.record_countdown = max(0, min(int(self.record_countdown), 10))
+        self.snap_distance = max(2, min(int(self.snap_distance), 40))
+        self.snap_sensitivity = max(1, min(int(self.snap_sensitivity), 10))
         if self.copy_to_clipboard is False:
             self.clipboard = "none"
         self.copy_to_clipboard = None

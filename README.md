@@ -29,7 +29,8 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Screen recording**: pick the toolbar's record button (or press <kbd>V</kbd>), then drag an area, click a window, or press <kbd>Enter</kbd> for the whole screen. Drag the edges to adjust it. Under the area you can turn the **microphone**, the **computer's sound** and the **mouse pointer** on or off, and choose **MP4, WebM or GIF** and **24, 30 or 60 fps**; Flatshot remembers these. Press **Record** or <kbd>Enter</kbd>, and after a short countdown a small bar outside the area shows the time, with **pause**, **stop** and **discard**. The finished video goes to `~/Videos/Screencasts`, the file is copied to the clipboard, and a system notification offers **Open** and **Show in folder**. While recording, the tray icon turns into a stop button; clicking it, or pressing the "Record screen" shortcut again, stops and saves.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate (for hiding secrets) and numbered counters. It has 7 colours, 3 stroke sizes, and undo/redo. Picking a colour while capturing (or pixelating) switches back to the drawing tool you used last, so the colour gets used.
-- **Snap to edges**: turn on the toolbar's magnet (or press <kbd>G</kbd>) and a selection's corners jump to the nearest strong edge in the picture, like a window border, as you drag. Hold <kbd>Ctrl</kbd> to place a corner freely. It's remembered between captures, and when it's off it costs nothing.
+- **Snap to edges**: turn on the toolbar's magnet (or press <kbd>G</kbd>) and a selection's corners jump to edges in the picture as you drag, boxes first: long straight edges win over text, and a box's corner (two edges meeting) over a line that just passes by. The magnifier shows the pixel grid and two lines where the selection's edges go, which jump to the edge they snap to. Hold <kbd>Ctrl</kbd> to place a corner freely. How close you must be and how faint an edge may be are settings. It's remembered between captures, and when it's off it costs nothing.
+- **Across monitors**: a drag can run from one monitor onto another, and clicking a window that spans monitors captures all of it (it's highlighted on each). Drawings on every monitor are kept. The toolbar stays on one monitor. On by default; a recording area stays on one monitor.
 - **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
 - A **magnifier** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. Its square stays visible on any colour. You can resize it (80–320 px) or turn it off, and turn off the crosshair lines too; they keep following the pointer over the toolbar. The **Rainbow** setting makes the crosshair and the square cycle through the colours. A size label shows the selection's real pixel size.
@@ -123,7 +124,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>K</kbd> | pin instead of save: the next drag or click pins the capture to the screen (press again to turn off) |
 | <kbd>G</kbd> | snap selections to edges in the picture on / off (hold <kbd>Ctrl</kbd> while dragging to place freely) |
 | <kbd>Enter</kbd> / <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>C</kbd> | capture whole monitor with your drawings |
-| <kbd>Esc</kbd> / right-click | cancel the current drag, or quit |
+| <kbd>Esc</kbd> / right-click | cancel the current drag, or quit (Esc acts when released, so the window underneath never gets it) |
 | <kbd>R</kbd> | region tool (back to capture mode) |
 | <kbd>V</kbd> | record tool: drag an area or click a window, then <kbd>Enter</kbd> to start (<kbd>Enter</kbd> before choosing picks the whole screen; <kbd>Esc</kbd> goes back) |
 | <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>N</kbd> | pen, line, arrow, box, ellipse, highlighter, text, pixelate, counter |
@@ -179,6 +180,9 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "show_crosshair": true,
   "rainbow": false,
   "snap_edges": false,
+  "snap_distance": 10,
+  "snap_sensitivity": 5,
+  "span_monitors": true,
   "detect_windows": true,
   "scan_codes": true,
   "show_codes": true,
@@ -219,7 +223,8 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   A `/` in `filename` makes subfolders. Slashes, control characters and leading dots are removed from token values, so a window title can never point outside the folder. The extension is added from `format`. `{app}` and `{title}` are known on KDE Plasma, Sway and Hyprland.
 - `sound`: play a sound after each capture. `sound_file` is the file to play; empty means the desktop's screenshot sound.
 - `show_loupe`, `loupe_size` (80–320, in logical pixels) and `show_crosshair`: the magnifier and the crosshair lines while selecting. Scroll while selecting to zoom the magnifier in or out. `rainbow` cycles their colour.
-- `snap_edges`: selections snap to edges in the picture (the toolbar's magnet, <kbd>G</kbd>).
+- `snap_edges`: selections snap to edges in the picture (the toolbar's magnet, <kbd>G</kbd>). `snap_distance` (2–40 px) is how close the pointer must be to an edge; `snap_sensitivity` (1–10) how faint and short an edge may be and still count.
+- `span_monitors`: a selection or a clicked window may cross monitors.
 - `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).
 - `run_command`: a shell command. `{path}` is replaced with the quoted image path, which is also available as `$FLATSHOT_PATH`.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
@@ -305,4 +310,4 @@ When the overlay falls back to a normal window, the tray app also logs the reaso
 - Recording shows the mouse pointer but not your clicks: Wayland doesn't tell apps about clicks in other windows.
 - The recording bar and the corner marks are placed outside the recorded area on KDE Plasma (through a KWin script) and on X11. On other Wayland desktops the bar opens wherever the desktop puts it (drag it away) and there are no corner marks. When the area fills the only screen, there's no bar; stop from the tray icon or the shortcut (or, without the tray app, the bar is shown inside the area).
 - An area must be on one monitor. With the portal, a recording covers what that monitor shows; `wf-recorder` records one sound source (the microphone when both are on).
-- With mixed-DPI multi-monitor setups, each monitor's slice of the capture is mapped by its logical geometry. The output may be slightly soft on the lower-DPI screen.
+- With mixed-DPI multi-monitor setups, each monitor's slice of the capture is mapped by its logical geometry. The output may be slightly soft on the lower-DPI screen; the same goes for a selection across monitors.

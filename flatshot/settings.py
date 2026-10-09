@@ -596,11 +596,19 @@ class SettingsWindow(QWidget):
                      "Show the toolbar on the monitor the pointer is on."))
         card.add(Row("Detect windows", self._toggle("detect_windows"),
                      "Hover a window and click to capture just that window. KDE Plasma."))
+        card.add(Row("Select across monitors", self._toggle("span_monitors"),
+                     "A drag, or a clicked window, may cross onto other monitors. The toolbar stays on one."))
         card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
                      "In instant captures: active window, monitor, all screens, last region."))
         card.add(Row("Snap to edges", self._toggle("snap_edges"),
-                     "Selections snap to edges in the picture. Also the toolbar's magnet button, or G; "
-                     "hold Ctrl to place freely."))
+                     "Selections snap to edges in the picture, boxes first. Also the toolbar's magnet "
+                     "button, or G; hold Ctrl to place freely."))
+        distance = ValueSlider(self.cfg.snap_distance, 2, 40, 1, lambda v: f"{v}px")
+        distance.changed.connect(lambda v: self._save(snap_distance=v))
+        card.add(Row("Snap distance", distance, "How close the pointer must be to an edge."))
+        sensitivity = ValueSlider(self.cfg.snap_sensitivity, 1, 10, 1, str)
+        sensitivity.changed.connect(lambda v: self._save(snap_sensitivity=v))
+        card.add(Row("Snap sensitivity", sensitivity, "Higher snaps to fainter and shorter edges too."))
 
         card = self._card("Magnifier and crosshair")
         loupe = self._toggle("show_loupe")

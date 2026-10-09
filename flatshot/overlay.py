@@ -6,8 +6,8 @@ import threading
 import time
 
 from flatshot.qt import (
-    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap, QPoint,
-    QPointF, QPolygonF, QRect, QRectF, Qt, QTimer, QWidget,
+    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap,
+    QPoint, QPointF, QPolygonF, QRect, QRectF, Qt, QTimer, QWidget,
 )
 
 from flatshot import layershell, shapes
@@ -28,12 +28,14 @@ RECORD_HINTS = {
     "countdown": "Recording starts in {n}  ·  Esc to cancel",
 }
 HANDLE = 10  # size of the resize handles on an area chosen for recording
-# Snapping a selection to edges in the picture (logical px): how far an edge
-# pulls, how far above and below the pointer (or left and right) it must run,
-# and how strong it must be (mean difference across it, 0-255).
-SNAP_RADIUS = 10
-SNAP_BAND = 24
-SNAP_MIN = 24
+# Snapping a selection to edges in the picture. How far an edge pulls is a
+# setting (snap_distance); so is the sensitivity, which sets how strong an
+# edge must be and how long a straight run of it. An edge is looked at this
+# far (logical px) either side of the pointer along its length.
+SNAP_REACH = 40
+# A vertical and a horizontal edge meeting: both ending there (an L, a box's
+# corner), one ending on the other (a T), or crossing.
+CORNER_BONUS, TEE_BONUS, CROSS_BONUS = 1.6, 1.25, 1.1
 RAINBOW_SECONDS = 4  # one trip round the colours
 
 
@@ -93,6 +95,12 @@ class Overlay(QWidget):
         self.rec_window = None  # the window clicked, when the area is one
         self._rec_drag: tuple[str, QPointF, QRectF] | None = None
         self.panel = None  # recordpanel.RecordPanel, made when first needed
+        # A selection made on another monitor that reaches this one (local
+        # coordinates), the pointer when it's here during that drag, and a
+        # window hovered on another monitor that is partly here.
+        self.span_rect: QRectF | None = None
+        self.span_pointer: QPointF | None = None
+        self.span_hover: tuple[QRectF, object] | None = None
         # Snapping: edge maps of the picture (built only once snapping is on)
         # and where the pointer snaps to.
         self._edge_maps = None
@@ -235,7 +243,23 @@ class Overlay(QWidget):
             hover = next((item for item in self.windows if item[0].contains(self.cursor_pos)), None)
         if hover is not self.hover_window:
             self.hover_window = hover
+            self.ctl.hover_changed(self, hover[1] if hover else None)
             self.update()
+
+    def set_span_hover(self, window):
+        """``window`` is hovered on another monitor: highlight its part here."""
+        part = next(((r, w) for r, w in self.windows if w is window), None) if window is not None else None
+        if part != self.span_hover:
+            self.span_hover = part
+            self.update()
+
+    def _drag_bounds(self) -> QRectF:
+        """Where a selection may reach: this monitor, or the whole desktop."""
+        if self.ctl.spans():
+            from flatshot import capture
+
+            return QRectF(capture.virtual_geometry().translated(-self.target_screen.geometry().topLeft()))
+        return QRectF(self.rect())
 
     def dismiss_code(self, code):
         for i, (c, _) in enumerate(self.codes):
@@ -287,7 +311,10 @@ class Overlay(QWidget):
 
     def cancel_gesture(self) -> bool:
         if self.sel_rect is not None or self.active is not None or self._rec_drag is not None:
+            spanned = self.sel_rect is not None and self.ctl.spans()
             self.sel_origin = self.sel_rect = self.active = self._rec_drag = None
+            if spanned:
+                self.ctl.selection_moved(self, None)
             self.ctl.refresh()
             return True
         if self.rec_rect is not None:
@@ -333,7 +360,9 @@ class Overlay(QWidget):
         self._edge_maps = maps
 
     def _snapped(self, pos: QPointF, modifiers) -> QPointF:
-        """``pos`` moved onto the strongest nearby edges, if any (Ctrl: as is)."""
+        """``pos`` moved onto nearby edges in the picture, if any (Ctrl: as
+        is). Edges that look like parts of boxes win: long straight runs,
+        and above all a vertical and a horizontal one that meet."""
         if not self.ctl.snap_edges or modifiers & Qt.KeyboardModifier.ControlModifier:
             return pos
         maps = self._edge_maps
@@ -342,24 +371,28 @@ class Overlay(QWidget):
             return pos
         dpr = self.dpr()
         (vgrey, vbuf, vstride), (hgrey, hbuf, hstride) = maps
-        x, y = int(pos.x() * dpr), int(pos.y() * dpr)
-        radius, band = max(2, round(SNAP_RADIUS * dpr)), max(4, round(SNAP_BAND * dpr))
         w, h = vgrey.width(), vgrey.height()
+        x, y = int(pos.x() * dpr), int(pos.y() * dpr)
         if not (0 <= x < w and 0 <= y < h):
             return pos
-        # Vertical edges near x: sum each column over the rows around y.
+        cfg = self.ctl.cfg
+        sens = min(max(cfg.snap_sensitivity, 1), 10)
+        radius = max(2, round(cfg.snap_distance * dpr))
+        reach = max(8, round(SNAP_REACH * dpr))
+        step = max(1, round(dpr))  # sample about one logical pixel apart along an edge
+        strong = 10 + (10 - sens) * 4  # how much a pixel must differ across the edge
+        min_run = max(3, round((8 + (10 - sens) * 2.2) * dpr / step))  # in samples
+        # Vertical edges near x: each candidate column, sampled down the rows around y.
         c0, c1 = max(1, x - radius), min(w, x + radius + 1)
-        rows = range(max(0, y - band), min(h, y + band + 1))
-        sums = [0] * (c1 - c0)
-        for r in rows:
-            start = r * vstride
-            sums = [a + b for a, b in zip(sums, vbuf[start + c0:start + c1])]
-        sx = _best(sums, c0, x, radius, len(rows))
-        # Horizontal edges near y: each row's sum over the columns around x.
+        rows = range(max(0, y - reach), min(h, y + reach + 1), step)
+        columns = zip(*(vbuf[r * vstride + c0:r * vstride + c1] for r in rows))
+        xs = _candidates(columns, c0, x, rows, y, radius, strong, min_run)
+        # Horizontal edges near y: each candidate row, sampled along the columns around x.
         r0, r1 = max(1, y - radius), min(h, y + radius + 1)
-        cs, ce = max(0, x - band), min(w, x + band + 1)
-        sums = [sum(hbuf[r * hstride + cs:r * hstride + ce]) for r in range(r0, r1)]
-        sy = _best(sums, r0, y, radius, ce - cs)
+        cols = range(max(0, x - reach), min(w, x + reach + 1), step)
+        lines = (hbuf[r * hstride + cols.start:r * hstride + cols.stop:step] for r in range(r0, r1))
+        ys = _candidates(lines, r0, y, cols, x, radius, strong, min_run)
+        sx, sy = _pick(xs, ys, tolerance=max(2, step * 2))
         return QPointF(sx / dpr if sx is not None else pos.x(), sy / dpr if sy is not None else pos.y())
 
     def _handle_at(self, pos: QPointF) -> str | None:
@@ -466,8 +499,10 @@ class Overlay(QWidget):
         self._snap_point = self._snapped(pos, event.modifiers()) if selecting and self.ctl.snap_edges else None
         if self.sel_origin is not None:
             end = self._snap_point or pos
-            self.sel_rect = QRectF(self.sel_origin, end).normalized().intersected(QRectF(self.rect()))
+            self.sel_rect = QRectF(self.sel_origin, end).normalized().intersected(self._drag_bounds())
             self.hover_window = None
+            if self.ctl.spans():
+                self.ctl.selection_moved(self, pos)
         elif self._rec_drag is not None:
             self._drag_area(pos, self._snap_point)
         elif self.active is not None:
@@ -490,8 +525,13 @@ class Overlay(QWidget):
                 self.cursor_pos = event.position()
                 self._update_hover()
                 rect, window = self.hover_window if self.hover_window else (None, None)
+            g = self.target_screen.geometry()
             if self.ctl.tool == "record":
                 self.arm(rect if rect is not None else QRectF(self.rect()), window)
+            elif self.ctl.spans() and window is not None and not g.contains(window.rect):
+                self.ctl.capture_span(window.rect, window)  # all of a window that crosses monitors
+            elif self.ctl.spans() and rect is not None and not QRectF(self.rect()).contains(rect):
+                self.ctl.capture_span(rect.translated(QPointF(g.topLeft())).toAlignedRect())
             else:
                 self.ctl.capture(self, rect, window)
         elif self._rec_drag is not None:
@@ -524,6 +564,9 @@ class Overlay(QWidget):
     def keyPressEvent(self, event):
         self.ctl.key(self, event)
 
+    def keyReleaseEvent(self, event):
+        self.ctl.key_release(self, event)
+
     # -- painting ----------------------------------------------------------
 
     def paintEvent(self, event):
@@ -541,9 +584,11 @@ class Overlay(QWidget):
 
         region = self.ctl.tool in ("region", "record")
         picking = region and self.rec_rect is None  # still choosing an area
+        hover = self.hover_window or (self.span_hover if self.ctl.spans() else None)
+        selection = self.sel_rect if self.sel_rect is not None else self.span_rect
         if region:
-            focus = self.sel_rect if self.sel_rect is not None else self.rec_rect if self.rec_rect is not None else (
-                self.hover_window[0] if self.hover_window else None)
+            focus = selection if selection is not None else self.rec_rect if self.rec_rect is not None else (
+                hover[0] if hover else None)
             if self.ctl.dim.alpha():
                 # Plain rectangles around the hole: far cheaper than filling
                 # an anti-aliased path over the whole (possibly 4K) screen.
@@ -558,13 +603,13 @@ class Overlay(QWidget):
                               QRectF(f.right(), f.top(), full.right() - f.right(), f.height())):
                         if r.width() > 0 and r.height() > 0:
                             p.fillRect(r, self.ctl.dim)
-            if self.sel_rect is None and self.hover_window:
-                self._paint_window(p, *self.hover_window)
+            if selection is None and hover:
+                self._paint_window(p, *hover)
             # Codes sit above window highlights.
             if self.sel_rect is None and self.ctl.codes_visible and self.ctl.tool == "region":
                 self._paint_codes(p)
-        if self.sel_rect is not None:
-            self._paint_selection(p, self.sel_rect)
+        if selection is not None:
+            self._paint_selection(p, selection, label=self.sel_rect is not None)
         elif self.rec_rect is not None:
             self._paint_selection(p, self.rec_rect)
             if self.ctl.countdown is not None:
@@ -573,7 +618,10 @@ class Overlay(QWidget):
                 self._paint_handles(p, self.rec_rect)
         elif picking and self.cursor_pos is not None and self.ctl.cfg.show_crosshair:
             self._paint_crosshair(p, self._snap_point or self.cursor_pos)
-        if picking and self.cursor_pos is not None and self.ctl.cfg.show_loupe and self._loupe_allowed():
+        if self.span_rect is not None and self.span_pointer is not None and self.ctl.cfg.show_loupe:
+            self._paint_loupe(p, self.span_pointer)  # a drag from another monitor is here now
+        elif (picking and self.cursor_pos is not None and self.ctl.cfg.show_loupe and self._loupe_allowed()
+              and self.rect().contains(self.cursor_pos.toPoint())):
             self._paint_loupe(p, self.cursor_pos)
         if self.sel_rect is None and self is self.ctl.pointer_overlay:
             self._paint_hint(p)
@@ -611,17 +659,21 @@ class Overlay(QWidget):
             p.drawRoundedRect(poly.boundingRect().adjusted(-8, -8, 8, 8), 8, 8)
         p.restore()
 
-    def _paint_selection(self, p: QPainter, r: QRectF):
+    def _paint_selection(self, p: QPainter, r: QRectF, label: bool = True):
         p.setPen(QPen(C.ACCENT, 2))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(r.adjusted(-1, -1, 1, 1))
+        if not label:
+            return
         dpr = self.dpr()
         label = f"{round(r.width() * dpr)} × {round(r.height() * dpr)}"
         if self.ctl.tool == "record":
             label = f"Record  ·  {label}"
         elif self.ctl.pin_mode:
             label = f"Pin  ·  {label}"
-        self._pill(p, label, QPointF(r.left(), r.top() - 10), anchor_bottom=True,
+        here = r.intersected(QRectF(self.rect()))  # (a selection may reach other monitors)
+        anchor = here if not here.isEmpty() else r
+        self._pill(p, label, QPointF(anchor.left(), anchor.top() - 10), anchor_bottom=True,
                    bg=C.ACCENT, fg=C.ON_ACCENT, keep_inside=True)
 
     def _paint_handles(self, p: QPainter, r: QRectF):
@@ -691,16 +743,40 @@ class Overlay(QWidget):
         p.fillRect(box, C.INK)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         p.drawPixmap(box, self.base, QRectF(px - cells // 2, py - cells // 2, cells, cells))
+        p.restore()
         cell = size / cells
+        # Lines go on after the rounded clip is gone (lines through a clip path
+        # are slow), on whole pixels, without anti-aliasing.
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        if cell >= 5:
+            p.drawPixmap(round(x), round(y), self._loupe_grid(round(size), cells))
         # The square around the pixel: a coloured ring inside a black or white
         # one (whichever stands out from that pixel), so it shows on any colour.
         img = self.pixels()
         under = img.pixelColor(min(max(px, 0), img.width() - 1), min(max(py, 0), img.height() - 1))
-        square = QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell)
+        contrast = QColor("#000000") if is_light(under) else QColor("#FFFFFF")
+        mark = self._mark_color()
+        if self.ctl.tool in ("region", "record"):
+            # Where the selection's edges go: on the pointer's pixel, or on
+            # the edge they snap to (stopping short of the rounded corners).
+            corner = self._snap_point or pos
+            lx = round(x + (round(corner.x() * dpr) - (px - cells // 2)) * cell)
+            ly = round(y + (round(corner.y() * dpr) - (py - cells // 2)) * cell)
+            ix, iy, isize = round(x), round(y), round(size)
+            ins_x, ins_y = _corner_inset(lx - ix, isize), _corner_inset(ly - iy, isize)
+            for pen in (QPen(contrast, 3), QPen(mark, 1)):
+                p.setPen(pen)
+                if ix < lx < ix + isize:
+                    p.drawLine(lx, iy + ins_x, lx, iy + isize - ins_x)
+                if iy < ly < iy + isize:
+                    p.drawLine(ix + ins_y, ly, ix + isize - ins_y, ly)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor("#000000") if is_light(under) else QColor("#FFFFFF"), 3.5))
+        square = QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell)
+        p.setPen(QPen(contrast, 3.5))
         p.drawRect(square)
-        p.setPen(QPen(self._mark_color(), 1.5))
+        p.setPen(QPen(mark, 1.5))
         p.drawRect(square)
         p.restore()
         self._loupe_box = box.toAlignedRect()
@@ -709,6 +785,31 @@ class Overlay(QWidget):
         img = self.pixels()
         color = img.pixelColor(min(px, img.width() - 1), min(py, img.height() - 1)).name().upper()
         self._pill(p, f"{px}, {py}   {color}", QPointF(x, y + size + 6), mono=True)
+
+    _grids: dict = {}
+
+    def _loupe_grid(self, size: int, cells: int) -> QPixmap:
+        """The magnifier's pixel grid, thin lines with its rounded corners cut
+        off, made once per size and zoom."""
+        key = (size, cells)
+        grid = Overlay._grids.get(key)
+        if grid is None:
+            grid = QPixmap(size, size)
+            grid.fill(Qt.GlobalColor.transparent)
+            g = QPainter(grid)
+            clip = QPainterPath()
+            clip.addRoundedRect(QRectF(0, 0, size, size), 12, 12)
+            g.setClipPath(clip)
+            g.setPen(QPen(QColor(128, 128, 128, 70), 1))
+            cell = size / cells
+            for i in range(1, cells):
+                g.drawLine(round(i * cell), 0, round(i * cell), size)
+                g.drawLine(0, round(i * cell), size, round(i * cell))
+            g.end()
+            if len(Overlay._grids) > 32:
+                Overlay._grids.clear()
+            Overlay._grids[key] = grid
+        return grid
 
     def _paint_hint(self, p: QPainter):
         tool = self.ctl.tool
@@ -749,16 +850,77 @@ class Overlay(QWidget):
         p.restore()
 
 
-def _best(sums: list[int], first: int, at: int, radius: int, count: int) -> int | None:
-    """The strongest edge among ``sums`` (edge strength summed over ``count``
-    pixels, the first at index ``first``), favouring ones near ``at``; None
-    if none is strong enough."""
-    best, best_score = None, 0.0
-    for i, total in enumerate(sums):
-        mean = total / max(1, count)
-        if mean < SNAP_MIN:
-            continue
-        score = mean * (1 - 0.4 * abs(first + i - at) / (radius + 1))
-        if score > best_score:
-            best, best_score = first + i, score
+def _candidates(lines, first: int, at: int, along: range, at_along: int, radius: int, strong: int,
+                min_run: int) -> list[tuple]:
+    """Edge candidates across the pointer: ``lines`` are the edge strengths
+    along each candidate position (``first``, ``first`` + 1, ...), sampled
+    at ``along``. A candidate needs a straight run of strong samples, at
+    least ``min_run`` long, through or near the pointer. Returns the best
+    few as (score, position, run start, run end, start is an end, end is an
+    end): the run in pixels along, and whether it really stops there rather
+    than running out of the window looked at."""
+    found = []
+    at_index = min(range(len(along)), key=lambda i: abs(along[i] - at_along)) if len(along) else 0
+    near = max(1, radius // max(1, along.step))  # a run may end this many samples short of the pointer
+    for i, values in enumerate(lines):
+        best = None
+        start = end = None
+        total = count = gap = 0
+        for j, v in enumerate(list(values) + [0, 0]):  # (two zeros close the last run)
+            if v >= strong:
+                if start is None:
+                    start, total, count = j, 0, 0
+                end, gap = j, 0
+                total += v
+                count += 1
+            elif start is not None:
+                gap += 1
+                if gap > 1:  # a one-sample gap doesn't break a run
+                    length = end - start + 1
+                    reaches = start - near <= at_index <= end + near
+                    if length >= min_run and reaches:
+                        score = total / count * (0.5 + 0.5 * min(1.0, length / len(along)))
+                        if best is None or score > best[0]:
+                            best = (score, along[start], along[end], start > 0, end < len(along) - 1)
+                    start = None
+        if best is not None:
+            pos = first + i
+            score = best[0] * (1 - 0.4 * abs(pos - at) / (radius + 1))
+            found.append((score, pos) + best[1:])
+    found.sort(reverse=True)
+    return found[:3]
+
+
+def _pick(xs, ys, tolerance: int) -> tuple[int | None, int | None]:
+    """The best vertical and horizontal edge together: the pair with the
+    highest score, boosted where the two meet, most where both end there
+    (the corner of a box)."""
+
+    def meets(edge, at) -> tuple[bool, bool]:
+        """Does ``edge`` reach ``at`` along its length, and does it end there?"""
+        _, _, start, end, start_ends, end_ends = edge
+        reaches = start - tolerance <= at <= end + tolerance
+        ends = (start_ends and abs(start - at) <= tolerance) or (end_ends and abs(end - at) <= tolerance)
+        return reaches, ends
+
+    best, best_score = (None, None), 0.0
+    for vx in xs + [None]:
+        for hy in ys + [None]:
+            score = (vx[0] if vx else 0.0) + (hy[0] if hy else 0.0)
+            if vx and hy:
+                reach_v, end_v = meets(vx, hy[1])
+                reach_h, end_h = meets(hy, vx[1])
+                if reach_v and reach_h:
+                    score *= CORNER_BONUS if end_v and end_h else TEE_BONUS if end_v or end_h else CROSS_BONUS
+            if score > best_score:
+                best, best_score = (vx[1] if vx else None, hy[1] if hy else None), score
     return best
+
+
+def _corner_inset(at: int, size: int, radius: int = 12) -> int:
+    """How far a line across the magnifier at ``at`` (from one side) must stop
+    short of the ends to stay inside its rounded corners."""
+    d = min(at, size - at)
+    if d >= radius:
+        return 0
+    return round(radius - (radius * radius - (radius - d) ** 2) ** 0.5) + 1

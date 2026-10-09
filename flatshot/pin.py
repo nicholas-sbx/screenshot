@@ -98,11 +98,16 @@ class PinWindow(QWidget):
 
     def keyPressEvent(self, event):
         if keyval(event.key()) == keyval(Qt.Key.Key_Escape):
-            self.close()
+            self._escape_down = True  # closes on release, which would otherwise go to the window below
         elif event.matches(QKeySequence.StandardKey.Copy):
             self.copy()
         elif event.matches(QKeySequence.StandardKey.Save):
             self.save()
+
+    def keyReleaseEvent(self, event):
+        if keyval(event.key()) == keyval(Qt.Key.Key_Escape) and not event.isAutoRepeat() \
+                and getattr(self, "_escape_down", False):
+            self.close()
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)

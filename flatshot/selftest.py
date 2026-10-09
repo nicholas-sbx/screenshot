@@ -513,6 +513,8 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
 
     def key(session, ov, k, text=""):
         session.key(ov, qt.QKeyEvent(qt.QEvent.Type.KeyPress, qt.keyval(k), Qt.KeyboardModifier.NoModifier, text))
+        session.key_release(ov, qt.QKeyEvent(qt.QEvent.Type.KeyRelease, qt.keyval(k),
+                                             Qt.KeyboardModifier.NoModifier, text))
 
     def mouse(ov, kind, x, y):
         types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
@@ -850,6 +852,29 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
                             Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, mods)
         qt.QApplication.sendEvent(widget, event)
 
+    # Esc closes when it's released, not pressed (the release would go to the
+    # window underneath); a release without a press here does nothing.
+    closed = []
+    cfg = config.Config(save_dir=str(tmp / "x"), notify=False, clipboard="none")
+    s = Session(cfg, Request(image=str(src), scan=False), Notifier(interactive=False),
+                lambda code, holds: closed.append(code))
+    s.start()
+    ov = s.overlays[0]
+
+    def esc(kind):
+        event = qt.QKeyEvent(kind, qt.keyval(Qt.Key.Key_Escape), Qt.KeyboardModifier.NoModifier)
+        (s.key if kind == QEvent.Type.KeyPress else s.key_release)(ov, event)
+        app.processEvents()
+
+    esc(QEvent.Type.KeyRelease)
+    assert not s.done, "a stray Esc release closed the overlay"
+    esc(QEvent.Type.KeyPress)
+    assert not s.done and s.overlays, "Esc closed on the way down"
+    esc(QEvent.Type.KeyRelease)
+    for _ in range(20):
+        app.processEvents()
+    assert s.done and closed == [1], closed
+
     # The crosshair keeps following the pointer over the toolbar's buttons.
     s, ov = session()
     button = ov.toolbar.tools["pen"]
@@ -894,6 +919,46 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     assert snapped == at(120, 640), snapped
     assert ov._snapped(near, Qt.KeyboardModifier.ControlModifier) == near, "Ctrl should place freely"
     assert ov._snapped(at(500, 600), Qt.KeyboardModifier.NoModifier) == at(500, 600), "snapped with no edge near"
+    # Boxes first. On a plain grey picture: a box (from 100, 80), a divider
+    # line across the picture at y 86, and a short, strong stroke like a letter's.
+    pic = QImage(400, 300, QImage.Format.Format_RGB32)
+    pic.fill(QColor("#808080"))
+    paint = QPainter(pic)
+    paint.fillRect(100, 80, 200, 2, QColor("#303030"))  # the box: top, left, right, bottom
+    paint.fillRect(100, 80, 2, 140, QColor("#303030"))
+    paint.fillRect(298, 80, 2, 140, QColor("#303030"))
+    paint.fillRect(100, 218, 200, 2, QColor("#303030"))
+    paint.fillRect(0, 86, 400, 1, QColor("#303030"))  # the divider, as strong as the box
+    paint.fillRect(60, 160, 2, 12, QColor("#000000"))  # a letter's stroke
+    paint.end()
+    pic_src = tmp / "boxes.png"
+    pic.save(str(pic_src))
+    b = Session(config.Config(save_dir=str(tmp / "x"), notify=False, snap_edges=True),
+                Request(image=str(pic_src), scan=False), Notifier(interactive=False), lambda *a: None)
+    b.start()
+    bov = b.overlays[0]
+    bov.snap_changed()
+    bov._edge_thread.join(10)
+    k = bov.dpr()
+    none = Qt.KeyboardModifier.NoModifier
+
+    def snap(x, y):
+        return bov._snapped(QPointF(x / k, y / k), none)
+
+    # Near the box's corner the divider is closer, but the corner wins (the
+    # border is 2 px: its outer or inner corner).
+    corner = snap(103, 85)
+    assert (round(corner.x() * k), round(corner.y() * k)) in ((100, 80), (102, 82)), corner
+    # A short stroke alone (a letter) isn't an edge to snap to.
+    assert snap(63, 166) == QPointF(63 / k, 166 / k), snap(63, 166)
+    # Away from the box, the divider is still an edge.
+    divider = snap(30, 89)
+    assert divider.x() == 30 / k and round(divider.y() * k) in (86, 87), divider  # (its top or bottom)
+    # The distance is a setting: at 2 px the corner is out of reach.
+    b.cfg.snap_distance = 2
+    assert snap(106, 75) == QPointF(106 / k, 75 / k), snap(106, 75)
+    b.cancel()
+
     # A whole drag: both corners land on the window's edges.
     ov.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, at(127, 147), at(127, 147),
                                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))

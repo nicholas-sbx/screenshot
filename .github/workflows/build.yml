@@ -84,6 +84,8 @@ jobs:
         run: $PY -m compileall -q flatshot
       - name: Self-test (offscreen)
         run: QT_QPA_PLATFORM=offscreen FLATSHOT_SELFTEST_OUT=shots $PY -m flatshot --self-test
+      - name: Selections across two monitors (offscreen)
+        run: QT_QPA_PLATFORM=offscreen:configfile=tests/two-screens.json PYTHONPATH=. $PY tests/multi_monitor.py
       - name: Self-test with the zbar scanner
         if: matrix.binding == 'pyqt6'
         run: QT_QPA_PLATFORM=offscreen FLATSHOT_SCANNER=zbar FLATSHOT_EXPECT_SCANNER=zbar $PY -m flatshot --self-test

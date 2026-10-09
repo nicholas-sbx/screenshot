@@ -12,8 +12,8 @@ from flatshot import capture, config, output, pin, scanner, shapes, theme, windo
 from flatshot.notify import Notifier
 from flatshot.overlay import Overlay
 from flatshot.qt import (
-    QColor, QCursor, QDesktopServices, QGuiApplication, QImage, QPixmap, QPoint, QRect, QRectF, Qt, QTimer, QUrl,
-    keyval,
+    QColor, QCursor, QDesktopServices, QGuiApplication, QImage, QPainter, QPixmap, QPoint, QPointF, QRect, QRectF, Qt,
+    QTimer, QUrl, keyval,
 )
 from flatshot.widgets import TOOLS
 
@@ -75,6 +75,7 @@ class Session:
         if request.record and self.can_record:
             self.tool = "record"
         self._rec_opts = None
+        self._escape_down = False  # Esc pressed here; it acts when released
         self.countdown: int | None = None  # seconds left before recording starts
         self._countdown_overlay: Overlay | None = None
         self._countdown_timer = QTimer()
@@ -104,6 +105,10 @@ class Session:
         self._desktop: windows.Desktop | None = None
         self.mode = request.mode if request.mode in MODES else "region"
         self._grabbed: QImage | None = None  # an instant capture waiting for the desktop state
+        # Selections across monitors: the whole desktop grab, kept while the
+        # overlays are up (only with more than one monitor and the setting on).
+        self._desktop_image: QImage | None = None
+        self.hovered = None  # the window under the pointer, on whichever monitor
         self.done = False
 
     @property
@@ -151,6 +156,8 @@ class Session:
                 QTimer.singleShot(DESKTOP_TIMEOUT_MS, self._finish_instant)
             return
         self._build_overlays(image)
+        if self._may_span():
+            self._desktop_image = image
         if self.cfg.scan_codes and self.request.scan:
             # Let the overlay reach the screen before scanning competes for CPU.
             QTimer.singleShot(60, lambda: None if self.done else self.scanner.start(image))
@@ -257,9 +264,81 @@ class Session:
                 o.update()
 
     def _sync_toolbars(self):
+        dragging = any(o.sel_rect is not None for o in self.overlays)
         for o in self.overlays:
             if o.toolbar:
-                o.toolbar.setVisible(o is self.toolbar_overlay and o.sel_rect is None and self.countdown is None)
+                o.toolbar.setVisible(o is self.toolbar_overlay and not dragging and self.countdown is None)
+
+    # -- selections across monitors ------------------------------------------
+
+    def _may_span(self) -> bool:
+        return self.cfg.span_monitors and not self.request.image and len(self.overlays) > 1
+
+    def spans(self) -> bool:
+        """Can a selection (or a clicked window) cross monitors now? Captures
+        only: a recording area stays on one monitor."""
+        return self._desktop_image is not None and self.tool == "region"
+
+    def selection_moved(self, origin: Overlay, pointer: QPointF | None):
+        """``origin``'s selection changed: show its part on the other
+        monitors, and the crosshair and magnifier where the pointer is."""
+        g = origin.target_screen.geometry()
+        sel = origin.sel_rect.translated(QPointF(g.topLeft())) if origin.sel_rect is not None else None
+        at = pointer + QPointF(g.topLeft()) if pointer is not None else None
+        for o in self.overlays:
+            if o is origin:
+                continue
+            og = QPointF(o.target_screen.geometry().topLeft())
+            part = sel.translated(-og) if sel is not None and sel.intersects(QRectF(o.target_screen.geometry())) \
+                else None
+            local = at - og if at is not None and o.target_screen.geometry().contains(at.toPoint()) else None
+            if part != o.span_rect or local != o.span_pointer:
+                o.span_rect, o.span_pointer = part, local
+                o.update()
+
+    def hover_changed(self, origin: Overlay, window):
+        """The pointer is over ``window`` on ``origin``: highlight its part on
+        the other monitors too."""
+        self.hovered = window
+        if not self.spans():
+            return
+        for o in self.overlays:
+            if o is not origin:
+                o.set_span_hover(window)
+
+    def capture_span(self, area: QRect, window: windows.Window | None = None):
+        """Capture ``area`` (global logical coordinates), which crosses
+        monitors: cut from the whole desktop, with every monitor's drawings."""
+        if self.done or self._desktop_image is None:
+            return
+        self.commit_text()
+        area = area.intersected(capture.virtual_geometry())
+        image = self._render_desktop(area)
+        shot = output.Shot(mode="window" if window else "region")
+        source = window or (self._desktop.active if self._desktop else None)
+        if source:
+            shot.app, shot.title = source.app, source.title
+        self._close_overlays()
+        QTimer.singleShot(0, lambda: self._finish_capture(image, shot, area, source))
+
+    def _render_desktop(self, area: QRect) -> QImage:
+        image = self._desktop_image
+        phys = capture.to_pixels(image, area)
+        out = image.copy(phys).convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        sx, sy = phys.width() / max(1, area.width()), phys.height() / max(1, area.height())
+        p = QPainter(out)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for o in self.overlays:
+            if o.annotations:
+                g = o.target_screen.geometry()
+                p.save()
+                p.scale(sx, sy)
+                p.translate(g.x() - area.x(), g.y() - area.y())
+                for shape in o.annotations:
+                    shape.paint(p, o.base)
+                p.restore()
+        p.end()
+        return out.convertToFormat(QImage.Format.Format_RGB32)
 
     # -- tool state --------------------------------------------------------
 
@@ -516,14 +595,14 @@ class Session:
             editing.update()
             return
 
-        if self.countdown is not None:
-            if k == K["Escape"]:
-                self.cancel_countdown()
-            return
         if k == K["Escape"]:
-            if not any(o.cancel_gesture() for o in self.overlays):
-                self.cancel()
-        elif self.tool == "record" and enter:
+            # Acted on when the key comes up (key_release): closing on the way
+            # down hands the release to the window underneath.
+            self._escape_down = not event.isAutoRepeat() or self._escape_down
+            return
+        if self.countdown is not None:
+            return
+        if self.tool == "record" and enter:
             armed = next((o for o in self.overlays if o.rec_rect is not None), None)
             if armed is not None:
                 self.start_countdown(armed)
@@ -554,10 +633,20 @@ class Session:
         elif k == K["BracketRight"]:
             self.set_size(self.size + 1)
 
+    def key_release(self, overlay: Overlay, event):
+        if keyval(event.key()) != K["Escape"] or event.isAutoRepeat() or not self._escape_down:
+            return
+        self._escape_down = False
+        if self.countdown is not None:
+            self.cancel_countdown()
+        elif not any(o.cancel_gesture() for o in self.overlays):
+            self.cancel()
+
     # -- finishing ---------------------------------------------------------
 
     def _close_overlays(self):
         self.done = True
+        self._desktop_image = None
         self._countdown_timer.stop()
         if self.window_finder:
             self.window_finder.stop()
@@ -586,19 +675,18 @@ class Session:
             at = (rect.toAlignedRect() if rect is not None else QRect(0, 0, g.width(), g.height())).translated(
                 g.topLeft())
         self._close_overlays()
-
-        def finish():
-            if not source and self._names_window() and not self.request.image:
-                # Sway / Hyprland aren't asked while the overlay is up; ask now.
-                desktop = windows.query_compositor()
-                if desktop and desktop.active:
-                    shot.app, shot.title = desktop.active.app, desktop.active.title
-            if at is not None:
-                config.update_state(last_region=[at.x(), at.y(), at.width(), at.height()])
-            self._deliver(image, shot, at)
-
         # Let the compositor drop the overlays before doing slower work.
-        QTimer.singleShot(0, finish)
+        QTimer.singleShot(0, lambda: self._finish_capture(image, shot, at, source))
+
+    def _finish_capture(self, image: QImage, shot: output.Shot, at: QRect | None, source):
+        if not source and self._names_window() and not self.request.image:
+            # Sway / Hyprland aren't asked while the overlay is up; ask now.
+            desktop = windows.query_compositor()
+            if desktop and desktop.active:
+                shot.app, shot.title = desktop.active.app, desktop.active.title
+        if at is not None:
+            config.update_state(last_region=[at.x(), at.y(), at.width(), at.height()])
+        self._deliver(image, shot, at)
 
     def _deliver(self, image: QImage, shot: output.Shot | None = None, at: QRect | None = None):
         """``at``: where the image came from, in global logical coordinates."""
