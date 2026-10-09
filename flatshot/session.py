@@ -973,7 +973,8 @@ class Session:
                 actions.pop("folder")
         path, layout, on_action = result.path, pin.screen_layout(), self.on_action  # (not `self`: see above)
         self.notifier.send(title, "  ·  ".join(bits), image=path, actions=actions,
-                           on_action=(lambda key: on_action(key, path, at=at, layout=layout)) if actions else None)
+                           on_action=(lambda key: on_action(key, path, at=at, layout=layout)) if actions else None,
+                           event="screenshot")
 
     def copy_color(self, overlay: Overlay):
         """Copy the hex colour under the pointer (the one the loupe shows)."""
@@ -987,7 +988,7 @@ class Session:
         _, holds = output.copy_text(color)
         if self.cfg.notify:
             self.notifier.send(f"Copied colour {color}", f"rgb({img.pixelColor(x, y).red()}, "
-                               f"{img.pixelColor(x, y).green()}, {img.pixelColor(x, y).blue()})")
+                               f"{img.pixelColor(x, y).green()}, {img.pixelColor(x, y).blue()})", event="copied")
         print(color, flush=True)
         self._finish(0, holds)
 
@@ -995,7 +996,7 @@ class Session:
         self._close_overlays()
         _, holds = output.copy_text(code.text)
         if self.cfg.notify:
-            self.notifier.send("Copied from code", code.text[:300])
+            self.notifier.send("Copied from code", code.text[:300], event="copied")
         print(code.text, flush=True)
         self._finish(0, holds)
 
@@ -1015,7 +1016,7 @@ class Session:
 
     def fail(self, message: str):
         print(f"flatshot: {message}", file=sys.stderr, flush=True)
-        self.notifier.send("Screenshot failed", message, urgent=True)
+        self.notifier.send("Screenshot failed", message, urgent=True, event="failed")
         self._close_overlays()
         self._finish(2, False)
 

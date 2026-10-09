@@ -82,6 +82,9 @@ class TrayApp(QObject):
         from flatshot import capture
 
         capture.warm_up(config.load().backend)  # (the KWin helper, ready for the first capture)
+        from flatshot import notify
+
+        notify.install_events()  # (System Settings > Notifications lists them)
         return True
 
     # -- tray ----------------------------------------------------------------

@@ -327,7 +327,8 @@ class Recording(QObject):
         if on_action:
             actions = {"default": "Open", "open": "Open", "folder": "Show in folder"}
         self.notifier.send("Recording saved", "  ·  ".join(bits), image=self._save_thumbnail(path), file=path,
-                           actions=actions, on_action=(lambda key: on_action(key, path)) if actions else None)
+                           actions=actions, on_action=(lambda key: on_action(key, path)) if actions else None,
+                           event="recording")
 
     def _save_thumbnail(self, video: Path) -> Path | None:
         """The first frame (the frozen screen), for the notification; the
@@ -355,7 +356,7 @@ class Recording(QObject):
         if self.state == "done":
             return
         print(f"flatshot: recording failed: {message}", file=sys.stderr, flush=True)
-        self.notifier.send("Recording failed", message, urgent=True)
+        self.notifier.send("Recording failed", message, urgent=True, event="failed")
         if self.proc is not None:
             try:
                 os.killpg(self.proc.pid, signal.SIGKILL)

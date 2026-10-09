@@ -33,6 +33,11 @@ contents:
     dst: /usr/share/applications/flatshot-kwin-grab.desktop
   - src: ./packaging/flatshot.desktop
     dst: /usr/share/applications/flatshot.desktop
+  # Flatshot's notification events, for KDE's per-event notification settings
+  - src: ./flatshot/assets/flatshot.notifyrc
+    dst: /usr/share/knotifications6/flatshot.notifyrc
+  - src: ./flatshot/assets/flatshot.notifyrc
+    dst: /usr/share/knotifications5/flatshot.notifyrc
   - src: ./flatshot/assets/flatshot.svg
     dst: /usr/share/icons/hicolor/scalable/apps/flatshot.svg
   - src: ./LICENSE

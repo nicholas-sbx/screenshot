@@ -1091,7 +1091,43 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
         dialog.reject()
         app.processEvents()
         assert chosen and chosen[0].endswith("chosen.png"), chosen
-    print("self-test: drawing keys, filled box, text editing, pointer, undo state, save prompt ok")
+    # KDE's per-event notification settings: the events are installed where
+    # System Settings finds them, and what's chosen there is done.
+    from flatshot import dbus as fdbus, notify
+
+    data = tmp / "data"
+    old_env = {k: os.environ.get(k) for k in ("XDG_DATA_HOME", "XDG_DATA_DIRS")}
+    os.environ["XDG_DATA_HOME"], os.environ["XDG_DATA_DIRS"] = str(data), str(tmp / "no-system-data")
+    real_call = fdbus.call
+    calls = []
+    fdbus.call = lambda *a, **k: calls.append(a) or (7,)
+    try:
+        notify.install_events()
+        installed = data / "knotifications6" / "flatshot.notifyrc"
+        assert installed.is_file() and "DesktopEntry=flatshot" in installed.read_text()
+        assert notify.event_settings("screenshot")["actions"] == {"Popup"}, "pops up unless told otherwise"
+        (data / "sounds" / "test" / "stereo").mkdir(parents=True)
+        (data / "sounds" / "test" / "stereo" / "ping.oga").write_bytes(b"")
+        (tmp / "config" / "flatshot.notifyrc").write_text(
+            "[Event/screenshot]\nAction=Sound\nSound=ping\n\n[Event/copied]\nAction=None\n")
+        chosen = notify.event_settings("screenshot")
+        assert chosen["actions"] == {"Sound"} and notify._sound_file(chosen["sound"]).endswith("ping.oga"), chosen
+        notifier = notify.Notifier(interactive=False)
+        assert not notifier.send("Screenshot saved", event="screenshot") and not calls, "popped up though turned off"
+        assert not notifier.send("Copied", event="copied") and not calls
+        assert notifier.send("Screenshot failed", event="failed") and calls, "the failure didn't pop up"
+        hints = calls[-1][-2]
+        assert hints["x-kde-eventId"] == ("s", "failed") and hints["desktop-entry"] == ("s", "flatshot"), hints
+    finally:
+        fdbus.call = real_call
+        (tmp / "config" / "flatshot.notifyrc").unlink(missing_ok=True)
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    print("self-test: drawing keys, filled box, text editing, pointer, undo state, save prompt, "
+          "notification events ok")
 
 
 def replace_cfg(cfg, **changes):
