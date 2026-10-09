@@ -41,6 +41,7 @@ OPEN_AFTER = ("none", "image", "folder")
 BACKENDS = ("auto", "kwin", "spectacle", "grim", "gnome-screenshot", "qt")
 RECORD_FORMATS = ("mp4", "webm", "gif")
 RECORD_FPS = (24, 30, 60)
+REGION_POINTER = ("toggle", "hidden", "shown")
 
 
 @dataclass
@@ -75,6 +76,10 @@ class Config:
     toolbar_follows_mouse: bool = True
     backend: str = "auto"  # see BACKENDS
     include_pointer: bool = False  # draw the mouse pointer into instant (no-UI) captures
+    # The pointer when picking a region: "toggle" (hidden at first, the
+    # toolbar's button shows it; two screenshots are taken), "hidden" or
+    # "shown" (one screenshot, no button).
+    region_pointer: str = "toggle"
     default_tool: str = "region"
     default_color: int = 0  # 0-6 the toolbar's colours, 7 your own (custom_color)
     custom_color: str = "#FF4FA3"  # your own colour, the toolbar's eighth: #RRGGBB
@@ -115,6 +120,8 @@ class Config:
             self.clipboard = "image"
         if self.open_after not in OPEN_AFTER:
             self.open_after = "none"
+        if self.region_pointer not in REGION_POINTER:
+            self.region_pointer = "toggle"
         if self.backend not in BACKENDS:
             self.backend = "auto"
         self.dim_opacity = max(0, min(int(self.dim_opacity), 90))

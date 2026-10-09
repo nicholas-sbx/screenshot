@@ -602,6 +602,12 @@ class SettingsWindow(QWidget):
                      "A drag, or a clicked window, may cross onto other monitors. The toolbar stays on one."))
         card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
                      "In instant captures: active window, monitor, all screens, last region."))
+        pointer = Segmented([("toggle", "Your choice"), ("hidden", "Never"), ("shown", "Always")],
+                            self.cfg.region_pointer)
+        pointer.changed.connect(lambda v: self._save(region_pointer=v))
+        card.add(Row("Mouse pointer when selecting", pointer,
+                     "Your choice: hidden at first, and the toolbar's pointer button (or M) shows it; this takes "
+                     "two screenshots at once. Never or Always take one, and the button isn't there."))
         card.add(Row("Snap to edges", self._toggle("snap_edges"),
                      "Selections snap to edges in the picture, boxes first. Also the toolbar's magnet "
                      "button, or G; hold Ctrl to place freely."))

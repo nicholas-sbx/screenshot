@@ -6,7 +6,7 @@ and any number of editors can be open at once. Loaded only when one opens."""
 import sys
 from pathlib import Path
 
-from flatshot import config, icons, keys, output, shapes, theme
+from flatshot import config, icons, keys, output, shapes, theme, timing
 from flatshot.qt import (
     QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QHBoxLayout, QImage, QPainter, QPen, QPixmap, QPoint,
     QPointF, QRectF, QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
@@ -314,8 +314,12 @@ class Editor(QWidget):
         filechooser.save_file(self, "Save as", self.path, filters, chosen, current)
 
     def _save_to(self, path: Path) -> bool:
+        clock = timing.Clock("editor save")
         try:
-            written = output.save(self.render(), self.cfg, explicit=str(path))
+            image = self.render()
+            clock.step("drawn", f"{image.width()} × {image.height()}, {len(self.annotations)} drawings")
+            written = output.save(image, self.cfg, explicit=str(path))
+            clock.step("saved", str(written))
         except OSError as e:
             self._say(f"Couldn't save: {e}")
             return False
@@ -327,7 +331,11 @@ class Editor(QWidget):
         return True
 
     def copy(self):
-        ok, _ = output.copy_image(self.render())
+        clock = timing.Clock("editor copy")
+        image = self.render()
+        clock.step("drawn")
+        ok, _ = output.copy_image(image)
+        clock.step("copied" if ok else "not copied")
         self._say("Copied to the clipboard" if ok else "Couldn't copy to the clipboard")
         if ok:
             self.bar.copied()

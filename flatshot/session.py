@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from flatshot import capture, config, keys, output, pin, scanner, shapes, theme, windows
+from flatshot import capture, config, keys, layershell, output, pin, scanner, shapes, theme, timing, windows
 from flatshot.notify import Notifier
 from flatshot.overlay import Overlay
 from flatshot.qt import (
@@ -128,6 +128,7 @@ class Session:
         self._plain_image: QImage | None = None
         self.show_pointer = False
         self.done = False
+        self.clock = timing.Clock("capture")  # (started again by start())
 
     @property
     def color(self):
@@ -148,6 +149,8 @@ class Session:
         elif self.mode == "rect" and self.request.rect is None:
             self.mode = "region"
         instant = self.mode != "region"
+        self.clock = timing.Clock("image" if self.request.image else "recording" if self.tool == "record"
+                                  else f"{self.mode} capture")
         if not self.request.image and (self.mode in ("monitor", "window") or self._names_window()
                                        or (self.mode == "region" and self.cfg.detect_windows)):
             # Ask the compositor about windows now, while they are as captured.
@@ -163,14 +166,18 @@ class Session:
             else:
                 # The overlay's picture can show the pointer or not (the
                 # toolbar's pointer button): both are taken at once.
-                extra = [] if not instant else None
-                image = capture.grab_desktop(self.request.backend or self.cfg.backend,
-                                             pointer=instant and self.cfg.include_pointer, also_pointer=extra)
+                # (Unless the settings say always or never: then one, as it's to be.)
+                extra = [] if not instant and self.cfg.region_pointer == "toggle" else None
+                pointer = self.cfg.include_pointer if instant else self.cfg.region_pointer == "shown"
+                image = capture.grab_desktop(self.request.backend or self.cfg.backend, pointer=pointer,
+                                             also_pointer=extra)
                 if extra and extra[0].size() == image.size():
                     self.pointer_image = extra[0]
         except capture.CaptureError as e:
             self.fail(str(e))
             return
+        self.clock.step("screenshot", f"{image.width()} × {image.height()}"
+                        + (f" via {capture.last_grab}" if capture.last_grab and not self.request.image else ""))
         if instant:
             self._grabbed = image
             if self._desktop is not None or self.window_finder is None:
@@ -179,11 +186,17 @@ class Session:
                 QTimer.singleShot(DESKTOP_TIMEOUT_MS, self._finish_instant)
             return
         self._build_overlays(image)
+        self.clock.step("overlay shown", f"{len(self.overlays)} monitor{'s' if len(self.overlays) != 1 else ''}; "
+                        f"{layershell.last_overlay}")
         if self._may_span():
             self._desktop_image = image
         if self.cfg.scan_codes and self.request.scan:
             # Let the overlay reach the screen before scanning competes for CPU.
-            QTimer.singleShot(60, lambda: None if self.done else self.scanner.start(image))
+            QTimer.singleShot(60, lambda: None if self.done else self._scan(image))
+
+    def _scan(self, image: QImage):
+        self._scan_clock = timing.Clock("code scan")
+        self.scanner.start(image)
 
     def _finish_instant(self):
         """Crop an instant capture to its mode's area and deliver it."""
@@ -213,6 +226,7 @@ class Session:
                 self.fail(f"{rect.width()}x{rect.height()}+{rect.x()}+{rect.y()} is outside the screens")
                 return
             image = image.copy(pixels)
+            self.clock.step("cropped", f"{image.width()} × {image.height()}")
             if self.mode == "rect":
                 config.update_state(last_region=[rect.x(), rect.y(), rect.width(), rect.height()])
         self._deliver(image, shot, rect)
@@ -255,6 +269,9 @@ class Session:
             self._desktop_found(self._desktop)
 
     def _desktop_found(self, desktop: windows.Desktop):
+        if self._desktop is None:
+            timing.log(f"{self.clock.what}: windows known at {self.clock.since_start():.0f} ms, "
+                       f"{len(desktop.windows)} window{'s' if len(desktop.windows) != 1 else ''}")
         self._desktop = desktop
         if self.done:
             return
@@ -270,6 +287,9 @@ class Session:
         self.refresh()
 
     def _codes_found(self, codes):
+        if hasattr(self, "_scan_clock"):
+            self._scan_clock.step("done", f"{len(codes)} code{'s' if len(codes) != 1 else ''} found, "
+                                          f"at {self.clock.since_start():.0f} ms into the capture")
         if self.done:
             return
         for o in self.overlays:
@@ -375,8 +395,10 @@ class Session:
         if self.done or self._desktop_image is None:
             return
         self.commit_text()
+        self.clock.step("chosen")
         area = area.intersected(capture.virtual_geometry())
         image = self._render_desktop(area)
+        self.clock.step("drawn", f"{image.width()} × {image.height()} across monitors")
         shot = output.Shot(mode="window" if window else "region")
         source = window or (self._desktop.active if self._desktop else None)
         if source:
@@ -645,6 +667,7 @@ class Session:
         thumbnail = self._render_desktop(area) if spanning and self._desktop_image is not None \
             else overlay.render(rect)
         opts = screencast.Options(**vars(self.rec_opts))
+        self.clock.step("recording area chosen", f"{area.width()} × {area.height()}, {opts.format}, {opts.fps} fps")
         self._close_overlays()
         # The screen's real scale is the screenshot's: Qt's can be rounded.
         target = screencast.Target(area, screen, overlay.dpr())
@@ -831,7 +854,10 @@ class Session:
         if self.done:
             return
         self.commit_text()
+        self.clock.step("chosen")
         image = overlay.render(rect)
+        self.clock.step("drawn", f"{image.width()} × {image.height()}, {len(overlay.annotations)} drawing"
+                        + ("s" if len(overlay.annotations) != 1 else ""))
         screen = overlay.target_screen
         shot = output.Shot(mode="window" if window else ("region" if rect is not None else "monitor"),
                            monitor=screen.name())
@@ -862,11 +888,12 @@ class Session:
         self.done = True
         if self.pin_mode:
             pin.show(image, at)
+            self.clock.step("pinned")
             self._play_sound()
             self._finish(0, False)
             return
         try:
-            result = output.deliver(image, self.cfg, self.request.output, shot)
+            result = output.deliver(image, self.cfg, self.request.output, shot, clock=self.clock)
         except OSError as e:
             self.fail(str(e))
             return
@@ -875,6 +902,7 @@ class Session:
         self._play_sound()
         if self.cfg.notify:
             self._notify(result, at)
+            self.clock.step("notified")
         self._finish(0, result.holds_clipboard)
 
     def _play_sound(self):

@@ -39,6 +39,8 @@ def parse_args(argv):
     ap.add_argument("--print-config", action="store_true", help="print the effective config and exit")
     ap.add_argument("--diagnose", action="store_true",
                     help="show what this Flatshot and the running tray app use (Qt, layer-shell, helpers)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="say on stderr how long each step of a capture takes (with --tray: every capture)")
     ap.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version=f"flatshot {__version__}")
     args = ap.parse_args(argv)
@@ -89,9 +91,10 @@ def make_app() -> QApplication:
 
 def _forwardable(args) -> str | None:
     """The tray-app command equivalent to these arguments, if any."""
-    if args.image and not args.output:
+    if args.image and not args.output and not args.verbose:
         return "edit " + str(Path(args.image).expanduser().resolve())  # an editor window of the tray app's
-    if args.image or args.output or args.backend or args.no_copy or args.no_save or args.no_scan:
+    if args.image or args.output or args.backend or args.no_copy or args.no_save or args.no_scan or (
+            args.verbose and not (args.tray or args.settings or args.quit)):
         return None  # one-off options: handle in this process
     if args.quit:
         return "quit"
@@ -171,6 +174,10 @@ def _log_error(kind, value, tb) -> None:
 def main(argv=None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    if args.verbose:
+        from flatshot import timing
+
+        timing.enabled = True
     if args.self_test:
         from flatshot.selftest import run
         return run()

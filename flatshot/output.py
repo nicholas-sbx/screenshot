@@ -260,9 +260,14 @@ def _temp_path() -> Path:
     return base / datetime.now().strftime("Screenshot_%Y-%m-%d_%H-%M-%S.png")
 
 
-def deliver(image: QImage, cfg: Config, explicit: str | None = None, shot: Shot | None = None) -> Delivery:
+def deliver(image: QImage, cfg: Config, explicit: str | None = None, shot: Shot | None = None,
+            clock=None) -> Delivery:
     """Run the configured after-capture steps (except notifying).
-    ``explicit`` "-" writes PNG to stdout instead of any file."""
+    ``explicit`` "-" writes PNG to stdout instead of any file. ``clock``
+    (timing.Clock) times each step, for --verbose."""
+    from flatshot import timing
+
+    clock = clock or timing.Clock("delivery")
     result = Delivery(size=(image.width(), image.height()))
     if explicit == "-":
         sys.stdout.buffer.write(png_bytes(image))
@@ -273,15 +278,19 @@ def deliver(image: QImage, cfg: Config, explicit: str | None = None, shot: Shot 
     if explicit or cfg.save_to_disk:
         result.path = save(image, cfg, explicit, shot)
         result.saved = True
+        clock.step("saved", f"{result.path.suffix.lstrip('.').upper()}, {_size(result.path)}")
     elif cfg.needs_file():
         # Clipboard-path, open or command need a file even when not keeping one.
         result.path = _unique(_temp_path())
         if not image.save(str(result.path)):
             raise OSError(f"could not write {result.path}")
+        clock.step("written to a temporary file")
     if cfg.clipboard == "image":
         result.copied, result.holds_clipboard = copy_image(image)
+        clock.step("copied" if result.copied else "not copied", "PNG to the clipboard")
     elif cfg.clipboard == "path" and result.path:
         result.copied, result.holds_clipboard = copy_text(str(result.path))
+        clock.step("path copied")
     if result.path:
         if cfg.open_after == "image":
             open_file(result.path)
@@ -289,4 +298,14 @@ def deliver(image: QImage, cfg: Config, explicit: str | None = None, shot: Shot 
             show_in_folder(result.path)
         if cfg.run_command.strip():
             run_command(cfg.run_command, result.path)
+        if cfg.open_after != "none" or cfg.run_command.strip():
+            clock.step("opened / command started")
     return result
+
+
+def _size(path: Path) -> str:
+    try:
+        n = path.stat().st_size
+    except OSError:
+        return "?"
+    return f"{n / 1024:.0f} KiB" if n < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MiB"

@@ -912,10 +912,13 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
     paint.fillRect(QRect(20, 20, 12, 18), red)
     paint.end()
 
+    asked = []
+
     def grab(preferred="auto", pointer=False, also_pointer=None):
+        asked.append((pointer, also_pointer is not None))
         if also_pointer is not None:
             also_pointer.append(with_pointer.copy())
-        return desktop.copy()
+        return (with_pointer if pointer else desktop).copy()
 
     real_grab, real_supported = capture.grab_desktop, windows.WindowFinder.supported
     capture.grab_desktop = grab
@@ -981,6 +984,40 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
             ov.toolbar.show()
             ov.grab().save(str(Path(out_dir) / "overlay-text.png"))
         s.cancel()
+        # --verbose: each step of a capture, timed, on stderr.
+        import contextlib
+        import io
+
+        from flatshot import timing
+
+        said = io.StringIO()
+        timing.enabled = True
+        try:
+            with contextlib.redirect_stderr(said):
+                cfg = config.Config(save_dir=str(tmp / "v"), notify=False, clipboard="none")
+                s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda *a: None)
+                s.start()
+                s.capture(s.overlays[0], QRectF(10, 10, 100, 80))
+                for _ in range(20):
+                    app.processEvents()
+        finally:
+            timing.enabled = False
+        said = said.getvalue()
+        for step in ("region capture: screenshot", "overlay shown", "chosen", "drawn", "saved"):
+            assert step in said and " ms" in said, (step, said)
+        # The settings can make it always or never: one screenshot, no button.
+        for mode, shown in (("hidden", False), ("shown", True)):
+            asked.clear()
+            cfg = config.Config(save_dir=str(tmp / "p"), notify=False, clipboard="none", region_pointer=mode)
+            s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda *a: None)
+            s.start()
+            ov = s.overlays[0]
+            assert asked == [(shown, False)], (mode, asked)
+            assert s.pointer_image is None and not ov.toolbar.pointer_button.isVisibleTo(ov.toolbar), mode
+            s.toggle_pointer()
+            assert not s.show_pointer
+            assert (QColor(ov.render(spot).pixel(0, 0)) == red) is shown, mode
+            s.cancel()
     finally:
         capture.grab_desktop, windows.WindowFinder.supported = real_grab, real_supported
 

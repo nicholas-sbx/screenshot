@@ -11,7 +11,7 @@ from flatshot.qt import (
     QPoint, QPointF, QPolygonF, QRect, QRectF, QSizeF, Qt, QTimer, QWidget,
 )
 
-from flatshot import layershell, shapes
+from flatshot import layershell, shapes, timing
 from flatshot.qt import keyval
 from flatshot.theme import C, font
 from flatshot.widgets import CodeChip, Toolbar
@@ -478,6 +478,7 @@ class Overlay(QWidget):
         differs from the one to its left, and from the one above. Qt does
         the work (a difference blend and a greyscale conversion), about
         150 ms for a 4K screen."""
+        started = time.monotonic()
         img = image.convertToFormat(QImage.Format.Format_RGB32)
         img.setDevicePixelRatio(1.0)
         maps = []
@@ -490,6 +491,8 @@ class Overlay(QWidget):
             grey = diff.convertToFormat(QImage.Format.Format_Grayscale8)
             maps.append((grey, _buffer(grey), grey.bytesPerLine()))
         self._edge_maps = maps
+        timing.log(f"snapping: edge maps for {img.width()} × {img.height()} in "
+                   f"{(time.monotonic() - started) * 1000:.0f} ms")
 
     def _snapped(self, pos: QPointF, modifiers) -> QPointF:
         """``pos`` moved onto nearby edges in the picture, if any (Ctrl: as

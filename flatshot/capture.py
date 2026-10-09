@@ -147,6 +147,9 @@ def backend_order() -> list[str]:
     return ["grim", "spectacle", "gnome-screenshot"]
 
 
+# Which helper took the last screenshot, and what it was asked for (for --verbose).
+last_grab = ""
+
 # Helpers that can be asked twice at once (Spectacle may hand a second
 # request to the first instance).
 TWICE = ("kwin", "grim")
@@ -157,6 +160,8 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
     (where the helper supports it). With ``also_pointer`` (a list), the
     same moment with the pointer drawn in is appended to it too, where the
     helper can take both at once."""
+    global last_grab
+    last_grab = ""
     order = backend_order() if preferred in ("", "auto") else [preferred]
     errors = []
     for name in order:
@@ -173,6 +178,8 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                     errors.append(f"{name}: {e}")
                     continue
                 second.join(5)  # (both ask for the same frame: about as quick as one)
+                last_grab = f"{name}, with and without the pointer at once" + (
+                    "" if also_pointer else " (the one with the pointer failed)")
                 return image
         if name == "qt":
             fn = _qt
@@ -182,7 +189,10 @@ def grab_desktop(preferred: str = "auto", pointer: bool = False, also_pointer: l
                 errors.append(f"{name}: not installed")
                 continue
         try:
-            return fn(pointer)
+            image = fn(pointer)
+            last_grab = f"{name}{', with the pointer' if pointer else ''}" + (
+                f" (after {'; '.join(errors)})" if errors else "")
+            return image
         except subprocess.CalledProcessError as e:
             detail = (e.stderr or b"").decode(errors="replace").strip().splitlines()
             errors.append(f"{name}: {detail[-1] if detail else e}")
