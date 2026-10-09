@@ -169,17 +169,43 @@ class Pixelate(Drag):
             return
         key = (src.x(), src.y(), src.width(), src.height(), self.size)
         if self._cache is None or self._cache[0] != key:
-            block = max(4, round((6 + self.size * 5) * dpr))
-            crop = base.copy(src)
-            crop.setDevicePixelRatio(1)
-            small = crop.scaled(max(1, src.width() // block), max(1, src.height() // block),
-                                Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            big = small.scaled(src.width(), src.height(),
-                               Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
-            self._cache = (key, big)
+            self._cache = (key, self._cover(base, src, dpr))
         big = self._cache[1]
         target = QRectF(src.x() / dpr, src.y() / dpr, src.width() / dpr, src.height() / dpr)
         p.drawPixmap(target, big, QRectF(big.rect()))
+
+    def _cover(self, base: QPixmap, src: QRect, dpr: float) -> QPixmap:
+        """What goes over ``src`` (pixels of ``base``)."""
+        block = max(4, round((6 + self.size * 5) * dpr))
+        crop = base.copy(src)
+        crop.setDevicePixelRatio(1)
+        small = _scaled(crop, src.width() // block, src.height() // block)
+        return small.scaled(src.width(), src.height(),
+                            Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
+
+
+class Blur(Pixelate):
+    """Whatever is underneath in the original capture, blurred past reading."""
+
+    STRENGTH = [5, 8, 12]  # logical px averaged together, per size
+
+    def _cover(self, base, src, dpr):
+        # Shrinking averages the pixels; growing back smoothly blends them.
+        # Two steps down and up again smooth out the joins. It takes a few
+        # milliseconds even for a whole screen, so dragging stays smooth.
+        k = max(2, round(self.STRENGTH[self.size] * dpr))
+        around = src.adjusted(-2 * k, -2 * k, 2 * k, 2 * k).intersected(base.rect())  # blend in what's beside it
+        crop = base.copy(around)
+        crop.setDevicePixelRatio(1)
+        small = _scaled(crop, around.width() // k, around.height() // k)
+        softer = _scaled(_scaled(small, small.width() // 2, small.height() // 2), small.width(), small.height())
+        big = _scaled(softer, around.width(), around.height())
+        return big.copy(src.translated(-around.topLeft()))
+
+
+def _scaled(pm: QPixmap, w: int, h: int) -> QPixmap:
+    return pm.scaled(max(1, w), max(1, h), Qt.AspectRatioMode.IgnoreAspectRatio,
+                     Qt.TransformationMode.SmoothTransformation)
 
 
 class Text(Shape):
@@ -243,7 +269,7 @@ class Counter(Shape):
         p.restore()
 
 
-DRAG_TOOLS = {"line": Line, "arrow": Arrow, "rect": Box, "ellipse": Ellipse, "pixelate": Pixelate}
+DRAG_TOOLS = {"line": Line, "arrow": Arrow, "rect": Box, "ellipse": Ellipse, "pixelate": Pixelate, "blur": Blur}
 
 
 def create(tool: str, pos: QPointF, color: QColor, size: int) -> Shape | None:

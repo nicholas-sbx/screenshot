@@ -1,5 +1,6 @@
 """One fullscreen overlay per monitor showing the frozen capture."""
 
+import math
 import os
 import sys
 import threading
@@ -11,7 +12,7 @@ from flatshot.qt import (
 )
 
 from flatshot import layershell, shapes
-from flatshot.theme import C, font, is_light
+from flatshot.theme import C, font
 from flatshot.widgets import CodeChip, Toolbar
 
 HINTS = {
@@ -21,6 +22,7 @@ HINTS = {
     "text": "Click to place text  ·  Enter to finish  ·  R to capture",
 }
 PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  K to save instead"
+EYEDROPPER_HINT = "Click a pixel to make it your colour  ·  Esc to stop"
 RECORD_HINTS = {
     "pick": "Drag the area to record  ·  Click for whole screen  ·  Esc to cancel",
     "windows": "Drag the area to record  ·  Click a window  ·  Enter for whole screen  ·  Esc to cancel",
@@ -36,6 +38,9 @@ SNAP_REACH = 40
 # A vertical and a horizontal edge meeting: both ending there (an L, a box's
 # corner), one ending on the other (a T), or crossing.
 CORNER_BONUS, TEE_BONUS, CROSS_BONUS = 1.6, 1.25, 1.1
+# A box's corner may be rounded: its sides then stop short of the corner, by
+# the same amount, with a curve between them. Up to this radius (logical px).
+ROUNDED_UP_TO = 24
 RAINBOW_SECONDS = 4  # one trip round the colours
 
 
@@ -47,6 +52,7 @@ def _buffer(image: QImage) -> memoryview:
     return memoryview(bits).cast("B")
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
 LOUPE_ZOOM = (3.0, 40.0)  # magnifier zoom range, screen px per captured pixel
+LOUPE_EDGE = QColor(0, 0, 0, 120)  # the thin dark edge of the magnifier's square and crosshair
 
 
 _fallback_reported = False
@@ -95,6 +101,7 @@ class Overlay(QWidget):
         self.rec_window = None  # the window clicked, when the area is one
         self._rec_drag: tuple[str, QPointF, QRectF] | None = None
         self.panel = None  # recordpanel.RecordPanel, made when first needed
+        self.picker = None  # colorpicker.ColorPicker, made when first opened
         # A selection made on another monitor that reaches this one (local
         # coordinates), the pointer when it's here during that drag, and a
         # window hovered on another monitor that is partly here.
@@ -200,6 +207,30 @@ class Overlay(QWidget):
         self.panel.show()
         self.panel.raise_()
 
+    def show_picker(self):
+        """The picker for your own colour, under its swatch on the toolbar."""
+        if self.picker is None:
+            from flatshot.colorpicker import ColorPicker
+
+            self.picker = ColorPicker(self.ctl, self)
+            self._track(self.picker)
+        self.picker.set_color(self.ctl.custom_color)
+        swatch, bar = self.toolbar.custom, self.toolbar.geometry()
+        w, h = self.picker.width(), self.picker.height()
+        x = swatch.mapTo(self, QPoint(swatch.width() // 2, 0)).x() - w // 2
+        y = bar.bottom() + 8 if bar.bottom() + 8 + h <= self.height() - 8 else bar.top() - 8 - h
+        self.picker.move(max(8, min(x, self.width() - w - 8)), max(8, y))
+        self.picker.show()
+        self.picker.raise_()
+
+    def hide_picker(self):
+        if self.picker_open():
+            self.picker.hide()
+            self.setFocus()
+
+    def picker_open(self) -> bool:
+        return self.picker is not None and self.picker.isVisible()
+
     def dpr(self) -> float:
         return self.base.devicePixelRatio()
 
@@ -286,7 +317,8 @@ class Overlay(QWidget):
         self.update()
 
     def update_cursor(self):
-        shape = Qt.CursorShape.IBeamCursor if self.ctl.tool == "text" else Qt.CursorShape.CrossCursor
+        text = self.ctl.tool == "text" and not self.ctl.eyedropper
+        shape = Qt.CursorShape.IBeamCursor if text else Qt.CursorShape.CrossCursor
         self.setCursor(shape)
 
     def commit(self, shape: shapes.Shape):
@@ -380,19 +412,35 @@ class Overlay(QWidget):
         radius = max(2, round(cfg.snap_distance * dpr))
         reach = max(8, round(SNAP_REACH * dpr))
         step = max(1, round(dpr))  # sample about one logical pixel apart along an edge
+        rounding = round(ROUNDED_UP_TO * dpr)
         strong = 10 + (10 - sens) * 4  # how much a pixel must differ across the edge
         min_run = max(3, round((8 + (10 - sens) * 2.2) * dpr / step))  # in samples
         # Vertical edges near x: each candidate column, sampled down the rows around y.
         c0, c1 = max(1, x - radius), min(w, x + radius + 1)
         rows = range(max(0, y - reach), min(h, y + reach + 1), step)
         columns = zip(*(vbuf[r * vstride + c0:r * vstride + c1] for r in rows))
-        xs = _candidates(columns, c0, x, rows, y, radius, strong, min_run)
+        xs = _candidates(columns, c0, x, rows, y, radius, strong, min_run, rounding // step)
         # Horizontal edges near y: each candidate row, sampled along the columns around x.
         r0, r1 = max(1, y - radius), min(h, y + radius + 1)
         cols = range(max(0, x - reach), min(w, x + reach + 1), step)
         lines = (hbuf[r * hstride + cols.start:r * hstride + cols.stop:step] for r in range(r0, r1))
-        ys = _candidates(lines, r0, y, cols, x, radius, strong, min_run)
-        sx, sy = _pick(xs, ys, tolerance=max(2, step * 2))
+        ys = _candidates(lines, r0, y, cols, x, radius, strong, min_run, rounding // step)
+
+        def edge_at(cx: float, cy: float, maps=(0, 1), spread: int = 1, faint: bool = False) -> bool:
+            """Is there an edge at (cx, cy), or within ``spread``? In the
+            vertical-edge map (0), the horizontal one (1) or either."""
+            cx, cy = round(cx), round(cy)
+            need = strong // 2 if faint else strong
+            for row in range(max(0, cy - spread), min(h, cy + spread + 1)):
+                for i in maps:
+                    buf, stride = maps_bufs[i]
+                    if max(buf[row * stride + max(0, cx - spread):row * stride + min(w, cx + spread + 1)],
+                           default=0) >= need:
+                        return True
+            return False
+
+        maps_bufs = ((vbuf, vstride), (hbuf, hstride))
+        sx, sy = _pick(xs, ys, tolerance=max(2, step * 2), rounding=rounding, edge_at=edge_at)
         return QPointF(sx / dpr if sx is not None else pos.x(), sy / dpr if sy is not None else pos.y())
 
     def _handle_at(self, pos: QPointF) -> str | None:
@@ -462,11 +510,15 @@ class Overlay(QWidget):
     def mousePressEvent(self, event):
         pos = event.position()
         if event.button() == Qt.MouseButton.RightButton:
-            if not (self.ctl.cancel_countdown() or self.cancel_gesture()):
+            if not (self.ctl.cancel_countdown() or self.ctl.close_picker() or self.cancel_gesture()):
                 self.ctl.cancel()
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        if self.ctl.eyedropper:
+            self.ctl.take_color(self, pos)
+            return
+        self.ctl.close_picker()  # a click elsewhere closes it, and does what it would anyway
         if self.ctl.commit_text() and self.ctl.tool == "text":
             return  # first click just finishes the text being typed
         tool = self.ctl.tool
@@ -555,6 +607,18 @@ class Overlay(QWidget):
 
     def enterEvent(self, event):
         self.ctl.activate(self)
+        # This may be the overlay appearing under a pointer that hasn't moved:
+        # show the crosshair and magnifier there now, not on the first move.
+        self.point_at(event.position())
+
+    def point_at(self, pos: QPointF):
+        """The pointer is at ``pos`` (local), without a move to say so."""
+        if self.cursor_pos is not None or not QRectF(self.rect()).contains(pos):
+            return
+        self.cursor_pos = QPointF(pos)
+        self.ctl.activate(self)
+        self._update_hover()
+        self.update()
 
     def leaveEvent(self, event):
         self.cursor_pos = None
@@ -620,15 +684,15 @@ class Overlay(QWidget):
             self._paint_crosshair(p, self._snap_point or self.cursor_pos)
         if self.span_rect is not None and self.span_pointer is not None and self.ctl.cfg.show_loupe:
             self._paint_loupe(p, self.span_pointer)  # a drag from another monitor is here now
-        elif (picking and self.cursor_pos is not None and self.ctl.cfg.show_loupe and self._loupe_allowed()
-              and self.rect().contains(self.cursor_pos.toPoint())):
+        elif ((picking and self.ctl.cfg.show_loupe or self.ctl.eyedropper) and self.cursor_pos is not None
+              and self._loupe_allowed() and self.rect().contains(self.cursor_pos.toPoint())):
             self._paint_loupe(p, self.cursor_pos)
         if self.sel_rect is None and self is self.ctl.pointer_overlay:
             self._paint_hint(p)
 
     def _over_floating(self, margin: int = 0) -> bool:
         pt = self.cursor_pos.toPoint()
-        floating = [w for w in (self.toolbar, self.panel) if w is not None]
+        floating = [w for w in (self.toolbar, self.panel, self.picker) if w is not None]
         return any(w.isVisible() and w.geometry().adjusted(-margin, -margin, margin, margin).contains(pt)
                    for w in floating + self.chips)
 
@@ -730,97 +794,108 @@ class Overlay(QWidget):
 
     def _paint_loupe(self, p: QPainter, pos: QPointF):
         size = float(self.ctl.cfg.loupe_size)
-        cells = max(3, round(size / self.ctl.loupe_zoom) | 1)  # odd so one cell is the centre
-        dpr = self.dpr()
-        px, py = int(pos.x() * dpr), int(pos.y() * dpr)
+        cap = self.dpr()  # captured pixels per logical pixel
+        dev = self.devicePixelRatioF()  # screen pixels per logical pixel
+        px, py = int(pos.x() * cap), int(pos.y() * cap)
         x = pos.x() + 24 if pos.x() + 24 + size < self.width() else pos.x() - 24 - size
         y = pos.y() + 24 if pos.y() + 24 + size + 34 < self.height() else pos.y() - 24 - size - 34
-        box = QRectF(x, y, size, size)
-        clip = QPainterPath()
-        clip.addRoundedRect(box, 12, 12)
+        # Drawn in screen pixels, a captured pixel an even number of them
+        # across: the grid, the square and the lines all land on whole pixels,
+        # and the pointer's pixel has a middle for the lines to go through.
+        u = max(1, round(dev))  # the width of a line
+        bx, by, side = round(x * dev), round(y * dev), round(size * dev)
+        radius = 12 * dev
+        cell = max(4 * u, 2 * round(self.ctl.loupe_zoom * dev / 2))
+        lead = (side - cell) // 2  # from the edge to the pointer's pixel, which is in the middle
+        before = -(-lead // cell)  # pixels shown before it (left and above), the first maybe in part
+        count = before + 1 + -(-(side - lead - cell) // cell)
+        a, b = bx + lead, by + lead  # the pointer's pixel's top left
+        box = QRect(bx, by, side, side)
         p.save()
+        p.scale(1 / dev, 1 / dev)
+        p.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(box), radius, radius)
         p.setClipPath(clip)
         p.fillRect(box, C.INK)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        p.drawPixmap(box, self.base, QRectF(px - cells // 2, py - cells // 2, cells, cells))
+        p.drawPixmap(QRect(a - before * cell, b - before * cell, count * cell, count * cell), self.base,
+                     QRect(px - before, py - before, count, count))
         p.restore()
-        cell = size / cells
         # Lines go on after the rounded clip is gone (lines through a clip path
-        # are slow), on whole pixels, without anti-aliasing.
-        p.save()
+        # are slow), as whole-pixel rectangles.
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        if cell >= 5:
-            p.drawPixmap(round(x), round(y), self._loupe_grid(round(size), cells))
-        # The square around the pixel: a coloured ring inside a black or white
-        # one (whichever stands out from that pixel), so it shows on any colour.
-        img = self.pixels()
-        under = img.pixelColor(min(max(px, 0), img.width() - 1), min(max(py, 0), img.height() - 1))
-        contrast = QColor("#000000") if is_light(under) else QColor("#FFFFFF")
-        mark = self._mark_color()
-        square = QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell)
+        if cell >= 6 * u:
+            p.drawPixmap(bx, by, self._loupe_grid(side, cell, lead % cell, radius, u))
+        # The square around the pointer's pixel, on the grid lines round it,
+        # and, while choosing an area, the crosshair: through the middle of
+        # that pixel and joined to the square, or, where it snaps, on the
+        # boundary between pixels (exactly where the edge is). All of it in
+        # the crosshair's colour with a thin dark edge, which shows it on any
+        # pixel, even one of its own colour.
+        # Rectangles as (x, y, width, height). The edges don't overlap, so
+        # none is darker where they meet.
+        ring = (a - u, b - u, cell + 3 * u, cell + 3 * u)
+        hole = (a + u, b + u, cell - u, cell - u)  # the pixel, inside the grid lines
+        around = (a - 2 * u, b - 2 * u, cell + 5 * u, cell + 5 * u)  # the ring and its edge
+        marks = _cut(ring, hole)
+        edges = _cut(around, hole)
         if self.ctl.tool in ("region", "record"):
-            # The crosshair in the magnifier: through the middle of the
-            # pointer's pixel (the square), as on screen, but not inside the
-            # square. Where it snaps, a line moves to the boundary between
-            # pixels: exactly where the edge is.
             snap = self._snap_point
-            first = cells // 2  # the pointer's cell
+            lx = ly = None
             if snap is not None and snap.x() != pos.x():
-                lx = x + (round(snap.x() * dpr) - (px - first)) * cell
-            else:
-                lx = square.center().x()
+                lx = a + (round(snap.x() * cap) - px) * cell
             if snap is not None and snap.y() != pos.y():
-                ly = y + (round(snap.y() * dpr) - (py - first)) * cell
-            else:
-                ly = square.center().y()
-            lx, ly = round(lx), round(ly)
-            ix, iy, isize = round(x), round(y), round(size)
-            gap = square.adjusted(-3, -3, 3, 3)  # the square and its ring stay clear
-            vertical = _gapped(iy + _corner_inset(lx - ix, isize), iy + isize - _corner_inset(lx - ix, isize),
-                               gap.top(), gap.bottom(), gap.left() <= lx <= gap.right())
-            horizontal = _gapped(ix + _corner_inset(ly - iy, isize), ix + isize - _corner_inset(ly - iy, isize),
-                                 gap.left(), gap.right(), gap.top() <= ly <= gap.bottom())
-            for pen in (QPen(contrast, 3), QPen(mark, 1)):
-                p.setPen(pen)
-                if ix < lx < ix + isize:
-                    for a, b in vertical:
-                        p.drawLine(lx, a, lx, b)
-                if iy < ly < iy + isize:
-                    for a, b in horizontal:
-                        p.drawLine(a, ly, b, ly)
+                ly = b + (round(snap.y() * cap) - py) * cell
+            lx = a + cell // 2 if lx is None else lx
+            ly = b + cell // 2 if ly is None else ly
+            across = None
+            if bx + 2 * u <= lx <= bx + side - 3 * u:
+                inset = max(_corner_inset(lx - u - bx, side, radius, u),
+                            _corner_inset(lx + 2 * u - 1 - bx, side, radius, u))
+                marks += _cut((lx, by + inset, u, side - 2 * inset), ring)
+                across = (lx - u, by + inset, 3 * u, side - 2 * inset)
+                edges += _cut(across, around)
+            if by + 2 * u <= ly <= by + side - 3 * u:
+                inset = max(_corner_inset(ly - u - by, side, radius, u),
+                            _corner_inset(ly + 2 * u - 1 - by, side, radius, u))
+                marks += _cut((bx + inset, ly, side - 2 * inset, u), ring)
+                for part in _cut((bx + inset, ly - u, side - 2 * inset, 3 * u), around):
+                    edges += _cut(part, across) if across else [part]
+        for x0, y0, w0, h0 in edges:
+            p.fillRect(x0, y0, w0, h0, LOUPE_EDGE)
+        mark = self._mark_color()
+        for x0, y0, w0, h0 in marks:
+            p.fillRect(x0, y0, w0, h0, mark)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(C.LINE, u))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(contrast, 3.5))
-        p.drawRect(square)
-        p.setPen(QPen(mark, 1.5))
-        p.drawRect(square)
+        p.drawRoundedRect(QRectF(box).adjusted(u / 2, u / 2, -u / 2, -u / 2), radius - u / 2, radius - u / 2)
         p.restore()
-        self._loupe_box = box.toAlignedRect()
-        p.setPen(QPen(C.LINE, 1))
-        p.drawRoundedRect(box, 12, 12)
+        self._loupe_box = QRectF(bx / dev, by / dev, side / dev, side / dev).toAlignedRect()
         img = self.pixels()
-        color = img.pixelColor(min(px, img.width() - 1), min(py, img.height() - 1)).name().upper()
+        color = img.pixelColor(min(max(px, 0), img.width() - 1), min(max(py, 0), img.height() - 1)).name().upper()
         self._pill(p, f"{px}, {py}   {color}", QPointF(x, y + size + 6), mono=True)
 
     _grids: dict = {}
 
-    def _loupe_grid(self, size: int, cells: int) -> QPixmap:
-        """The magnifier's pixel grid, thin lines with its rounded corners cut
-        off, made once per size and zoom."""
-        key = (size, cells)
+    def _loupe_grid(self, side: int, cell: int, offset: int, radius: float, u: int) -> QPixmap:
+        """The magnifier's pixel grid (in screen pixels), thin lines with its
+        rounded corners cut off, made once per size and zoom."""
+        key = (side, cell, offset, radius, u)
         grid = Overlay._grids.get(key)
         if grid is None:
-            grid = QPixmap(size, size)
+            grid = QPixmap(side, side)
             grid.fill(Qt.GlobalColor.transparent)
             g = QPainter(grid)
             clip = QPainterPath()
-            clip.addRoundedRect(QRectF(0, 0, size, size), 12, 12)
+            clip.addRoundedRect(QRectF(0, 0, side, side), radius, radius)
             g.setClipPath(clip)
-            g.setPen(QPen(QColor(128, 128, 128, 70), 1))
-            cell = size / cells
-            for i in range(1, cells):
-                g.drawLine(round(i * cell), 0, round(i * cell), size)
-                g.drawLine(0, round(i * cell), size, round(i * cell))
+            color = QColor(128, 128, 128, 70)
+            for at in range(offset, side, cell):
+                if at > 0:
+                    g.fillRect(at, 0, u, side, color)
+                    g.fillRect(0, at, side, u, color)
             g.end()
             if len(Overlay._grids) > 32:
                 Overlay._grids.clear()
@@ -842,6 +917,8 @@ class Overlay(QWidget):
                 armed = any(o.rec_rect is not None for o in self.ctl.overlays)
                 text = self.ctl.hint or self.ctl.record_problem() or RECORD_HINTS[
                     "armed" if armed else "windows" if self.windows else "pick"]
+        elif self.ctl.eyedropper:
+            text = self.ctl.hint or EYEDROPPER_HINT
         else:
             text = self.ctl.hint or (PIN_HINT if tool == "pin" else HINTS.get(tool, DRAW_HINT))
         fm = QFontMetricsF(font(12, QFont.Weight.Medium))
@@ -867,14 +944,16 @@ class Overlay(QWidget):
 
 
 def _candidates(lines, first: int, at: int, along: range, at_along: int, radius: int, strong: int,
-                min_run: int) -> list[tuple]:
+                min_run: int, rounding: int = 0) -> list[tuple]:
     """Edge candidates across the pointer: ``lines`` are the edge strengths
     along each candidate position (``first``, ``first`` + 1, ...), sampled
     at ``along``. A candidate needs a straight run of strong samples, at
-    least ``min_run`` long, through or near the pointer. Returns the best
-    few as (score, position, run start, run end, start is an end, end is an
-    end): the run in pixels along, and whether it really stops there rather
-    than running out of the window looked at."""
+    least ``min_run`` long, through or near the pointer, or (``loose``)
+    stopping up to ``rounding`` samples further short of it: the side of a
+    box with a rounded corner there, if _pick finds the corner. Returns the
+    best few as (score, position, run start, run end, start is an end, end
+    is an end, loose): the run in pixels along, and whether it really stops
+    there rather than running out of the window looked at."""
     found = []
     at_index = min(range(len(along)), key=lambda i: abs(along[i] - at_along)) if len(along) else 0
     near = max(1, radius // max(1, along.step))  # a run may end this many samples short of the pointer
@@ -894,10 +973,11 @@ def _candidates(lines, first: int, at: int, along: range, at_along: int, radius:
                 if gap > 1:  # a one-sample gap doesn't break a run
                     length = end - start + 1
                     reaches = start - near <= at_index <= end + near
-                    if length >= min_run and reaches:
+                    loose = not reaches and start - near - rounding <= at_index <= end + near + rounding
+                    if length >= min_run and (reaches or loose):
                         score = total / count * (0.5 + 0.5 * min(1.0, length / len(along)))
-                        if best is None or score > best[0]:
-                            best = (score, along[start], along[end], start > 0, end < len(along) - 1)
+                        if best is None or (not loose, score) > (not best[-1], best[0]):
+                            best = (score, along[start], along[end], start > 0, end < len(along) - 1, loose)
                     start = None
         if best is not None:
             pos = first + i
@@ -907,23 +987,60 @@ def _candidates(lines, first: int, at: int, along: range, at_along: int, radius:
     return found[:3]
 
 
-def _pick(xs, ys, tolerance: int) -> tuple[int | None, int | None]:
+def _pick(xs, ys, tolerance: int, rounding: int = 0, edge_at=None) -> tuple[int | None, int | None]:
     """The best vertical and horizontal edge together: the pair with the
     highest score, boosted where the two meet, most where both end there
-    (the corner of a box)."""
+    (the corner of a box, sharp or rounded)."""
 
     def meets(edge, at) -> tuple[bool, bool]:
         """Does ``edge`` reach ``at`` along its length, and does it end there?"""
-        _, _, start, end, start_ends, end_ends = edge
+        _, _, start, end, start_ends, end_ends, _ = edge
         reaches = start - tolerance <= at <= end + tolerance
         ends = (start_ends and abs(start - at) <= tolerance) or (end_ends and abs(end - at) <= tolerance)
         return reaches, ends
 
+    def short(edge, at) -> tuple[int, int]:
+        """How far ``edge`` ends short of ``at`` (0 if it doesn't), and which
+        way it goes on from there (+1: on to higher x or y)."""
+        _, _, start, end, start_ends, end_ends, _ = edge
+        if start_ends and at < start:
+            return start - at, 1
+        if end_ends and at > end:
+            return at - end, -1
+        return 0, 0
+
+    def rounded(vx, hy) -> bool:
+        """Do they make a box's rounded corner: both ending short of where
+        they'd meet by about the same, with a curve between them and
+        nothing carrying on past the corner (that's a line through it)?"""
+        x, y = vx[1], hy[1]
+        down, dy = short(vx, y)
+        across, dx = short(hy, x)
+        if min(down, across) <= tolerance or max(down, across) > rounding:
+            return False
+        if abs(down - across) > max(tolerance, (down + across) / 6):
+            return False
+        if edge_at is None:
+            return True
+        r = (down + across) / 2
+        past = range(tolerance + 1, tolerance + 1 + max(2, round(r / 2)))
+        hits = sum(edge_at(x - dx * k, y, maps=(1,), spread=0) for k in past) + \
+            sum(edge_at(x, y - dy * k, maps=(0,), spread=0) for k in past)
+        if hits * 3 > 2 * len(past):
+            return False
+        inset = r * (1 - 0.5 ** 0.5)  # the middle of the curve, in from the corner
+        return edge_at(x + dx * inset, y + dy * inset, faint=True)
+
     best, best_score = (None, None), 0.0
     for vx in xs + [None]:
         for hy in ys + [None]:
+            round_corner = bool(vx and hy and rounding and rounded(vx, hy))
+            if not round_corner and ((vx and vx[-1]) or (hy and hy[-1])):
+                continue  # one that stops short counts only as part of a rounded corner
             score = (vx[0] if vx else 0.0) + (hy[0] if hy else 0.0)
-            if vx and hy:
+            if round_corner:
+                score *= CORNER_BONUS
+            elif vx and hy:
                 reach_v, end_v = meets(vx, hy[1])
                 reach_h, end_h = meets(hy, vx[1])
                 if reach_v and reach_h:
@@ -933,19 +1050,30 @@ def _pick(xs, ys, tolerance: int) -> tuple[int | None, int | None]:
     return best
 
 
-def _corner_inset(at: int, size: int, radius: int = 12) -> int:
-    """How far a line across the magnifier at ``at`` (from one side) must stop
-    short of the ends to stay inside its rounded corners. (A line on or past
-    the edge isn't drawn; it counts as on the edge.)"""
-    d = max(0, min(at, size - at))
+def _corner_inset(at: int, size: int, radius: float, border: int) -> int:
+    """Where a line across the magnifier, ``at`` pixels in from one side,
+    starts and ends (pixels in from each end): inside the border and its
+    rounded corners."""
+    d = max(0, min(at, size - 1 - at)) + 0.5  # the middle of the pixel, from the nearer side
     if d >= radius:
-        return 0
-    return round(radius - (radius * radius - (radius - d) ** 2) ** 0.5) + 1
+        return border
+    return math.ceil(radius - math.sqrt(radius * radius - (radius - d) ** 2)) + border
 
 
-def _gapped(start: int, end: int, gap_start: float, gap_end: float, crosses: bool) -> list[tuple[int, int]]:
-    """A line from ``start`` to ``end``, broken where it would cross the gap."""
-    if not crosses:
-        return [(start, end)]
-    parts = [(start, min(end, int(gap_start))), (max(start, int(gap_end) + 1), end)]
-    return [(a, b) for a, b in parts if b > a]
+def _cut(r: tuple, hole: tuple) -> list[tuple]:
+    """The parts of rectangle ``r`` outside ``hole``, as (x, y, w, h)."""
+    x, y, w, h = r
+    hx, hy, hw, hh = hole
+    if x >= hx + hw or hx >= x + w or y >= hy + hh or hy >= y + h:
+        return [r]
+    out = []
+    if y < hy:
+        out.append((x, y, w, hy - y))
+    if y + h > hy + hh:
+        out.append((x, hy + hh, w, y + h - hy - hh))
+    top, bottom = max(y, hy), min(y + h, hy + hh)
+    if x < hx:
+        out.append((x, top, hx - x, bottom - top))
+    if x + w > hx + hw:
+        out.append((hx + hw, top, x + w - hx - hw, bottom - top))
+    return out

@@ -23,6 +23,7 @@ K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in
       "BracketRight"]}
 # The tools that draw in the chosen colour: picking a colour switches to one.
 COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
+CUSTOM = len(theme.SWATCHES)  # the colour index of your own colour, after the toolbar's others
 
 # region: the overlay. The rest deliver straight away, without any UI:
 # screens (every monitor), monitor (the one under the pointer), window (the
@@ -83,7 +84,9 @@ class Session:
         self._countdown_timer.timeout.connect(self._tick)
         self._problems: dict[str, str | None] = {}
         self.recording = None  # the recording this session started
-        self.color_index = min(max(cfg.default_color, 0), len(theme.SWATCHES) - 1)
+        self.color_index = min(max(cfg.default_color, 0), CUSTOM)
+        self.custom_color = QColor(cfg.custom_color)
+        self.eyedropper = False  # the next click takes your own colour from the screen
         self.size = min(max(cfg.default_size, 0), len(theme.SIZES) - 1)
         self.dim = QColor(theme.C.DIM)
         self.dim.setAlpha(round(cfg.dim_opacity * 2.55))
@@ -113,7 +116,7 @@ class Session:
 
     @property
     def color(self):
-        return theme.SWATCHES[self.color_index]
+        return self.custom_color if self.color_index == CUSTOM else theme.SWATCHES[self.color_index]
 
     # -- startup -----------------------------------------------------------
 
@@ -224,6 +227,10 @@ class Session:
         self._sync_toolbars()
         for o in self.overlays:
             o.show_on_screen()
+        if QGuiApplication.platformName() == "xcb":
+            # X11 knows where the pointer is now; Wayland says once it enters
+            # an overlay (or KWin / Hyprland do, with the windows).
+            self._point_at(QPointF(QCursor.pos()))
         if self._desktop is not None:  # KWin answered before the overlays existed
             self._desktop_found(self._desktop)
 
@@ -234,6 +241,8 @@ class Session:
         if self._grabbed is not None:
             self._finish_instant()
             return
+        if desktop.cursor is not None and all(o.cursor_pos is None for o in self.overlays):
+            self._point_at(QPointF(desktop.cursor))
         if not self.cfg.detect_windows:
             return
         for o in self.overlays:
@@ -248,6 +257,14 @@ class Session:
         self.refresh()
 
     # -- which monitor -----------------------------------------------------
+
+    def _point_at(self, point: QPointF):
+        """Show the crosshair and magnifier at ``point`` (global, logical)
+        before the pointer has moved."""
+        for o in self.overlays:
+            g = o.target_screen.geometry()
+            if QRectF(g).contains(point):
+                o.point_at(point - QPointF(g.topLeft()))
 
     def activate(self, overlay: Overlay):
         """The pointer is now over ``overlay``."""
@@ -367,6 +384,53 @@ class Session:
         if self.text_edit:
             self.text_edit[1].color = self.color
         self.refresh()
+
+    # Your own colour: the picker opens under its swatch on the toolbar.
+
+    def set_custom_color(self, color: QColor):
+        self.custom_color = QColor(color)
+        self.set_color(CUSTOM)
+
+    def toggle_picker(self, overlay: Overlay):
+        if overlay.picker_open():
+            self.close_picker()
+        elif self.tool != "record":
+            self.set_color(CUSTOM)
+            overlay.show_picker()
+
+    def close_picker(self) -> bool:
+        """Close the picker (or stop the eyedropper); True if either was open."""
+        was_open = self.eyedropper or any(o.picker_open() for o in self.overlays)
+        self.eyedropper = False
+        for o in self.overlays:
+            o.hide_picker()
+        name = self.custom_color.name().upper()
+        if name != self.cfg.custom_color:
+            saved = config.load()
+            saved.custom_color = self.cfg.custom_color = name
+            try:
+                saved.save()
+            except OSError as e:
+                print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
+        if was_open:
+            self.refresh()
+        return was_open
+
+    def start_eyedropper(self):
+        for o in self.overlays:
+            o.hide_picker()
+        self.eyedropper = True
+        self.refresh()
+
+    def take_color(self, overlay: Overlay, pos: QPointF):
+        """The eyedropper's click: the pixel there becomes your own colour,
+        and the picker comes back to adjust it."""
+        img, dpr = overlay.pixels(), overlay.dpr()
+        x = min(max(int(pos.x() * dpr), 0), img.width() - 1)
+        y = min(max(int(pos.y() * dpr), 0), img.height() - 1)
+        self.eyedropper = False
+        self.set_custom_color(img.pixelColor(x, y))
+        (self.toolbar_overlay or overlay).show_picker()
 
     def cycle_size(self):
         self.set_size((self.size + 1) % len(theme.SIZES))
@@ -626,7 +690,7 @@ class Session:
             self.copy_color(target)
         elif not ctrl and k in TOOL_KEYS:
             self.set_tool(TOOL_KEYS[k])
-        elif not ctrl and K["1"] <= k < K["1"] + len(theme.SWATCHES):
+        elif not ctrl and K["1"] <= k <= K["1"] + CUSTOM:
             self.set_color(k - K["1"])
         elif k == K["BracketLeft"]:
             self.set_size(self.size - 1)
@@ -639,6 +703,8 @@ class Session:
         self._escape_down = False
         if self.countdown is not None:
             self.cancel_countdown()
+        elif self.close_picker():
+            pass
         elif not any(o.cancel_gesture() for o in self.overlays):
             self.cancel()
 

@@ -5,6 +5,7 @@ Every key is optional; missing keys fall back to the defaults below.
 
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, fields
@@ -74,7 +75,8 @@ class Config:
     backend: str = "auto"  # see BACKENDS
     include_pointer: bool = False  # draw the mouse pointer into instant (no-UI) captures
     default_tool: str = "region"
-    default_color: int = 0
+    default_color: int = 0  # 0-6 the toolbar's colours, 7 your own (custom_color)
+    custom_color: str = "#FF4FA3"  # your own colour, the toolbar's eighth: #RRGGBB
     default_size: int = 1
     # Screen recording
     record_dir: str = ""
@@ -98,6 +100,9 @@ class Config:
         self.record_countdown = max(0, min(int(self.record_countdown), 10))
         self.snap_distance = max(2, min(int(self.snap_distance), 40))
         self.snap_sensitivity = max(1, min(int(self.snap_sensitivity), 10))
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(self.custom_color)):
+            self.custom_color = "#FF4FA3"
+        self.custom_color = self.custom_color.upper()
         if self.copy_to_clipboard is False:
             self.clipboard = "none"
         self.copy_to_clipboard = None

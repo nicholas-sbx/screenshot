@@ -1,6 +1,8 @@
 """Hand-drawn line icons on a 24x24 grid, so no icon theme is involved."""
 
-from flatshot.qt import QColor, QPainter, QPainterPath, QPen, QPointF, QRectF, Qt
+import math
+
+from flatshot.qt import QColor, QPainter, QPainterPath, QPen, QPixmap, QPointF, QRectF, Qt
 
 
 def _path(*segments):
@@ -66,6 +68,30 @@ def _pixelate(p, c):
             cell.setAlphaF(1.0 if (i + j) % 2 == 0 else 0.35)
             p.setBrush(cell)
             p.drawRoundedRect(QRectF(4 + i * 5.6, 4 + j * 5.6, 4.6, 4.6), 1, 1)
+
+
+def _blur(p, c):
+    # Dots fading out from the middle, as a blur spreads a point.
+    p.setPen(Qt.PenStyle.NoPen)
+    for i in range(4):
+        for j in range(4):
+            d = abs(i - 1.5) + abs(j - 1.5)  # 1 in the middle, 3 at the corners
+            dot = QColor(c)
+            dot.setAlphaF((1.0, 0.7, 0.4)[round(d) - 1])
+            p.setBrush(dot)
+            r = (2.1, 1.6, 1.1)[round(d) - 1]
+            p.drawEllipse(QPointF(5.5 + i * 4.33, 5.5 + j * 4.33), r, r)
+
+
+def _eyedropper(p, c):
+    # A pipette, tip down at the left: the bulb, its collar, and the tube.
+    p.drawPath(_path([(4, 20), (5.5, 18.5)], [(5.5, 18.5), (5.5, 16), (13, 8.5)], [(5.5, 18.5), (8, 18.5), (15.5, 11)],
+                     [(11.5, 7), (17, 12.5)]))
+    p.save()
+    p.translate(16.6, 7.4)
+    p.rotate(45)
+    p.drawRoundedRect(QRectF(-2.6, -4.2, 5.2, 6.4), 2.6, 2.6)
+    p.restore()
 
 
 def _counter(p, c):
@@ -199,29 +225,62 @@ def _trash(p, c):
 
 
 def _magnet(p, c):
-    # A horseshoe magnet, poles up.
-    path = QPainterPath()
-    path.moveTo(6, 5)
-    path.lineTo(6, 12)
-    path.arcTo(QRectF(6, 6, 12, 12), 180, 180)
-    path.lineTo(18, 5)
-    p.drawPath(path)
-    p.drawLine(QPointF(5, 8.5), QPointF(9, 8.5))
-    p.drawLine(QPointF(15, 8.5), QPointF(19, 8.5))
+    # A horseshoe magnet, tilted: a U-shaped bar with its two poles marked off.
+    p.save()
+    p.translate(12, 12)
+    p.rotate(45)
+    p.translate(-12, -11.5)
+    bar = QPainterPath()
+    bar.moveTo(5, 3.5)
+    bar.lineTo(5, 12)
+    bar.arcTo(QRectF(5, 5, 14, 14), 180, 180)
+    bar.lineTo(19, 3.5)
+    bar.lineTo(14.5, 3.5)
+    bar.lineTo(14.5, 12)
+    bar.arcTo(QRectF(9.5, 9.5, 5, 5), 0, -180)
+    bar.lineTo(9.5, 3.5)
+    bar.closeSubpath()
+    p.drawPath(bar)
+    p.drawPath(_path([(5, 7.5), (9.5, 7.5)], [(14.5, 7.5), (19, 7.5)]))
+    p.restore()
 
 
 _ICONS = {
     "region": _region, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
-    "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate,
+    "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate, "blur": _blur,
     "counter": _counter, "undo": _undo, "redo": _redo, "screen": _screen,
     "copy": _copy, "open": _open, "close": _close, "check": _check,
     "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
     "speaker": _speaker, "cursor": _cursor, "pause": _pause, "resume": _resume, "stop": _stop, "trash": _trash,
-    "magnet": _magnet,
+    "magnet": _magnet, "eyedropper": _eyedropper,
 }
 
 
+_cache: dict = {}
+
+
 def paint(p: QPainter, name: str, rect: QRectF, color: QColor) -> None:
+    """Draw icon ``name`` filling ``rect``. Each is drawn once per size,
+    colour and screen scale, then copied: the toolbar repaints with every
+    move of the crosshair behind it."""
+    dpr = p.device().devicePixelRatioF() if p.device() is not None else 1.0
+    fx, fy = rect.x() % 1, rect.y() % 1  # (drawn at the same fraction of a pixel as asked)
+    key = (name, round(rect.width(), 2), round(rect.height(), 2), color.rgba(), round(fx, 2), round(fy, 2), dpr)
+    icon = _cache.get(key)
+    if icon is None:
+        icon = QPixmap(max(1, math.ceil((rect.width() + 1) * dpr)), max(1, math.ceil((rect.height() + 1) * dpr)))
+        icon.setDevicePixelRatio(dpr)
+        icon.fill(Qt.GlobalColor.transparent)
+        q = QPainter(icon)
+        _draw(q, name, QRectF(fx, fy, rect.width(), rect.height()), color)
+        q.end()
+        if len(_cache) > 256:
+            _cache.clear()
+        _cache[key] = icon
+    p.drawPixmap(QPointF(rect.x() - fx, rect.y() - fy), icon)
+
+
+def _draw(p: QPainter, name: str, rect: QRectF, color: QColor) -> None:
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.translate(rect.topLeft())

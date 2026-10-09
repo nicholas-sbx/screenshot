@@ -1,7 +1,8 @@
 """Custom-painted controls. Nothing here uses the Qt style for drawing."""
 
 from flatshot.qt import (
-    QAbstractButton, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QRectF, Qt, QWidget,
+    QAbstractButton, QColor, QConicalGradient, QFont, QFontMetrics, QHBoxLayout, QPainter, QPen, QPoint, QRectF, Qt,
+    QWidget,
 )
 
 from flatshot import icons
@@ -19,6 +20,7 @@ TOOLS = [
     ("marker", "Highlighter", "H"),
     ("text", "Text", "T"),
     ("pixelate", "Pixelate", "X"),
+    ("blur", "Blur", "U"),
     ("counter", "Counter", "N"),
 ]
 
@@ -118,10 +120,41 @@ class Swatch(_Button):
             p.setPen(ring)
             p.drawRoundedRect(QRectF(c.x() - 11, c.y() - 11, 22, 22), 7.5, 7.5)
             p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(SWATCHES[self.index])
-        if is_light(SWATCHES[self.index]) == is_light(C.BASE):  # e.g. ink on a dark toolbar needs an edge
+        color = self.color()
+        p.setBrush(color)
+        if is_light(color) == is_light(C.BASE):  # e.g. ink on a dark toolbar needs an edge
             p.setPen(QPen(C.LINE, 1.2))
         p.drawRoundedRect(QRectF(c.x() - 7, c.y() - 7, 14, 14), 4.5, 4.5)
+
+    def color(self) -> QColor:
+        return SWATCHES[self.index]
+
+
+class CustomSwatch(Swatch):
+    """Your own colour, after the others: a click picks it and opens the
+    picker. A thin rainbow round it says any colour goes here."""
+
+    def __init__(self, ctl, parent=None):
+        super().__init__(ctl, len(SWATCHES), parent)
+        self.hint = f"Your own colour  ·  {len(SWATCHES) + 1}  ·  click to choose it"
+
+    def color(self) -> QColor:
+        return self.ctl.custom_color
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.selected or self.underMouse():
+            return
+        p = self._painter()
+        if not self.isEnabled():
+            p.setOpacity(0.3)
+        c = QRectF(self.rect()).center()
+        ring = QConicalGradient(c, 90)
+        for i in range(7):
+            ring.setColorAt(i / 6, QColor.fromHsvF((i / 6) % 1.0, 0.7, 1.0))
+        p.setPen(QPen(ring, 1.6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(c.x() - 10, c.y() - 10, 20, 20), 6.5, 6.5)
 
 
 class SizeButton(_Button):
@@ -232,6 +265,10 @@ class Toolbar(_Draggable):
             s.clicked.connect(lambda _=False, i=i: ctl.set_color(i))
             self.swatches.append(s)
             row.addWidget(s)
+        self.custom = CustomSwatch(ctl, self)
+        self.custom.clicked.connect(lambda: ctl.toggle_picker(self.parentWidget()))
+        self.swatches.append(self.custom)
+        row.addWidget(self.custom)
         self.size_button = SizeButton(ctl, self)
         self.size_button.clicked.connect(ctl.cycle_size)
         row.addWidget(self.size_button)

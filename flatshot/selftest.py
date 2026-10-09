@@ -12,7 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPointF, QRectF, Qt
+from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPen, QPointF, QRectF, Qt
 
 TEST_URL = "https://github.com/nicholas-sbx/screenshot"
 TEST_EAN = "4006381333931"
@@ -829,7 +829,7 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     """The crosshair over the toolbar, snapping to edges, the magnifier's
     square on any colour, the rainbow, picking a colour, and escapes in
     folder and file names."""
-    from flatshot import config, output, theme
+    from flatshot import config, output, shapes, theme
     from flatshot.notify import Notifier
     from flatshot.qt import QEvent, QMouseEvent, QPoint
     from flatshot.session import Request, Session
@@ -958,6 +958,32 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     b.cfg.snap_distance = 2
     assert snap(106, 75) == QPointF(106 / k, 75 / k), snap(106, 75)
     b.cancel()
+    # A box with rounded corners (radius 16, as many windows and cards have):
+    # its sides stop short of the corner, but near it the pointer still goes
+    # to the corner, rather than to a divider that's closer.
+    pic.fill(QColor("#808080"))
+    paint = QPainter(pic)
+    paint.setRenderHint(QPainter.RenderHint.Antialiasing)
+    paint.setPen(QPen(QColor("#303030"), 2))
+    paint.drawRoundedRect(QRectF(101, 81, 198, 138), 16, 16)
+    paint.fillRect(0, 86, 400, 1, QColor("#303030"))
+    paint.fillRect(346, 246, 54, 2, QColor("#303030"))  # a corner's sides with no curve joining them
+    paint.fillRect(330, 262, 2, 38, QColor("#303030"))
+    paint.end()
+    pic.save(str(pic_src))
+    b = Session(config.Config(save_dir=str(tmp / "x"), notify=False, snap_edges=True),
+                Request(image=str(pic_src), scan=False), Notifier(interactive=False), lambda *a: None)
+    b.start()
+    bov = b.overlays[0]
+    bov.snap_changed()
+    bov._edge_thread.join(10)
+    for pointer, corners in (((104, 85), ((100, 80), (102, 82))), ((295, 215), ((300, 220), (298, 218)))):
+        corner = snap(*pointer)
+        assert (round(corner.x() * k), round(corner.y() * k)) in corners, (pointer, corner)
+    # Two lines that stop short of each other without a curve between them
+    # aren't a rounded corner.
+    assert snap(333, 249) == QPointF(333 / k, 249 / k), snap(333, 249)
+    b.cancel()
 
     # A whole drag: both corners land on the window's edges.
     ov.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, at(127, 147), at(127, 147),
@@ -1005,6 +1031,86 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
             p.end()
     ov._snap_point = None
     s.cancel()
+
+    # Blur: fine detail under it is smoothed away; nothing beside it changes.
+    stripes = QImage(400, 300, QImage.Format.Format_RGB32)
+    stripes.fill(QColor("#FFFFFF"))
+    paint = QPainter(stripes)
+    for x in range(0, 400, 4):
+        paint.fillRect(x, 0, 2, 300, QColor("#000000"))
+    paint.end()
+    stripes_src = tmp / "stripes.png"
+    stripes.save(str(stripes_src))
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(stripes_src), scan=False),
+                Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    s.set_tool("blur")
+    assert s.tool == "blur" and "blur" in ov.toolbar.tools
+    blur = shapes.create("blur", QPointF(100, 100), s.color, 0)
+    blur.extend(QPointF(300, 200), False)
+    ov.commit(blur)
+    started = time.perf_counter()
+    out = ov.render(None)
+    took = time.perf_counter() - started
+    inside = [QColor(out.pixel(x, 150)).red() for x in range(110, 290)]
+    assert all(70 < v < 190 for v in inside), (min(inside), max(inside))
+    assert {QColor(out.pixel(x, 50)).red() for x in range(100, 300)} == {0, 255}
+    assert {QColor(out.pixel(x, 250)).red() for x in range(100, 300)} == {0, 255}
+    s.cancel()
+    print(f"self-test: blur ok ({took * 1000:.1f} ms)")
+
+    # Your own colour: key 8 picks it; the picker changes it (dragging,
+    # typing hex), Enter in the hex field doesn't capture, Esc closes just
+    # the picker, the eyedropper takes a pixel, and it's remembered.
+    from flatshot.qt import QKeyEvent
+    from flatshot.session import CUSTOM
+
+    def press(widget, k, text=""):
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            qt.QApplication.sendEvent(widget, QKeyEvent(kind, k, Qt.KeyboardModifier.NoModifier, text))
+
+    def click(widget, pos):
+        for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+            widget.event(QMouseEvent(kind, pos, widget.mapToGlobal(pos), Qt.MouseButton.LeftButton,
+                                     Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(stripes_src), scan=False),
+                Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    press(ov, Qt.Key.Key_8, "8")
+    assert s.color_index == CUSTOM and s.color == QColor(config.load().custom_color), s.color.name()
+    s.set_tool("region")
+    ov.toolbar.custom.click()
+    assert ov.picker_open() and s.tool == s.colour_tool, "the custom swatch opens the picker"
+    picker = ov.picker
+    r = picker.SHADES
+    for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
+        pos = QPointF(r.right(), r.top()) if kind != QEvent.Type.MouseButtonPress else QPointF(r.center())
+        picker.event(QMouseEvent(kind, pos, picker.mapToGlobal(pos), Qt.MouseButton.LeftButton,
+                                 Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    assert s.custom_color.saturationF() > 0.95 and s.custom_color.valueF() > 0.95, s.custom_color.name()
+    picker.hex.setText("22aa77")
+    picker.hex.textEdited.emit("22aa77")  # (the # is optional)
+    assert s.custom_color.name().upper() == "#22AA77", s.custom_color.name()
+    picker.hex.setFocus()
+    press(picker.hex, Qt.Key.Key_Return)
+    assert not s.done and not ov.picker_open(), "Enter in the hex field captured, or left the picker open"
+    assert config.load().custom_color == "#22AA77", "your colour wasn't remembered"
+    ov.toolbar.custom.click()
+    press(ov, Qt.Key.Key_Escape)
+    assert not s.done and not ov.picker_open(), "Esc should close only the picker"
+    s.start_eyedropper()
+    assert s.eyedropper and ov.cursor().shape() == Qt.CursorShape.CrossCursor
+    click(ov, QPointF(0.5, 40.5))  # a black stripe
+    assert s.custom_color.name() == "#000000" and not s.eyedropper and ov.picker_open(), s.custom_color.name()
+    shape = shapes.create("pen", QPointF(5, 5), s.color, 1)
+    assert shape.color.name() == "#000000"
+    press(ov, Qt.Key.Key_Escape)
+    assert not s.done
+    s.cancel()
+    print("self-test: your own colour ok")
 
     # Rainbow: the crosshair's colour moves on its own, and only with the setting.
     s, ov = session(rainbow=True)

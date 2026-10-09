@@ -28,12 +28,13 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Screen recording**: pick the toolbar's record button (or press <kbd>V</kbd>), then drag an area, click a window, or press <kbd>Enter</kbd> for the whole screen. Drag the edges to adjust it. Under the area you can turn the **microphone**, the **computer's sound** and the **mouse pointer** on or off, and choose **MP4, WebM or GIF** and **24, 30 or 60 fps**; Flatshot remembers these. Press **Record** or <kbd>Enter</kbd>, and after a short countdown a small bar outside the area shows the time, with **pause**, **stop** and **discard**. The finished video goes to `~/Videos/Screencasts`, the file is copied to the clipboard, and a system notification offers **Open** and **Show in folder**. While recording, the tray icon turns into a stop button; clicking it, or pressing the "Record screen" shortcut again, stops and saves.
-- **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate (for hiding secrets) and numbered counters. It has 7 colours, 3 stroke sizes, and undo/redo. Picking a colour while capturing (or pixelating) switches back to the drawing tool you used last, so the colour gets used.
-- **Snap to edges**: turn on the toolbar's magnet (or press <kbd>G</kbd>) and a selection's corners jump to edges in the picture as you drag, boxes first: long straight edges win over text, and a box's corner (two edges meeting) over a line that just passes by. The magnifier shows the pixel grid and two lines where the selection's edges go, which jump to the edge they snap to. Hold <kbd>Ctrl</kbd> to place a corner freely. How close you must be and how faint an edge may be are settings. It's remembered between captures, and when it's off it costs nothing.
+- **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate and blur (for hiding secrets) and numbered counters. It has 7 colours plus one of your own, 3 stroke sizes, and undo/redo. Picking a colour while capturing (or pixelating or blurring) switches back to the drawing tool you used last, so the colour gets used.
+- **Your own colour**: the eighth swatch (ringed in a rainbow) opens a picker under the toolbar: a square of shades, a hue bar, a hex field you can type into, and an eyedropper that takes any pixel on the screen. Your colour is remembered.
+- **Snap to edges**: turn on the toolbar's magnet (or press <kbd>G</kbd>) and a selection's corners jump to edges in the picture as you drag, boxes first: long straight edges win over text, and a box's corner (two edges meeting) over a line that just passes by. Boxes with rounded corners count too: near one, the corner goes to where the box's sides would meet. The magnifier shows the pixel grid and two lines where the selection's edges go, which jump to the edge they snap to. Hold <kbd>Ctrl</kbd> to place a corner freely. How close you must be and how faint an edge may be are settings. It's remembered between captures, and when it's off it costs nothing.
 - **Across monitors**: a drag can run from one monitor onto another, and clicking a window that spans monitors captures all of it (it's highlighted on each). Drawings on every monitor are kept. The toolbar stays on one monitor. On by default; a recording area stays on one monitor.
 - **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
-- A **magnifier** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. Its square stays visible on any colour. You can resize it (80–320 px) or turn it off, and turn off the crosshair lines too; they keep following the pointer over the toolbar. The **Rainbow** setting makes the crosshair and the square cycle through the colours. A size label shows the selection's real pixel size.
+- A **magnifier** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. Its square stays visible on any colour. It and the crosshair are there as soon as the overlay opens, before the mouse moves. You can resize it (80–320 px) or turn it off, and turn off the crosshair lines too; they keep following the pointer over the toolbar. The **Rainbow** setting makes the crosshair and the square cycle through the colours. A size label shows the selection's real pixel size.
 - **Multi-monitor and HiDPI aware.** Output is saved at full native resolution with annotations drawn in at that resolution.
 
 ## Install
@@ -127,9 +128,9 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>Esc</kbd> / right-click | cancel the current drag, or quit (Esc acts when released, so the window underneath never gets it) |
 | <kbd>R</kbd> | region tool (back to capture mode) |
 | <kbd>V</kbd> | record tool: drag an area or click a window, then <kbd>Enter</kbd> to start (<kbd>Enter</kbd> before choosing picks the whole screen; <kbd>Esc</kbd> goes back) |
-| <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>N</kbd> | pen, line, arrow, box, ellipse, highlighter, text, pixelate, counter |
+| <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>U</kbd> <kbd>N</kbd> | pen, line, arrow, box, ellipse, highlighter, text, pixelate, blur, counter |
 | <kbd>Shift</kbd> while drawing | snap lines to 45° and make boxes/ellipses square/round |
-| <kbd>1</kbd>–<kbd>7</kbd> | colour |
+| <kbd>1</kbd>–<kbd>7</kbd>, <kbd>8</kbd> | colour, your own colour |
 | <kbd>[</kbd> <kbd>]</kbd> | stroke size |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | undo / redo |
 
@@ -192,6 +193,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "theme": "ember",
   "default_tool": "region",
   "default_color": 0,
+  "custom_color": "#FF4FA3",
   "default_size": 1,
   "record_dir": "~/Videos/Screencasts",
   "record_filename": "Recording_%Y-%m-%d_%H-%M-%S",
@@ -230,6 +232,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
 - `record_dir` and `record_filename`: where recordings go, with the same codes as `save_dir` and `filename`. `record_format` is `mp4`, `webm` or `gif`; `record_fps` is `24`, `30` or `60`. `record_mic`, `record_system_audio` and `record_cursor` are the switches under the area (a GIF has no sound). `record_countdown` is in seconds (0–10, 0 for none). After a recording, `clipboard` (`image` copies the video file), `notify`, `open_after` and `run_command` apply as for screenshots.
 - `theme`: `ember`, `graphite`, `nord`, `dusk` or `paper`. It changes the app's own panels only; drawing colours and what's saved stay the same.
+- `custom_color`: your own drawing colour (`#RRGGBB`), the toolbar's eighth; the picker sets it. `default_color` 7 starts with it.
 
 `flatshot --print-config` prints the settings in effect. Global shortcuts are stored by KDE itself, not in this file. The last region, the `{n}` counter and the screen-cast portal's restore tokens are kept in `~/.local/state/flatshot/state.json`.
 
