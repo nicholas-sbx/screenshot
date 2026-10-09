@@ -602,12 +602,11 @@ class SettingsWindow(QWidget):
                      "A drag, or a clicked window, may cross onto other monitors. The toolbar stays on one."))
         card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
                      "In instant captures: active window, monitor, all screens, last region."))
-        pointer = Segmented([("toggle", "Your choice"), ("hidden", "Never"), ("shown", "Always")],
+        pointer = Segmented([("hidden", "Never"), ("shown", "Always"), ("toggle", "Your choice")],
                             self.cfg.region_pointer)
         pointer.changed.connect(lambda v: self._save(region_pointer=v))
         card.add(Row("Mouse pointer when selecting", pointer,
-                     "Your choice: hidden at first, and the toolbar's pointer button (or M) shows it; this takes "
-                     "two screenshots at once. Never or Always take one, and the button isn't there."))
+                     "Your choice adds a toolbar button (M), but takes a little longer to open."))
         card.add(Row("Snap to edges", self._toggle("snap_edges"),
                      "Selections snap to edges in the picture, boxes first. Also the toolbar's magnet "
                      "button, or G; hold Ctrl to place freely."))
@@ -636,7 +635,7 @@ class SettingsWindow(QWidget):
 
         card = self._card("QR codes and barcodes")
         card.add(Row("Scan the screen", self._toggle("scan_codes")))
-        card.add(Row("Show results", self._toggle("show_codes"), "Press Q while capturing to show or hide them."))
+        card.add(Row("Show results", self._toggle("show_codes"), "Q or the toolbar's code button changes this too."))
 
         card = self._card("Advanced")
         combo = Combo()

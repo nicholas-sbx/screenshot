@@ -543,7 +543,14 @@ class Session:
         self.refresh()
 
     def toggle_codes(self):
+        """Show or hide the codes found; remembered for next time, like snapping."""
         self.codes_visible = not self.codes_visible
+        saved = config.load()
+        saved.show_codes = self.cfg.show_codes = self.codes_visible
+        try:
+            saved.save()
+        except OSError as e:
+            print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
         self.refresh()
 
     def code_count(self) -> int:

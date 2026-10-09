@@ -111,8 +111,9 @@ def run() -> int:
         assert ov.chips and ov.chips[0].isVisibleTo(ov), "no code chip was shown"
         key(Qt.Key.Key_Q, "q")
         assert not ctl.codes_visible and not ov.chips[0].isVisibleTo(ov)
+        assert config.load().show_codes is False, "hiding the codes isn't remembered"
         key(Qt.Key.Key_Q, "q")
-        assert ctl.codes_visible and ov.chips[0].isVisibleTo(ov)
+        assert ctl.codes_visible and ov.chips[0].isVisibleTo(ov) and config.load().show_codes
         print(f"self-test: {which} found {len(codes)} codes (QR + EAN-13)")
     else:
         print("self-test: no barcode scanner installed, scan check skipped")
@@ -925,7 +926,7 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
     windows.WindowFinder.supported = staticmethod(lambda: False)
     try:
         cfg = config.Config(save_dir=str(tmp / "p"), notify=False, clipboard="none", default_tool="rect",
-                            dim_opacity=0)
+                            dim_opacity=0, region_pointer="toggle")
         s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda *a: None)
         s.start()
         ov = s.overlays[0]
