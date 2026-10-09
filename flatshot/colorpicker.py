@@ -2,7 +2,8 @@
 only when it's first opened, so it costs screenshots nothing."""
 
 from flatshot.qt import (
-    QColor, QImage, QLinearGradient, QLineEdit, QPainter, QPainterPath, QPen, QPointF, QRect, QRectF, Qt, QTimer, QWidget,
+    QApplication, QColor, QEvent, QImage, QLinearGradient, QLineEdit, QPainter, QPainterPath, QPen, QPointF, QRect,
+    QRectF, Qt, QTimer, QWidget,
 )
 from flatshot.theme import C, font
 from flatshot.widgets import IconButton
@@ -19,6 +20,7 @@ class ColorPicker(QWidget):
     def __init__(self, ctl, parent):
         super().__init__(parent)
         self.ctl = ctl
+        self.anchor = None  # the swatch it opened from: a click there toggles it instead
         self.setFixedSize(216, 202)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.h, self.s, self.v = 0.0, 1.0, 1.0
@@ -40,6 +42,19 @@ class ColorPicker(QWidget):
                                   self, size=28)
         self.dropper.move(178, 166)
         self.dropper.clicked.connect(ctl.start_eyedropper)
+
+    def showEvent(self, event):
+        # A click anywhere else closes it (and goes on to do what it does).
+        QApplication.instance().installEventFilter(self)
+
+    def hideEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget) and obj is not self
+                and not self.isAncestorOf(obj) and obj is not self.anchor):
+            self.ctl.close_picker()
+        return False
 
     def set_color(self, color: QColor):
         h, s, v, _ = color.getHsvF()

@@ -166,4 +166,15 @@ assert left.sel_rect == QRectF(700, 100, 100, 200) and right.span_rect is None, 
 s.cancel()
 os.environ.pop("FLATSHOT_RECORDER")
 print("ok   a recording area crosses monitors where the recorder can take it")
+# Your colour's picker, if open, goes with the toolbar to the other monitor.
+s, done = session()
+left, right = s.overlays
+s.activate(left)
+s.toggle_picker(left)
+assert left.picker_open()
+s.activate(right)
+assert s.toolbar_overlay is right and right.picker_open() and not left.picker_open(), \
+    (s.toolbar_overlay is right, right.picker_open(), left.picker_open())
+s.cancel()
+print("ok   your colour's picker follows the toolbar to another monitor")
 print("selections across monitors ok")

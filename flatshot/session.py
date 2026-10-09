@@ -284,8 +284,15 @@ class Session:
         self.pointer_overlay = overlay
         if self.cfg.toolbar_follows_mouse and not any(o.sel_rect is not None or o.rec_rect is not None
                                                       for o in self.overlays):
+            moving = self.toolbar_overlay is not overlay
+            picker_open = any(o.picker_open() for o in self.overlays)
             self.toolbar_overlay = overlay
             self._sync_toolbars()
+            if moving and picker_open:  # your colour's picker goes along with the toolbar
+                for o in self.overlays:
+                    if o is not overlay and o.picker is not None:
+                        o.picker.hide()
+                overlay.show_picker()
         for o in (previous, overlay):
             if o is not None:
                 o.update()
@@ -744,10 +751,12 @@ class Session:
         self._escape_down = False
         if self.countdown is not None:
             self.cancel_countdown()
-        elif self.close_picker():
-            pass
-        elif not any(o.cancel_gesture() for o in self.overlays):
-            self.cancel()
+        elif self.eyedropper:
+            self.close_picker()  # (its hint says Esc stops it)
+        else:
+            self.close_picker()  # it closes, and Esc still does what it does
+            if not any(o.cancel_gesture() for o in self.overlays):
+                self.cancel()
 
     # -- finishing ---------------------------------------------------------
 

@@ -67,6 +67,7 @@ class Editor(QWidget):
         self.base = QPixmap.fromImage(image)
         self.base.setDevicePixelRatio(self.dpr)
         self.annotations: list[shapes.Shape] = []
+        self._saved: list[shapes.Shape] = []  # the annotations as last saved (or opened)
         self.undone: list[shapes.Shape] = []
         self.active: shapes.Shape | None = None
         self.text_edit: shapes.Text | None = None
@@ -158,6 +159,7 @@ class Editor(QWidget):
         at = swatch.mapTo(self, QPoint(swatch.width() // 2, swatch.height()))
         x = max(8, min(at.x() - self.picker.width() // 2, self.width() - self.picker.width() - 8))
         self.picker.move(x, self.bar.height() + 6)
+        self.picker.anchor = self.bar.custom
         self.picker.show()
         self.picker.raise_()
 
@@ -230,7 +232,9 @@ class Editor(QWidget):
             self._changed()
 
     def _changed(self):
-        self.dirty = True
+        # Unsaved only while it differs from what was saved: undoing back
+        # to that is saved again.
+        self.dirty = self.annotations != self._saved
         self.bar.refresh()
         self._title()
         self.refresh()
@@ -279,6 +283,7 @@ class Editor(QWidget):
             self._say(f"Couldn't save: {e}")
             return False
         self.path, self.dirty = written, False
+        self._saved = list(self.annotations)
         self._title()
         self.bar.refresh()
         self._say(f"Saved to {written}")
@@ -320,8 +325,12 @@ class Editor(QWidget):
         if k == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
             self.canvas.set_space(True)
         elif k == keyval(Qt.Key.Key_Escape):
-            if not (self.close_picker() or self.canvas.cancel()):
-                self.close()
+            if self.eyedropper:
+                self.close_picker()  # (its hint says Esc stops it)
+            else:
+                self.close_picker()  # it closes, and Esc still does what it does
+                if not self.canvas.cancel():
+                    self.close()
         elif (action := self.keymap.action(event, keys.EDITOR)) is not None:
             self._do(action)
         elif ctrl and k == keyval(Qt.Key.Key_Y):
@@ -479,10 +488,13 @@ class ActionButton(_Button):
             p.setBrush(C.HOVER if hover else C.RAISED)
             fg = C.TEXT if hover else C.SOFT
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
-        icons.paint(p, self.icon, QRectF(10, (self.height() - 18) / 2, 18, 18), fg)
+        # The icon and the word together, in the middle.
+        text_w = QFontMetricsF(self._font).horizontalAdvance(self.text)
+        x = (self.width() - (18 + 7 + text_w)) / 2
+        icons.paint(p, self.icon, QRectF(x, (self.height() - 18) / 2, 18, 18), fg)
         p.setFont(self._font)
         p.setPen(fg)
-        p.drawText(QRectF(34, 0, self.width() - 40, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text)
+        p.drawText(QRectF(x + 25, 0, text_w + 2, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text)
 
 
 class _Status(QWidget):

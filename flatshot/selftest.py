@@ -780,6 +780,8 @@ def _editor(app, tmp: Path, out_dir):
     width = ed.bar.save_button.width()
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
     assert not ed.annotations
+    assert not ed.dirty and not ed.windowTitle().startswith("●") and ed.bar.save_button.text == "Saved", \
+        "undoing back to the saved picture still shows unsaved"
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
     assert len(ed.annotations) == 1
     # Text: click, type, Enter.
@@ -1272,8 +1274,8 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
 
     def click(widget, pos):
         for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
-            widget.event(QMouseEvent(kind, pos, widget.mapToGlobal(pos), Qt.MouseButton.LeftButton,
-                                     Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+            qt.QApplication.sendEvent(widget, QMouseEvent(kind, pos, widget.mapToGlobal(pos), Qt.MouseButton.LeftButton,
+                                                          Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
 
     s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(stripes_src), scan=False),
                 Notifier(interactive=False), lambda *a: None)
@@ -1305,17 +1307,22 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     assert not s.done and not ov.picker_open(), "Enter in the hex field captured, or left the picker open"
     assert config.load().custom_color == "#22AA77", "your colour wasn't remembered"
     ov.toolbar.custom.click()
-    press(ov, Qt.Key.Key_Escape)
-    assert not s.done and not ov.picker_open(), "Esc should close only the picker"
+    assert ov.picker_open()
+    click(ov.toolbar.tools["pen"], QPointF(5, 5))  # a click anywhere else closes it
+    assert not ov.picker_open(), "a click on the toolbar left the picker open"
+    ov.toolbar.custom.click()
+    click(picker, QPointF(picker.SHADES.center()))  # (but not a click in it)
+    assert ov.picker_open()
+    ov.toolbar.move(ov.toolbar.pos() + QPoint(-40, 60))  # dragging the toolbar takes the picker along
+    assert abs(picker.y() - (ov.toolbar.geometry().bottom() + 8)) <= 1, (picker.y(), ov.toolbar.geometry())
     s.start_eyedropper()
     assert s.eyedropper and ov.cursor().shape() == Qt.CursorShape.CrossCursor
     click(ov, QPointF(0.5, 40.5))  # a black stripe
     assert s.custom_color.name() == "#000000" and not s.eyedropper and ov.picker_open(), s.custom_color.name()
     shape = shapes.create("pen", QPointF(5, 5), s.color, 1)
     assert shape.color.name() == "#000000"
-    press(ov, Qt.Key.Key_Escape)
-    assert not s.done
-    s.cancel()
+    press(ov, Qt.Key.Key_Escape)  # Esc isn't eaten by the picker: it closes it and cancels as ever
+    assert s.done and not ov.picker_open(), "Esc only closed the picker"
     print("self-test: your own colour ok")
 
     # Keys in Flatshot's windows can be changed: the new key works, the old

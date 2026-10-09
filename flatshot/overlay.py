@@ -165,6 +165,8 @@ class Overlay(QWidget):
             w.installEventFilter(self)
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Move and obj is self.toolbar and self.picker_open():
+            self.show_picker()  # (the toolbar was dragged: the picker stays under it)
         if event.type() == QEvent.Type.MouseMove and isinstance(obj, QWidget):
             self.cursor_pos = QPointF(obj.mapTo(self, event.position().toPoint()))
             self._snap_point = None
@@ -265,6 +267,7 @@ class Overlay(QWidget):
         x = swatch.mapTo(self, QPoint(swatch.width() // 2, 0)).x() - w // 2
         y = bar.bottom() + 8 if bar.bottom() + 8 + h <= self.height() - 8 else bar.top() - 8 - h
         self.picker.move(max(8, min(x, self.width() - w - 8)), max(8, y))
+        self.picker.anchor = self.toolbar.custom
         self.picker.show()
         self.picker.raise_()
 
