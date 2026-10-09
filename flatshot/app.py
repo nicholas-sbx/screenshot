@@ -4,6 +4,7 @@ import argparse
 import os
 import signal
 import sys
+import traceback
 from pathlib import Path
 
 from flatshot import __version__, config, ipc, theme
@@ -161,12 +162,20 @@ def run_once(app, args) -> int:
     return state["code"]
 
 
+def _log_error(kind, value, tb) -> None:
+    traceback.print_exception(kind, value, tb)
+
+
 def main(argv=None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     if args.self_test:
         from flatshot.selftest import run
         return run()
+    # PyQt6 aborts the whole app on an error escaping a Qt callback (a paint,
+    # a key press). Log it and carry on, as PySide6 does: a bug in drawing
+    # one frame shouldn't take the tray app down with it.
+    sys.excepthook = _log_error
     app = make_app()
     if args.print_config:
         print(config.dump(config.load()))

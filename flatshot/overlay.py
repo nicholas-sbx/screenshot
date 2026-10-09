@@ -935,8 +935,9 @@ def _pick(xs, ys, tolerance: int) -> tuple[int | None, int | None]:
 
 def _corner_inset(at: int, size: int, radius: int = 12) -> int:
     """How far a line across the magnifier at ``at`` (from one side) must stop
-    short of the ends to stay inside its rounded corners."""
-    d = min(at, size - at)
+    short of the ends to stay inside its rounded corners. (A line on or past
+    the edge isn't drawn; it counts as on the edge.)"""
+    d = max(0, min(at, size - at))
     if d >= radius:
         return 0
     return round(radius - (radius * radius - (radius - d) ** 2) ** 0.5) + 1

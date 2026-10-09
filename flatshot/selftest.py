@@ -993,6 +993,17 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     outline = [(x, y) for x in range(box.left() + 14, box.right() - 14) for y in range(box.top() + 14, box.bottom() - 14)
                if sum(abs(a - b) for a, b in zip(QColor(shot.pixel(x, y)).getRgb()[:3], accent)) > 200]
     assert len(outline) >= 8, "the magnifier's square vanished on a pixel of its own colour"
+    # An edge it snaps to beyond what the magnifier shows (either side): no line
+    # for it, and no error.
+    for far in (QPointF(60 + 35, 60 - 30), QPointF(60 - 35, 60 + 30)):
+        ov._snap_point = far
+        canvas = QImage(400, 300, QImage.Format.Format_ARGB32_Premultiplied)
+        p = QPainter(canvas)
+        try:
+            ov._paint_loupe(p, ov.cursor_pos)
+        finally:
+            p.end()
+    ov._snap_point = None
     s.cancel()
 
     # Rainbow: the crosshair's colour moves on its own, and only with the setting.
