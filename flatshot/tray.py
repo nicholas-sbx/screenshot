@@ -99,6 +99,7 @@ class TrayApp(QObject):
         menu.addAction("Capture active window in 3 seconds").triggered.connect(
             lambda: self.capture("window", delay_ms=3000))
         menu.addSeparator()
+        menu.addAction("Annotate an image…").triggered.connect(self._choose_image)
         menu.addAction("Open screenshots folder").triggered.connect(self._open_folder)
         menu.addAction("Settings…").triggered.connect(self.show_settings)
         menu.addSeparator()
@@ -141,9 +142,12 @@ class TrayApp(QObject):
         self.capture(mode, pinned=pinned, delay_ms=delay_ms)
 
     def handle(self, command: str):
-        """``<mode>[:WxH+X+Y] [delay] [pin]``, ``settings`` or ``quit``."""
+        """``<mode>[:WxH+X+Y] [delay] [pin]``, ``edit <file>``, ``settings``
+        or ``quit``."""
         name, *rest = command.split() or [""]
-        if name == "settings":
+        if name == "edit":
+            self.edit(command.partition(" ")[2])
+        elif name == "settings":
             self.show_settings()
         elif name == "quit":
             self.quit()
@@ -221,13 +225,28 @@ class TrayApp(QObject):
         elif key == "folder":
             output.show_in_folder(path)
         elif key == "annotate" and path.exists():
-            self.capture(image=str(path), delay_ms=MENU_DELAY_MS)
+            self.edit(str(path))
         elif key == "pin":
             image = QImage(str(path))
             if not image.isNull():
                 # Where it was taken, unless the monitors changed since: then
                 # the desktop places it.
                 pin.show(image, at if at is not None and layout == pin.screen_layout() else None)
+
+    def edit(self, path: str):
+        """Open ``path`` in an annotation editor (a window of its own)."""
+        from flatshot import editor
+
+        editor.open_file(path)
+
+    def _choose_image(self):
+        from flatshot.qt import QFileDialog
+
+        start = str(output.base_folder(config.load()))
+        chosen, _ = QFileDialog.getOpenFileName(None, "Annotate an image", start,
+                                                "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.avif *.jxl)")
+        if chosen:
+            self.edit(chosen)
 
     def show_settings(self):
         from flatshot.settings import SettingsWindow

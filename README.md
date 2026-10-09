@@ -25,14 +25,15 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **After-capture actions** you choose in settings: save to a folder, copy the image or its path, show a notification, open the image or folder, or run your own command (for example an upload script).
 - **Mouse pointer** can be included in instant captures (off by default).
 - **Capture sound** (off by default): plays the desktop's screenshot sound, or a file you choose, after each capture. It uses an audio player you already have (`pw-play`, `paplay`, `ffplay` or `canberra-gtk-play`), runs in the background and never delays the capture.
-- **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons.
+- **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons. **Pin** opens the pin where the screenshot was taken (unless your monitors have changed since).
+- **Annotation editor**: **Annotate** (on a notification, in the tray menu, or `flatshot -i image.png`) opens the picture in a window of its own with the same drawing tools, colours and sizes as the toolbar, undo and redo, and **Copy**, **Save as** and **Save** (back to the file). Scroll to move around, <kbd>Ctrl</kbd>+scroll to zoom (pinch on a touchpad), hold <kbd>Space</kbd> or the middle button and drag to pan, <kbd>Ctrl</kbd>+<kbd>0</kbd> fits the picture in the window. Open as many as you like; closing one with unsaved changes asks first.
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Screen recording**: pick the toolbar's record button (or press <kbd>V</kbd>), then drag an area, click a window, or press <kbd>Enter</kbd> for the whole screen. Drag the edges to adjust it. Under the area you can turn the **microphone**, the **computer's sound** and the **mouse pointer** on or off, and choose **MP4, WebM or GIF** and **24, 30 or 60 fps**; Flatshot remembers these. Press **Record** or <kbd>Enter</kbd>, and after a short countdown a small bar outside the area shows the time, with **pause**, **stop** and **discard**. The finished video goes to `~/Videos/Screencasts`, the file is copied to the clipboard, and a system notification offers **Open** and **Show in folder**. While recording, the tray icon turns into a stop button; clicking it, or pressing the "Record screen" shortcut again, stops and saves.
 - **Floating toolbar** that appears on the monitor your mouse is on, and that you can drag anywhere by its grip. Tools: pen, line, arrow, rectangle, ellipse, highlighter, text, pixelate and blur (for hiding secrets) and numbered counters. It has 7 colours plus one of your own, 3 stroke sizes, and undo/redo. Picking a colour while capturing (or pixelating or blurring) switches back to the drawing tool you used last, so the colour gets used.
 - **Your own colour**: the eighth swatch (ringed in a rainbow) opens a picker under the toolbar: a square of shades, a hue bar, a hex field you can type into, and an eyedropper that takes any pixel on the screen. Your colour is remembered.
 - **Snap to edges**: turn on the toolbar's magnet (or press <kbd>G</kbd>) and a selection's corners jump to edges in the picture as you drag, boxes first: long straight edges win over text, and a box's corner (two edges meeting) over a line that just passes by. Boxes with rounded corners count too: near one, the corner goes to where the box's sides would meet. The magnifier shows the pixel grid and two lines where the selection's edges go, which jump to the edge they snap to. Hold <kbd>Ctrl</kbd> to place a corner freely. How close you must be and how faint an edge may be are settings. It's remembered between captures, and when it's off it costs nothing.
-- **Across monitors**: a drag can run from one monitor onto another, and clicking a window that spans monitors captures all of it (it's highlighted on each). Drawings on every monitor are kept. The toolbar stays on one monitor. On by default; a recording area stays on one monitor.
-- **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
+- **Across monitors**: a drag can run from one monitor onto another, and clicking a window that spans monitors captures all of it (it's highlighted on each). Drawings on every monitor are kept. The toolbar stays on one monitor. A recording area can cross monitors too: on KDE share the **full workspace** when asked (it's remembered), and on X11 it just works; with wf-recorder (Sway, Hyprland) it stays on one monitor. On by default.
+- **QR codes and barcodes** (QR, Data Matrix, Aztec, PDF417, EAN/UPC, Code 128 and more, via zxing-cpp or zbar) are outlined in mint. Each gets a slim card with the decoded text and buttons to copy it, open it (for links) or dismiss it. Cards never cover one another, and hovering a code or its card brings it to the front. <kbd>Q</kbd> or the toolbar's code button hides or shows them all; codes you dismissed stay dismissed.
 - **Adjustable screen shading**, including off.
 - A **magnifier** shows pixel coordinates and the hex colour under the cursor; press <kbd>I</kbd> to copy that colour. Its square stays visible on any colour. It and the crosshair are there as soon as the overlay opens, before the mouse moves. You can resize it (80–320 px) or turn it off, and turn off the crosshair lines too; they keep following the pointer over the toolbar. The **Rainbow** setting makes the crosshair and the square cycle through the colours. A size label shows the selection's real pixel size.
 - **Multi-monitor and HiDPI aware.** Output is saved at full native resolution with annotations drawn in at that resolution.
@@ -152,7 +153,7 @@ flatshot --diagnose      # what this Flatshot and the running tray app use
 flatshot --delay 3       # wait 3 s first
 flatshot -o shot.png     # save to a specific file (the extension picks the format)
 flatshot -f -o - > a.png # write PNG to stdout
-flatshot -i image.png    # annotate an existing image (and scan it for codes)
+flatshot -i image.png    # open an image in the annotation editor
 flatshot --no-copy / --no-save / --no-scan
 ```
 
@@ -179,6 +180,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "show_loupe": true,
   "loupe_size": 120,
   "show_crosshair": true,
+  "show_hint": true,
   "rainbow": false,
   "snap_edges": false,
   "snap_distance": 10,
@@ -224,7 +226,7 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 
   A `/` in `filename` makes subfolders. Slashes, control characters and leading dots are removed from token values, so a window title can never point outside the folder. The extension is added from `format`. `{app}` and `{title}` are known on KDE Plasma, Sway and Hyprland.
 - `sound`: play a sound after each capture. `sound_file` is the file to play; empty means the desktop's screenshot sound.
-- `show_loupe`, `loupe_size` (80–320, in logical pixels) and `show_crosshair`: the magnifier and the crosshair lines while selecting. Scroll while selecting to zoom the magnifier in or out. `rainbow` cycles their colour.
+- `show_loupe`, `loupe_size` (80–320, in logical pixels) and `show_crosshair`: the magnifier and the crosshair lines while selecting. Scroll while selecting to zoom the magnifier in or out. `rainbow` cycles their colour. `show_hint` shows what to do next in the middle of the screen (it fades while the pointer is near).
 - `snap_edges`: selections snap to edges in the picture (the toolbar's magnet, <kbd>G</kbd>). `snap_distance` (2–40 px) is how close the pointer must be to an edge; `snap_sensitivity` (1–10) how faint and short an edge may be and still count.
 - `span_monitors`: a selection or a clicked window may cross monitors.
 - `include_pointer`: draw the mouse pointer into instant captures (active window, monitor, all screens, last region).

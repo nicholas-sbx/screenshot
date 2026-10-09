@@ -94,6 +94,13 @@ def _eyedropper(p, c):
     p.restore()
 
 
+def _fit(p, c):
+    # Arrows out to the corners: the whole picture in the window.
+    p.drawPath(_path([(4, 9), (4, 4), (9, 4)], [(15, 4), (20, 4), (20, 9)], [(20, 15), (20, 20), (15, 20)],
+                     [(9, 20), (4, 20), (4, 15)], [(4, 4), (9.5, 9.5)], [(20, 4), (14.5, 9.5)],
+                     [(20, 20), (14.5, 14.5)], [(4, 20), (9.5, 14.5)]))
+
+
 def _counter(p, c):
     p.drawEllipse(QRectF(4, 4, 16, 16))
     p.drawPath(_path([(10.5, 9.5), (12.5, 8), (12.5, 16)]))
@@ -252,7 +259,7 @@ _ICONS = {
     "copy": _copy, "open": _open, "close": _close, "check": _check,
     "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
     "speaker": _speaker, "cursor": _cursor, "pause": _pause, "resume": _resume, "stop": _stop, "trash": _trash,
-    "magnet": _magnet, "eyedropper": _eyedropper,
+    "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit,
 }
 
 

@@ -185,6 +185,78 @@ class SizeButton(_Button):
             x += d + self.GAP
 
 
+class Chip(_Button):
+    """A labelled button in the recording panel: the primary action, an
+    on/off option (``on`` set) or a plain setting."""
+
+    def __init__(self, ctl, text: str, hint: str, parent=None, icon: str | None = None, primary=False,
+                 key: str = ""):
+        super().__init__(ctl, hint, parent)
+        self.text, self.icon, self.primary, self.key = text, icon, primary, key
+        self.on: bool | None = None
+        self._font = font(13, QFont.Weight.DemiBold)
+        self._key_font = font(11, QFont.Weight.Medium)
+        self._sync_width()
+
+    def _sync_width(self):
+        w = QFontMetrics(self._font).horizontalAdvance(self.text) + 24
+        if self.icon or self.primary:
+            w += 24
+        if self.key:
+            w += QFontMetrics(self._key_font).horizontalAdvance(self.key) + 16
+        self.setFixedSize(w, 34)
+
+    def set_text(self, text: str):
+        if text != self.text:
+            self.text = text
+            self._sync_width()
+            self.update()
+
+    def set_on(self, on: bool):
+        if on != self.on:
+            self.on = on
+            self.update()
+
+    def paintEvent(self, event):
+        p = self._painter()
+        if not self.isEnabled():
+            p.setOpacity(0.35)
+        box = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        hover = self.underMouse() and self.isEnabled()
+        if self.primary:
+            p.setBrush(C.ACCENT.lighter(108) if hover else C.ACCENT)
+            fg = icon_fg = C.ON_ACCENT
+        elif self.on:
+            p.setBrush(C.HOVER if hover else C.RAISED)
+            fg, icon_fg = C.TEXT, C.CODE
+        else:
+            p.setBrush(C.HOVER if hover else Qt.BrushStyle.NoBrush)
+            fg = icon_fg = C.TEXT if hover else (C.MUTED if self.on is False else C.SOFT)
+        p.drawRoundedRect(box, 8, 8)
+        x = 12.0
+        if self.primary:
+            p.setBrush(C.ON_ACCENT)
+            p.drawEllipse(QRectF(x, box.center().y() - 5, 10, 10))
+            x += 20
+        elif self.icon:
+            icons.paint(p, self.icon, QRectF(x - 2, box.center().y() - 9, 18, 18), icon_fg)
+            x += 22
+        p.setFont(self._font)
+        p.setPen(fg)
+        text_w = QFontMetrics(self._font).horizontalAdvance(self.text)
+        p.drawText(QRectF(x, 0, text_w + 2, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text)
+        if self.key:
+            p.setFont(self._key_font)
+            kw = QFontMetrics(self._key_font).horizontalAdvance(self.key) + 10
+            key_box = QRectF(x + text_w + 8, box.center().y() - 9, kw, 18)
+            edge = QColor(fg)
+            edge.setAlphaF(0.4)
+            p.setPen(QPen(edge, 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(key_box, 4, 4)
+            p.drawText(key_box, Qt.AlignmentFlag.AlignCenter, self.key)
+
+
 class Divider(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)

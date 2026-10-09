@@ -27,7 +27,7 @@ def parse_args(argv):
                     help="choose an area and record it to a video (stops the recording in progress)")
     ap.add_argument("-o", "--output", metavar="FILE",
                     help="save to this file instead of the screenshot folder ('-' writes PNG to stdout)")
-    ap.add_argument("-i", "--image", metavar="FILE", help="annotate an existing image instead of the screen")
+    ap.add_argument("-i", "--image", metavar="FILE", help="open an image in the annotation editor (Save writes back to it, or to --output)")
     ap.add_argument("--backend", choices=list(config.BACKENDS),
                     help="screen capture helper (default: from settings, else auto)")
     ap.add_argument("--no-copy", action="store_true", help="don't copy the result to the clipboard")
@@ -89,6 +89,8 @@ def make_app() -> QApplication:
 
 def _forwardable(args) -> str | None:
     """The tray-app command equivalent to these arguments, if any."""
+    if args.image and not args.output:
+        return "edit " + str(Path(args.image).expanduser().resolve())  # an editor window of the tray app's
     if args.image or args.output or args.backend or args.no_copy or args.no_save or args.no_scan:
         return None  # one-off options: handle in this process
     if args.quit:
@@ -207,4 +209,16 @@ def main(argv=None) -> int:
         window.closed.connect(app.quit)
         window.show()
         return app.exec()
+    if args.image:
+        return run_editor(app, args.image, args.output)
     return run_once(app, args)
+
+
+def run_editor(app, path: str, save_to: str | None) -> int:
+    """Annotate ``path`` in an editor window; quit when it's closed."""
+    from flatshot import editor
+
+    if editor.open_file(path, save_to) is None:
+        return 2
+    editor.when_all_closed(app.quit)
+    return app.exec()

@@ -231,6 +231,7 @@ def run() -> int:
 
     _instant_and_extras(app, tmp, desktop, out_dir)
     _pointer_and_snapping(app, tmp, desktop, out_dir)
+    _editor(app, tmp, out_dir)
     _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
     return 0
@@ -731,6 +732,109 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
             os.environ["FLATSHOT_RECORDER"] = forced
         shutil.rmtree(rec_dir, ignore_errors=True)
     print("self-test: record tool, countdown, pause, stop and discard ok")
+
+
+def _editor(app, tmp: Path, out_dir):
+    """The annotation editor: a window per image, the drawing tools, moving
+    and zooming the view, Save and Save as."""
+    from flatshot import editor
+    from flatshot.qt import QEvent, QKeyEvent, QMouseEvent, QWheelEvent, QPoint
+
+    src = tmp / "edit-me.png"
+    pic = QImage(300, 200, QImage.Format.Format_RGB32)
+    pic.fill(QColor("#808080"))
+    paint = QPainter(pic)
+    for x in range(0, 300, 4):
+        paint.fillRect(x, 150, 2, 50, QColor("#000000"))  # stripes along the bottom, for blur
+    paint.end()
+    pic.save(str(src))
+    ed = editor.open_file(src)
+    other = editor.open_file(src)
+    assert ed is not None and other is not None and editor.open_count() == 2, "two editors at once"
+    other.close()
+    ed.resize(900, 600)
+    app.processEvents()
+    assert "region" not in ed.bar.tools and "record" not in ed.bar.tools and "blur" in ed.bar.tools
+    canvas = ed.canvas
+    k = ed.dpr
+
+    def mouse(kind, at, button=Qt.MouseButton.LeftButton):
+        pos = canvas.offset + at / k * canvas.zoom  # (picture pixels -> canvas)
+        types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
+                 "release": QEvent.Type.MouseButtonRelease}
+        canvas.event(QMouseEvent(types[kind], pos, canvas.mapToGlobal(pos), button,
+                                 button if kind != "release" else Qt.MouseButton.NoButton,
+                                 Qt.KeyboardModifier.NoModifier))
+
+    def key(k, text="", mods=Qt.KeyboardModifier.NoModifier):
+        ed.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, k, mods, text))
+
+    # A box, drawn with the mouse; undo and redo it.
+    key(Qt.Key.Key_B, "b")
+    assert ed.tool == "rect"
+    mouse("press", QPointF(20, 20))
+    mouse("move", QPointF(120, 90))
+    mouse("release", QPointF(120, 90))
+    assert len(ed.annotations) == 1 and ed.dirty and ed.windowTitle().startswith("●"), ed.windowTitle()
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert not ed.annotations
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+    assert len(ed.annotations) == 1
+    # Text: click, type, Enter.
+    key(Qt.Key.Key_T, "t")
+    mouse("press", QPointF(150, 30))
+    for ch in "hi":
+        key(Qt.Key.Key_A, ch)
+    key(Qt.Key.Key_Return)
+    assert ed.text_edit is None and ed.annotations[-1].text == "hi"
+    # Blur over the stripes.
+    key(Qt.Key.Key_U, "u")
+    mouse("press", QPointF(100, 155))
+    mouse("move", QPointF(200, 195))
+    mouse("release", QPointF(200, 195))
+    # The view: Ctrl+scroll zooms around the pointer, scrolling moves it, Ctrl+0 fits.
+    before = canvas.zoom
+    at = QPointF(canvas.width() / 2, canvas.height() / 2)
+    canvas.wheelEvent(QWheelEvent(at, canvas.mapToGlobal(at), QPoint(), QPoint(0, 240), Qt.MouseButton.NoButton,
+                                  Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.NoScrollPhase, False))
+    assert canvas.zoom > before * 1.2, (before, canvas.zoom)
+    offset = QPointF(canvas.offset)
+    canvas.wheelEvent(QWheelEvent(at, canvas.mapToGlobal(at), QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                                  Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+    assert canvas.offset.y() < offset.y(), "scrolling didn't move the picture"
+    canvas.set_space(True)  # Space + drag pans
+    offset = QPointF(canvas.offset)
+    mouse("press", QPointF(50, 50))
+    canvas.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, canvas._pan + QPointF(40, 0), QPointF(),
+                                      Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                                      Qt.KeyboardModifier.NoModifier))
+    mouse("release", QPointF(50, 50))
+    canvas.set_space(False)
+    assert abs(canvas.offset.x() - offset.x() - 40) < 0.01, (offset, canvas.offset)
+    assert len(ed.annotations) == 3, "panning drew something"
+    key(Qt.Key.Key_0, "", Qt.KeyboardModifier.ControlModifier)
+    assert canvas.fitted and canvas.zoom <= 1.0
+    # The eyedropper takes a colour from the picture.
+    ed.start_eyedropper()
+    mouse("press", QPointF(1, 160))  # a black stripe
+    assert ed.custom_color.name() == "#000000" and not ed.eyedropper
+    ed.close_picker()
+    if out_dir:
+        ed.grab().save(str(Path(out_dir) / "editor.png"))
+    # Save writes back to the file; Save as to another, which Save then uses.
+    key(Qt.Key.Key_S, "", Qt.KeyboardModifier.ControlModifier)
+    assert not ed.dirty and not ed.windowTitle().startswith("●")
+    saved = QImage(str(src))
+    k_px = round(20 * k)
+    assert QColor(saved.pixel(k_px, k_px)) != QColor("#808080"), "the box isn't in the saved file"
+    stripes = [QColor(saved.pixel(x, 180)).red() for x in range(round(110 * k), round(190 * k))]
+    assert all(40 < v < 220 for v in stripes), "the blur isn't in the saved file"
+    copy = tmp / "edited-copy.jpg"
+    assert ed._save_to(copy) and copy.exists() and ed.path == copy
+    ed.close()
+    app.processEvents()
+    assert editor.open_count() == 0
+    print("self-test: annotation editor ok")
 
 
 def replace_cfg(cfg, **changes):
