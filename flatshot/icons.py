@@ -198,6 +198,18 @@ def _trash(p, c):
                      [(6.5, 7), (7.5, 19.5), (16.5, 19.5), (17.5, 7)]))
 
 
+def _magnet(p, c):
+    # A horseshoe magnet, poles up.
+    path = QPainterPath()
+    path.moveTo(6, 5)
+    path.lineTo(6, 12)
+    path.arcTo(QRectF(6, 6, 12, 12), 180, 180)
+    path.lineTo(18, 5)
+    p.drawPath(path)
+    p.drawLine(QPointF(5, 8.5), QPointF(9, 8.5))
+    p.drawLine(QPointF(15, 8.5), QPointF(19, 8.5))
+
+
 _ICONS = {
     "region": _region, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate,
@@ -205,6 +217,7 @@ _ICONS = {
     "copy": _copy, "open": _open, "close": _close, "check": _check,
     "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
     "speaker": _speaker, "cursor": _cursor, "pause": _pause, "resume": _resume, "stop": _stop, "trash": _trash,
+    "magnet": _magnet,
 }
 
 

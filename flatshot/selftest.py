@@ -230,6 +230,7 @@ def run() -> int:
     settings.close()
 
     _instant_and_extras(app, tmp, desktop, out_dir)
+    _pointer_and_snapping(app, tmp, desktop, out_dir)
     _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
     return 0
@@ -792,3 +793,129 @@ def _recording_crop(tmp: Path):
         assert white.blue() > 150 and yellow.blue() < 90 and yellow.red() > 150, (sent, white.name(), yellow.name())
     shutil.rmtree(tmp / "crop", ignore_errors=True)
     print("self-test: recording crop of a two-monitor stream ok")
+
+
+def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
+    """The crosshair over the toolbar, snapping to edges, the magnifier's
+    square on any colour, the rainbow, picking a colour, and escapes in
+    folder and file names."""
+    from flatshot import config, output, theme
+    from flatshot.notify import Notifier
+    from flatshot.qt import QEvent, QMouseEvent, QPoint
+    from flatshot.session import Request, Session
+
+    src = tmp / "desktop.png"
+
+    def session(**cfg_changes):
+        cfg = config.Config(save_dir=str(tmp / "x"), notify=False, clipboard="none", **cfg_changes)
+        s = Session(cfg, Request(image=str(src), scan=False), Notifier(interactive=False), lambda *a: None)
+        s.start()
+        ov = s.overlays[0]
+        ov.resize(ov.base.deviceIndependentSize().toSize())
+        ov.toolbar.place()
+        ov.toolbar.show()
+        app.processEvents()
+        return s, ov
+
+    def move(widget, pos, mods=Qt.KeyboardModifier.NoModifier):
+        event = QMouseEvent(QEvent.Type.MouseMove, QPointF(pos), QPointF(widget.mapToGlobal(pos)),
+                            Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, mods)
+        qt.QApplication.sendEvent(widget, event)
+
+    # The crosshair keeps following the pointer over the toolbar's buttons.
+    s, ov = session()
+    button = ov.toolbar.tools["pen"]
+    move(button, QPoint(5, 7))
+    assert ov.cursor_pos == QPointF(button.mapTo(ov, QPoint(5, 7))), ov.cursor_pos
+    move(button, QPoint(20, 9))
+    assert ov.cursor_pos == QPointF(button.mapTo(ov, QPoint(20, 9))), ov.cursor_pos
+
+    # Picking a colour from a tool without one goes back to the last drawing tool.
+    s.set_tool("arrow")
+    s.set_tool("region")
+    s.set_color(3)
+    assert s.tool == "arrow" and s.color_index == 3, s.tool
+    s.set_tool("pixelate")
+    s.set_color(1)
+    assert s.tool == "arrow", s.tool
+    s.cancel()
+
+    # Snapping: off by default and free; on, a selection's corner jumps to
+    # the window edge (the light window starts at 120, 140 on the fake desktop).
+    s, ov = session()
+    dpr = ov.dpr()
+
+    def at(x, y):  # image pixels -> overlay coordinates
+        return QPointF(x / dpr, y / dpr)
+
+    near = at(126, 640)
+    assert ov._snapped(near, Qt.KeyboardModifier.NoModifier) == near and ov._edge_maps is None \
+        and ov._edge_thread is None, "snapping off still did work"
+    s.toggle_snap()
+    assert s.snap_edges and config.load().snap_edges, "the snap toggle isn't remembered"
+    assert ov.toolbar.snap_button.toggled_on
+    started = time.perf_counter()
+    assert ov._edge_thread is not None, "turning snapping on didn't start the edge maps"
+    ov._edge_thread.join(10)
+    built = time.perf_counter() - started
+    assert ov._edge_maps is not None
+    started = time.perf_counter()
+    for _ in range(50):
+        snapped = ov._snapped(near, Qt.KeyboardModifier.NoModifier)
+    per_move = (time.perf_counter() - started) / 50
+    assert snapped == at(120, 640), snapped
+    assert ov._snapped(near, Qt.KeyboardModifier.ControlModifier) == near, "Ctrl should place freely"
+    assert ov._snapped(at(500, 600), Qt.KeyboardModifier.NoModifier) == at(500, 600), "snapped with no edge near"
+    # A whole drag: both corners land on the window's edges.
+    ov.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, at(127, 147), at(127, 147),
+                                   Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    ov.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, at(933, 693), at(933, 693),
+                                  Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    assert ov.sel_rect == QRectF(at(120, 140), at(940, 700)), ov.sel_rect
+    ov.cancel_gesture()
+    s.toggle_snap()
+    assert not config.load().snap_edges
+    s.cancel()
+    print(f"self-test: snapping ok (edge maps {built * 1000:.0f} ms once, {per_move * 1000:.2f} ms per move)")
+
+    # The magnifier's square shows even on a pixel of its own colour.
+    flat = QImage(400, 300, QImage.Format.Format_RGB32)
+    flat.fill(theme.C.ACCENT)
+    flat_src = tmp / "accent.png"
+    flat.save(str(flat_src))
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(flat_src), scan=False),
+                Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    ov.resize(400, 300)
+    ov.toolbar.hide()
+    ov.cursor_pos = QPointF(60, 60)
+    s.pointer_overlay = None
+    shot = ov.grab().toImage()
+    box = ov._loupe_box
+    if out_dir:
+        shot.copy(box.adjusted(-4, -4, 4, 40)).save(str(Path(out_dir) / "loupe-on-accent.png"))
+    # Its outline is black or white, whichever stands out from the pixel.
+    accent = theme.C.ACCENT.getRgb()[:3]
+    outline = [(x, y) for x in range(box.left() + 14, box.right() - 14) for y in range(box.top() + 14, box.bottom() - 14)
+               if sum(abs(a - b) for a, b in zip(QColor(shot.pixel(x, y)).getRgb()[:3], accent)) > 200]
+    assert len(outline) >= 8, "the magnifier's square vanished on a pixel of its own colour"
+    s.cancel()
+
+    # Rainbow: the crosshair's colour moves on its own, and only with the setting.
+    s, ov = session(rainbow=True)
+    assert ov._rainbow is not None and ov._rainbow.isActive()
+    first = ov._mark_color()
+    time.sleep(0.3)
+    assert ov._mark_color() != first, "the rainbow doesn't move"
+    s.cancel()
+    s, ov = session()
+    assert ov._rainbow is None and ov._mark_color() == theme.C.ACCENT
+    s.cancel()
+
+    # Folder and file names: codes in both, and escapes for literal %, { and }.
+    cfg = config.Config(save_dir=str(tmp / "esc" / "%Y" / "{app} {{raw}}"), filename="{{n}} {n:2} 100%%")
+    path = output.target_path(cfg, output.Shot(app="kate"), (1, 1), preview=True)
+    assert path == tmp / "esc" / time.strftime("%Y") / "kate {raw}" / f"{{n}} {config.load_state().get('counter', 0) + 1:02} 100%.png", path
+    assert output.base_folder(cfg) == tmp / "esc"
+    print("self-test: crosshair over buttons, colours, magnifier square, rainbow and name escapes ok")

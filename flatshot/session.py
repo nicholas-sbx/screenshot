@@ -19,7 +19,10 @@ from flatshot.widgets import TOOLS
 
 TOOL_KEYS = {keyval(getattr(Qt.Key, f"Key_{key}")): name for name, _, key in TOOLS}
 K = {name: keyval(getattr(Qt.Key, f"Key_{name}")) for name in
-     ["Escape", "Return", "Enter", "Backspace", "Z", "Y", "S", "C", "Q", "I", "K", "1", "BracketLeft", "BracketRight"]}
+     ["Escape", "Return", "Enter", "Backspace", "Z", "Y", "S", "C", "Q", "I", "K", "G", "1", "BracketLeft",
+      "BracketRight"]}
+# The tools that draw in the chosen colour: picking a colour switches to one.
+COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
 
 # region: the overlay. The rest deliver straight away, without any UI:
 # screens (every monitor), monitor (the one under the pointer), window (the
@@ -84,6 +87,8 @@ class Session:
         self.dim = QColor(theme.C.DIM)
         self.dim.setAlpha(round(cfg.dim_opacity * 2.55))
         self.codes_visible = cfg.show_codes
+        self.snap_edges = cfg.snap_edges
+        self.colour_tool = self.tool if self.tool in COLOUR_TOOLS else "pen"  # the last one used
         self.loupe_zoom = 8.0  # magnifier screen px per captured pixel; the wheel changes it
         self.pin_mode = request.pin  # the capture is pinned to the screen instead of saved
         self.overlays: list[Overlay] = []
@@ -268,9 +273,17 @@ class Session:
             return
         self.commit_text()
         self.tool = tool
+        if tool in COLOUR_TOOLS:
+            self.colour_tool = tool
         self.refresh()
 
     def set_color(self, index: int):
+        """Choose a colour; from a tool that has none (capture, pixelate),
+        go back to the last drawing tool, so the colour is used."""
+        if self.tool == "record":
+            return
+        if self.tool not in COLOUR_TOOLS:
+            self.tool = self.colour_tool
         self.color_index = index
         if self.text_edit:
             self.text_edit[1].color = self.color
@@ -287,6 +300,19 @@ class Session:
 
     def toggle_pin(self):
         self.pin_mode = not self.pin_mode
+        self.refresh()
+
+    def toggle_snap(self):
+        """Snap selections to edges in the picture; remembered for next time."""
+        self.snap_edges = not self.snap_edges
+        saved = config.load()
+        saved.snap_edges = self.cfg.snap_edges = self.snap_edges
+        try:
+            saved.save()
+        except OSError as e:
+            print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
+        for o in self.overlays:
+            o.snap_changed()
         self.refresh()
 
     def toggle_codes(self):
@@ -515,6 +541,8 @@ class Session:
             self.toggle_codes()
         elif not ctrl and k == K["K"]:
             self.toggle_pin()
+        elif not ctrl and k == K["G"]:
+            self.toggle_snap()
         elif not ctrl and k == K["I"]:
             self.copy_color(target)
         elif not ctrl and k in TOOL_KEYS:

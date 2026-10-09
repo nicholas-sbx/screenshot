@@ -62,6 +62,8 @@ class Config:
     show_loupe: bool = True  # magnifier with coordinates and colour
     loupe_size: int = 120  # magnifier size in logical px
     show_crosshair: bool = True
+    rainbow: bool = False  # the crosshair and the magnifier's square cycle through colours
+    snap_edges: bool = False  # selections snap to edges in the picture (toolbar toggle, G)
     detect_windows: bool = True  # hover + click a window to capture it (KDE)
     scan_codes: bool = True
     show_codes: bool = True

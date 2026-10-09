@@ -44,6 +44,11 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none
 """
 
 
+CODES_HINT = ("Date and time: %Y %m %d %H %M %S. Window: {app} {title}. Also {mode} (region, window, monitor, "
+              "desktop), {monitor}, {w} {h} for the size and {n} for a counter ({n:4} pads it). "
+              "For a literal %, { or }, write %%, {{ or }}.")
+
+
 def _label(text: str, role: str | None = None, wrap=False) -> QLabel:
     label = QLabel(text)
     if role:
@@ -526,6 +531,25 @@ class SettingsWindow(QWidget):
         edit.editingFinished.connect(lambda: self._save(**{key: edit.text().strip()}))
         return edit
 
+    def _preview(self, folder: QLineEdit, name: QLineEdit, ext) -> QLabel:
+        """A live example of where a capture goes, from the two templates."""
+        label = _label("", "hint", wrap=True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        def update():
+            cfg = config.Config(save_dir=folder.text().strip(), filename=name.text().strip())
+            shot = output.Shot(mode="region", app="firefox", title="Example page", monitor="DP-1")
+            try:
+                path = output.target_path(cfg, shot, (1920, 1080), ext(), preview=True)
+                label.setText(f"For example: {path}")
+            except (ValueError, OSError) as e:
+                label.setText(f"Not a usable name: {e}")
+
+        folder.textChanged.connect(update)
+        name.textChanged.connect(update)
+        update()
+        return label
+
     def _set_theme(self, name: str):
         self._save(theme=name)
         theme.use(name)
@@ -574,6 +598,9 @@ class SettingsWindow(QWidget):
                      "Hover a window and click to capture just that window. KDE Plasma."))
         card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
                      "In instant captures: active window, monitor, all screens, last region."))
+        card.add(Row("Snap to edges", self._toggle("snap_edges"),
+                     "Selections snap to edges in the picture. Also the toolbar's magnet button, or G; "
+                     "hold Ctrl to place freely."))
 
         card = self._card("Magnifier and crosshair")
         loupe = self._toggle("show_loupe")
@@ -586,6 +613,8 @@ class SettingsWindow(QWidget):
         size_row.setVisible(self.cfg.show_loupe)
         card.add(Row("Crosshair lines", self._toggle("show_crosshair"),
                      "Lines across the screen through the pointer."))
+        card.add(Row("Rainbow", self._toggle("rainbow"),
+                     "The crosshair and the magnifier's square cycle through the colours."))
 
         card = self._card("QR codes and barcodes")
         card.add(Row("Scan the screen", self._toggle("scan_codes")))
@@ -614,7 +643,7 @@ class SettingsWindow(QWidget):
         fb.setSpacing(8)
         fb.addWidget(folder, 1)
         fb.addWidget(browse)
-        card.add(Row("Folder", None, below=folder_box))
+        card.add(Row("Folder", None, CODES_HINT, below=folder_box))
 
         def pick():
             path = QFileDialog.getExistingDirectory(self, "Screenshot folder", folder.text())
@@ -623,12 +652,10 @@ class SettingsWindow(QWidget):
                 self._save(save_dir=path)
 
         browse.clicked.connect(pick)
+        filename = self._line("filename")
         card.add(Row("File name", None,
-                     "Date and time: %Y %m %d %H %M %S. Window: {app} {title}. Also {mode} (region, window, "
-                     "monitor, desktop), {monitor}, {w} {h} for the size and {n} for a counter ({n:4} pads it). "
-                     "A / makes subfolders, and the folder takes the same codes, like ~/Pictures/Screenshots/%Y-%m. "
-                     "The extension is added for you.",
-                     below=self._line("filename")))
+                     "The same codes. A / makes subfolders; the extension is added for you.", below=filename))
+        card.add(Row("", None, below=self._preview(folder, filename, lambda: self.cfg.format)))
 
         formats = output.writable_formats()
         if self.cfg.format not in [f[0] for f in formats]:
@@ -718,7 +745,7 @@ class SettingsWindow(QWidget):
         line.setSpacing(8)
         line.addWidget(folder, 1)
         line.addWidget(browse)
-        card.add(Row("Folder", None, below=box))
+        card.add(Row("Folder", None, CODES_HINT, below=box))
 
         def pick():
             path = QFileDialog.getExistingDirectory(self, "Recordings folder", folder.text())
@@ -727,8 +754,9 @@ class SettingsWindow(QWidget):
                 self._save(record_dir=path)
 
         browse.clicked.connect(pick)
-        card.add(Row("File name", None, "The same codes as for screenshots. The extension is added for you.",
-                     below=self._line("record_filename")))
+        filename = self._line("record_filename")
+        card.add(Row("File name", None, "The same codes. The extension is added for you.", below=filename))
+        card.add(Row("", None, below=self._preview(folder, filename, lambda: self.cfg.record_format)))
         countdown = ValueSlider(self.cfg.record_countdown, 0, 10, 1, lambda v: f"{v} s" if v else "Off")
         countdown.changed.connect(lambda v: self._save(record_countdown=v))
         card.add(Row("Countdown", countdown, "Before recording starts."))

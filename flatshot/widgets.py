@@ -126,11 +126,12 @@ class Swatch(_Button):
 
 class SizeButton(_Button):
     DOTS = [4.0, 7.0, 11.0]
+    GAP = 4.0  # between neighbouring dots, edge to edge
 
     def __init__(self, ctl, parent=None):
         super().__init__(ctl, "Stroke size  ·  [ ]", parent)
         self.size = 1
-        self.setFixedSize(36, 36)
+        self.setFixedSize(40, 36)
 
     def set_size(self, size: int):
         self.size = size
@@ -144,10 +145,11 @@ class SizeButton(_Button):
             p.setBrush(C.HOVER)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 9, 9)
         c = QRectF(self.rect()).center()
+        x = c.x() - (sum(self.DOTS) + self.GAP * (len(self.DOTS) - 1)) / 2  # the row of dots, centred
         for i, d in enumerate(self.DOTS):
-            x = c.x() - 10 + i * 10
-            p.setBrush(C.TEXT if i == self.size else C.LINE)
-            p.drawRoundedRect(QRectF(x - d / 2, c.y() - d / 2, d, d), d / 3, d / 3)
+            p.setBrush(C.TEXT if i == self.size else C.MUTED)
+            p.drawRoundedRect(QRectF(x, c.y() - d / 2, d, d), d / 3, d / 3)
+            x += d + self.GAP
 
 
 class Divider(QWidget):
@@ -238,6 +240,9 @@ class Toolbar(_Draggable):
         self.codes_button = IconButton(ctl, "codes", "", self)
         self.codes_button.clicked.connect(ctl.toggle_codes)
         row.addWidget(self.codes_button)
+        self.snap_button = IconButton(ctl, "magnet", "", self)
+        self.snap_button.clicked.connect(ctl.toggle_snap)
+        row.addWidget(self.snap_button)
 
         self.history_buttons = []
         for icon, hint, slot in [
@@ -279,6 +284,9 @@ class Toolbar(_Draggable):
         self.pin_button.set_active(self.ctl.pin_mode)
         self.pin_button.hint = ("Pinning: the capture stays on screen, not saved  ·  K" if self.ctl.pin_mode
                                 else "Pin the capture to the screen instead of saving it  ·  K")
+        self.snap_button.set_toggle(self.ctl.snap_edges, "magnet",
+                                    "Snap selections to edges in the picture  ·  G  ·  "
+                                    + ("on (hold Ctrl to place freely)" if self.ctl.snap_edges else "off"))
         n = self.ctl.code_count()
         found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
         if self.ctl.codes_visible:

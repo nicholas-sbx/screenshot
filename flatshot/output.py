@@ -28,7 +28,10 @@ class Shot:
 
 # {app} {title} {mode} {monitor} {w} {h} {n}, optionally zero-padded: {n:4}
 TOKEN = re.compile(r"\{(app|title|mode|monitor|w|h|n)(?::(\d{1,2}))?\}")
-_UNSAFE = re.compile(r"[\x00-\x1f\x7f/\\]+")
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f/\\\ue000\ue001]+")
+# Escapes in templates: {{ and }} for literal braces (%% is strftime's own
+# literal %). They stand in as private-use characters while codes are filled.
+_LBRACE, _RBRACE = "\ue000", "\ue001"
 
 
 @dataclass
@@ -90,6 +93,11 @@ def _clean(value: str) -> str:
     return value[:80].rstrip(" ._")
 
 
+def _peek_number() -> int:
+    n = config.load_state().get("counter", 0)
+    return (n if isinstance(n, int) and n >= 0 else 0) + 1
+
+
 def _next_number() -> int:
     n = config.load_state().get("counter", 0)
     n = (n if isinstance(n, int) and n >= 0 else 0) + 1
@@ -97,9 +105,9 @@ def _next_number() -> int:
     return n
 
 
-def target_path(cfg: Config, shot: Shot, size: tuple[int, int], ext: str = "png") -> Path:
+def target_path(cfg: Config, shot: Shot, size: tuple[int, int], ext: str = "png", preview: bool = False) -> Path:
     """Expand the folder and file name templates (strftime codes plus
-    {tokens}) and add the extension."""
+    {tokens}) and add the extension. ``preview``: don't use up a {n}."""
     now = datetime.now()
     number = []
 
@@ -107,7 +115,8 @@ def target_path(cfg: Config, shot: Shot, size: tuple[int, int], ext: str = "png"
         name, width = m[1], m[2]
         if name == "n":
             if not number:
-                number.append(_next_number())  # one number per capture, even if used twice
+                # One number per capture, even if used twice.
+                number.append(_peek_number() if preview else _next_number())
             text = str(number[0])
         elif name in ("w", "h"):
             text = str(size[0] if name == "w" else size[1])
@@ -117,7 +126,8 @@ def target_path(cfg: Config, shot: Shot, size: tuple[int, int], ext: str = "png"
         return text.zfill(int(width)) if width and text.isdigit() else text
 
     def fill(template: str) -> str:
-        return TOKEN.sub(value, now.strftime(template))
+        escaped = template.replace("{{", _LBRACE).replace("}}", _RBRACE)
+        return TOKEN.sub(value, now.strftime(escaped)).replace(_LBRACE, "{").replace(_RBRACE, "}")
 
     folder = Path(os.path.expanduser(fill(cfg.save_dir)))
     # Relative to the folder, even when an empty token leads it ("{app}/...").
@@ -134,9 +144,10 @@ def base_folder(cfg: Config) -> Path:
     ~/Pictures/Screenshots/%Y/{app}."""
     parts = []
     for part in Path(os.path.expanduser(cfg.save_dir)).parts:
-        if "%" in part or TOKEN.search(part):
+        plain = part.replace("%%", "").replace("{{", "").replace("}}", "")
+        if "%" in plain or TOKEN.search(plain):
             break
-        parts.append(part)
+        parts.append(part.replace("%%", "%").replace("{{", "{").replace("}}", "}"))
     return Path(*parts) if parts else Path.home()
 
 

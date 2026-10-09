@@ -2,14 +2,16 @@
 
 import os
 import sys
+import threading
+import time
 
 from flatshot.qt import (
-    QColor, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap, QPoint, QPointF, QPolygonF,
-    QRect, QRectF, Qt, QWidget,
+    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap, QPoint,
+    QPointF, QPolygonF, QRect, QRectF, Qt, QTimer, QWidget,
 )
 
 from flatshot import layershell, shapes
-from flatshot.theme import C, font
+from flatshot.theme import C, font, is_light
 from flatshot.widgets import CodeChip, Toolbar
 
 HINTS = {
@@ -26,6 +28,21 @@ RECORD_HINTS = {
     "countdown": "Recording starts in {n}  ·  Esc to cancel",
 }
 HANDLE = 10  # size of the resize handles on an area chosen for recording
+# Snapping a selection to edges in the picture (logical px): how far an edge
+# pulls, how far above and below the pointer (or left and right) it must run,
+# and how strong it must be (mean difference across it, 0-255).
+SNAP_RADIUS = 10
+SNAP_BAND = 24
+SNAP_MIN = 24
+RAINBOW_SECONDS = 4  # one trip round the colours
+
+
+def _buffer(image: QImage) -> memoryview:
+    """An image's bytes, without copying them (PySide6 and PyQt6 differ)."""
+    bits = image.constBits()
+    if hasattr(bits, "setsize"):
+        bits.setsize(image.sizeInBytes())
+    return memoryview(bits).cast("B")
 DRAW_HINT = "Draw on the screen  ·  R then drag to capture  ·  Enter for whole screen"
 LOUPE_ZOOM = (3.0, 40.0)  # magnifier zoom range, screen px per captured pixel
 
@@ -76,6 +93,17 @@ class Overlay(QWidget):
         self.rec_window = None  # the window clicked, when the area is one
         self._rec_drag: tuple[str, QPointF, QRectF] | None = None
         self.panel = None  # recordpanel.RecordPanel, made when first needed
+        # Snapping: edge maps of the picture (built only once snapping is on)
+        # and where the pointer snaps to.
+        self._edge_maps = None
+        self._edge_thread: threading.Thread | None = None
+        self._snap_point: QPointF | None = None
+        self._loupe_box = QRect()
+        self._rainbow: QTimer | None = None
+        if ctl.cfg.rainbow:
+            self._rainbow = QTimer(self)
+            self._rainbow.setInterval(50)
+            self._rainbow.timeout.connect(self._rainbow_tick)
 
         self.setWindowTitle("Flatshot")
         self.setMouseTracking(True)
@@ -101,11 +129,32 @@ class Overlay(QWidget):
             self.showFullScreen()
         self.raise_()
         self.activateWindow()
+        if self._rainbow:
+            self._rainbow.start()
+        if self.ctl.snap_edges:
+            QTimer.singleShot(0, self.snap_changed)
 
     def add_toolbar(self):
         self.toolbar = Toolbar(self.ctl, self)
         self.toolbar.hide()
+        self._track(self.toolbar)
         self._place_floating()
+
+    def _track(self, widget: QWidget):
+        """Keep the crosshair following the pointer over ``widget`` (the
+        toolbar, a card, the recording panel) and its buttons."""
+        for w in [widget] + widget.findChildren(QWidget):
+            w.setMouseTracking(True)
+            w.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseMove and isinstance(obj, QWidget):
+            self.cursor_pos = QPointF(obj.mapTo(self, event.position().toPoint()))
+            self._snap_point = None
+            self.ctl.activate(self)
+            self._update_hover()
+            self.update()
+        return False
 
     def resizeEvent(self, event):
         self._place_floating()
@@ -129,6 +178,7 @@ class Overlay(QWidget):
             from flatshot.recordpanel import RecordPanel
 
             self.panel = RecordPanel(self.ctl, self)
+            self._track(self.panel)
         self.panel.refresh()
         r, w, h = self.rec_rect, self.panel.width(), self.panel.height()
         x = max(8.0, min(r.center().x() - w / 2, self.width() - w - 8))
@@ -163,6 +213,7 @@ class Overlay(QWidget):
             local = QPolygonF([(pt - QPointF(self.origin)) / dpr for pt in code.corners])
             self.codes.append((code, local))
             chip = CodeChip(self.ctl, code, self)
+            self._track(chip)
             self.chips.append(chip)
         self._place_floating()
 
@@ -251,6 +302,66 @@ class Overlay(QWidget):
         self.rec_window = window
         self.ctl.refresh()
 
+    # -- snapping to edges in the picture -------------------------------------
+
+    def snap_changed(self):
+        """Snapping was turned on or off. When it's on, start building the
+        edge maps (once per overlay), in the background so nothing waits."""
+        self._snap_point = None
+        if self.ctl.snap_edges and self._edge_maps is None and self._edge_thread is None:
+            image = self.pixels()  # (from the pixmap: GUI thread only)
+            self._edge_thread = threading.Thread(target=self._build_edges, args=(image,), daemon=True)
+            self._edge_thread.start()
+        self.update()
+
+    def _build_edges(self, image: QImage):
+        """Two maps of the picture, one byte per pixel: how much each pixel
+        differs from the one to its left, and from the one above. Qt does
+        the work (a difference blend and a greyscale conversion), about
+        150 ms for a 4K screen."""
+        img = image.convertToFormat(QImage.Format.Format_RGB32)
+        img.setDevicePixelRatio(1.0)
+        maps = []
+        for dx, dy in ((1, 0), (0, 1)):
+            diff = img.copy()
+            p = QPainter(diff)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Difference)
+            p.drawImage(dx, dy, img)
+            p.end()
+            grey = diff.convertToFormat(QImage.Format.Format_Grayscale8)
+            maps.append((grey, _buffer(grey), grey.bytesPerLine()))
+        self._edge_maps = maps
+
+    def _snapped(self, pos: QPointF, modifiers) -> QPointF:
+        """``pos`` moved onto the strongest nearby edges, if any (Ctrl: as is)."""
+        if not self.ctl.snap_edges or modifiers & Qt.KeyboardModifier.ControlModifier:
+            return pos
+        maps = self._edge_maps
+        if maps is None:  # still being built: place freely until then
+            self.snap_changed()
+            return pos
+        dpr = self.dpr()
+        (vgrey, vbuf, vstride), (hgrey, hbuf, hstride) = maps
+        x, y = int(pos.x() * dpr), int(pos.y() * dpr)
+        radius, band = max(2, round(SNAP_RADIUS * dpr)), max(4, round(SNAP_BAND * dpr))
+        w, h = vgrey.width(), vgrey.height()
+        if not (0 <= x < w and 0 <= y < h):
+            return pos
+        # Vertical edges near x: sum each column over the rows around y.
+        c0, c1 = max(1, x - radius), min(w, x + radius + 1)
+        rows = range(max(0, y - band), min(h, y + band + 1))
+        sums = [0] * (c1 - c0)
+        for r in rows:
+            start = r * vstride
+            sums = [a + b for a, b in zip(sums, vbuf[start + c0:start + c1])]
+        sx = _best(sums, c0, x, radius, len(rows))
+        # Horizontal edges near y: each row's sum over the columns around x.
+        r0, r1 = max(1, y - radius), min(h, y + radius + 1)
+        cs, ce = max(0, x - band), min(w, x + band + 1)
+        sums = [sum(hbuf[r * hstride + cs:r * hstride + ce]) for r in range(r0, r1)]
+        sy = _best(sums, r0, y, radius, ce - cs)
+        return QPointF(sx / dpr if sx is not None else pos.x(), sy / dpr if sy is not None else pos.y())
+
     def _handle_at(self, pos: QPointF) -> str | None:
         """Which handle of the recording area is at ``pos``: "tl", "t", ...,
         "move" inside it, or None."""
@@ -267,7 +378,9 @@ class Overlay(QWidget):
         # Nothing to move when it's the whole screen: a drag picks a new area.
         return "move" if r.contains(pos) and r != QRectF(self.rect()) else None
 
-    def _drag_area(self, pos: QPointF):
+    def _drag_area(self, pos: QPointF, snapped: QPointF | None = None):
+        """Move or resize the recording area; a resized edge goes to
+        ``snapped`` when snapping found an edge there."""
         handle, start, r0 = self._rec_drag
         d = pos - start
         r = QRectF(r0)
@@ -277,14 +390,16 @@ class Overlay(QWidget):
             r.moveLeft(max(bounds.left(), min(r.left(), bounds.right() - r.width())))
             r.moveTop(max(bounds.top(), min(r.top(), bounds.bottom() - r.height())))
         else:
+            sx = snapped.x() if snapped is not None and snapped.x() != pos.x() else None
+            sy = snapped.y() if snapped is not None and snapped.y() != pos.y() else None
             if "l" in handle:
-                r.setLeft(r0.left() + d.x())
+                r.setLeft(sx if sx is not None else r0.left() + d.x())
             if "r" in handle:
-                r.setRight(r0.right() + d.x())
+                r.setRight(sx if sx is not None else r0.right() + d.x())
             if "t" in handle:
-                r.setTop(r0.top() + d.y())
+                r.setTop(sy if sy is not None else r0.top() + d.y())
             if "b" in handle:
-                r.setBottom(r0.bottom() + d.y())
+                r.setBottom(sy if sy is not None else r0.bottom() + d.y())
             r = r.normalized().intersected(bounds)
         self.rec_rect = r
         self.rec_window = None
@@ -330,6 +445,7 @@ class Overlay(QWidget):
             self.ctl.refresh()
         elif tool in ("region", "record"):
             self.ctl.disarm()
+            pos = self._snapped(pos, event.modifiers())
             self.sel_origin = pos
             self.sel_rect = QRectF(pos, pos)
             self.ctl.refresh()
@@ -345,11 +461,15 @@ class Overlay(QWidget):
         pos = event.position()
         self.cursor_pos = pos
         self.ctl.activate(self)
+        selecting = self.ctl.tool in ("region", "record") and self.active is None
+        # Where the selection would start or end (the crosshair shows it).
+        self._snap_point = self._snapped(pos, event.modifiers()) if selecting and self.ctl.snap_edges else None
         if self.sel_origin is not None:
-            self.sel_rect = QRectF(self.sel_origin, pos).normalized().intersected(QRectF(self.rect()))
+            end = self._snap_point or pos
+            self.sel_rect = QRectF(self.sel_origin, end).normalized().intersected(QRectF(self.rect()))
             self.hover_window = None
         elif self._rec_drag is not None:
-            self._drag_area(pos)
+            self._drag_area(pos, self._snap_point)
         elif self.active is not None:
             self.active.extend(pos, bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
         else:
@@ -452,7 +572,7 @@ class Overlay(QWidget):
             elif self._rec_drag is None:
                 self._paint_handles(p, self.rec_rect)
         elif picking and self.cursor_pos is not None and self.ctl.cfg.show_crosshair:
-            self._paint_crosshair(p, self.cursor_pos)
+            self._paint_crosshair(p, self._snap_point or self.cursor_pos)
         if picking and self.cursor_pos is not None and self.ctl.cfg.show_loupe and self._loupe_allowed():
             self._paint_loupe(p, self.cursor_pos)
         if self.sel_rect is None and self is self.ctl.pointer_overlay:
@@ -530,8 +650,26 @@ class Overlay(QWidget):
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, str(n))
         p.restore()
 
+    def _mark_color(self) -> QColor:
+        """The crosshair's and the magnifier square's colour: the accent, or
+        a colour going round the rainbow."""
+        if self.ctl.cfg.rainbow:
+            return QColor.fromHsvF((time.monotonic() / RAINBOW_SECONDS) % 1.0, 0.75, 1.0)
+        return QColor(C.ACCENT)
+
+    def _rainbow_tick(self):
+        """Repaint just the crosshair and the magnifier, so the colour moves."""
+        if self.cursor_pos is None or not self.isVisible():
+            return
+        pt = (self._snap_point or self.cursor_pos).toPoint()
+        if self.ctl.cfg.show_crosshair:
+            self.update(QRect(pt.x() - 2, 0, 5, self.height()))
+            self.update(QRect(0, pt.y() - 2, self.width(), 5))
+        if not self._loupe_box.isEmpty():
+            self.update(self._loupe_box.adjusted(-2, -2, 2, 2))
+
     def _paint_crosshair(self, p: QPainter, pos: QPointF):
-        color = QColor(C.ACCENT)
+        color = self._mark_color()
         color.setAlpha(110)
         p.setPen(QPen(color, 1))
         x, y = round(pos.x()) + 0.5, round(pos.y()) + 0.5
@@ -554,10 +692,18 @@ class Overlay(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         p.drawPixmap(box, self.base, QRectF(px - cells // 2, py - cells // 2, cells, cells))
         cell = size / cells
-        p.setPen(QPen(C.ACCENT, 1.5))
+        # The square around the pixel: a coloured ring inside a black or white
+        # one (whichever stands out from that pixel), so it shows on any colour.
+        img = self.pixels()
+        under = img.pixelColor(min(max(px, 0), img.width() - 1), min(max(py, 0), img.height() - 1))
+        square = QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell))
+        p.setPen(QPen(QColor("#000000") if is_light(under) else QColor("#FFFFFF"), 3.5))
+        p.drawRect(square)
+        p.setPen(QPen(self._mark_color(), 1.5))
+        p.drawRect(square)
         p.restore()
+        self._loupe_box = box.toAlignedRect()
         p.setPen(QPen(C.LINE, 1))
         p.drawRoundedRect(box, 12, 12)
         img = self.pixels()
@@ -601,3 +747,18 @@ class Overlay(QWidget):
         p.setFont(f)
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
+
+
+def _best(sums: list[int], first: int, at: int, radius: int, count: int) -> int | None:
+    """The strongest edge among ``sums`` (edge strength summed over ``count``
+    pixels, the first at index ``first``), favouring ones near ``at``; None
+    if none is strong enough."""
+    best, best_score = None, 0.0
+    for i, total in enumerate(sums):
+        mean = total / max(1, count)
+        if mean < SNAP_MIN:
+            continue
+        score = mean * (1 - 0.4 * abs(first + i - at) / (radius + 1))
+        if score > best_score:
+            best, best_score = first + i, score
+    return best
