@@ -757,23 +757,39 @@ class Overlay(QWidget):
         under = img.pixelColor(min(max(px, 0), img.width() - 1), min(max(py, 0), img.height() - 1))
         contrast = QColor("#000000") if is_light(under) else QColor("#FFFFFF")
         mark = self._mark_color()
+        square = QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell)
         if self.ctl.tool in ("region", "record"):
-            # Where the selection's edges go: on the pointer's pixel, or on
-            # the edge they snap to (stopping short of the rounded corners).
-            corner = self._snap_point or pos
-            lx = round(x + (round(corner.x() * dpr) - (px - cells // 2)) * cell)
-            ly = round(y + (round(corner.y() * dpr) - (py - cells // 2)) * cell)
+            # The crosshair in the magnifier: through the middle of the
+            # pointer's pixel (the square), as on screen, but not inside the
+            # square. Where it snaps, a line moves to the boundary between
+            # pixels: exactly where the edge is.
+            snap = self._snap_point
+            first = cells // 2  # the pointer's cell
+            if snap is not None and snap.x() != pos.x():
+                lx = x + (round(snap.x() * dpr) - (px - first)) * cell
+            else:
+                lx = square.center().x()
+            if snap is not None and snap.y() != pos.y():
+                ly = y + (round(snap.y() * dpr) - (py - first)) * cell
+            else:
+                ly = square.center().y()
+            lx, ly = round(lx), round(ly)
             ix, iy, isize = round(x), round(y), round(size)
-            ins_x, ins_y = _corner_inset(lx - ix, isize), _corner_inset(ly - iy, isize)
+            gap = square.adjusted(-3, -3, 3, 3)  # the square and its ring stay clear
+            vertical = _gapped(iy + _corner_inset(lx - ix, isize), iy + isize - _corner_inset(lx - ix, isize),
+                               gap.top(), gap.bottom(), gap.left() <= lx <= gap.right())
+            horizontal = _gapped(ix + _corner_inset(ly - iy, isize), ix + isize - _corner_inset(ly - iy, isize),
+                                 gap.left(), gap.right(), gap.top() <= ly <= gap.bottom())
             for pen in (QPen(contrast, 3), QPen(mark, 1)):
                 p.setPen(pen)
                 if ix < lx < ix + isize:
-                    p.drawLine(lx, iy + ins_x, lx, iy + isize - ins_x)
+                    for a, b in vertical:
+                        p.drawLine(lx, a, lx, b)
                 if iy < ly < iy + isize:
-                    p.drawLine(ix + ins_y, ly, ix + isize - ins_y, ly)
+                    for a, b in horizontal:
+                        p.drawLine(a, ly, b, ly)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        square = QRectF(x + (cells // 2) * cell, y + (cells // 2) * cell, cell, cell)
         p.setPen(QPen(contrast, 3.5))
         p.drawRect(square)
         p.setPen(QPen(mark, 1.5))
@@ -924,3 +940,11 @@ def _corner_inset(at: int, size: int, radius: int = 12) -> int:
     if d >= radius:
         return 0
     return round(radius - (radius * radius - (radius - d) ** 2) ** 0.5) + 1
+
+
+def _gapped(start: int, end: int, gap_start: float, gap_end: float, crosses: bool) -> list[tuple[int, int]]:
+    """A line from ``start`` to ``end``, broken where it would cross the gap."""
+    if not crosses:
+        return [(start, end)]
+    parts = [(start, min(end, int(gap_start))), (max(start, int(gap_end) + 1), end)]
+    return [(a, b) for a, b in parts if b > a]
