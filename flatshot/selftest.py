@@ -1107,6 +1107,23 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
     assert on_top(ov.chips[1]), "hovering a card didn't put it on top"
     s.cancel()
 
+    # Memory: once a capture is done, nothing the session keeps (a
+    # notification's buttons can keep it for days) holds the pictures.
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False, clipboard="none", snap_edges=True),
+                Request(image=str(flat_src), scan=False), Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    ov.snap_changed()
+    ov._edge_thread.join(10)
+    shape = shapes.create("rect", QPointF(20, 20), s.color, 1)
+    shape.extend(QPointF(120, 90), False)
+    ov.commit(shape)
+    s.capture(ov, QRectF(10, 10, 200, 150))
+    app.processEvents()
+    assert ov.base.isNull() and ov._pixels is None and ov._edge_maps is None and not ov.annotations, \
+        "a closed overlay still holds its pictures"
+    assert not s.history and not s.overlays and s.pointer_overlay is None, (s.history, s.overlays, s.pointer_overlay)
+
     # Blur: fine detail under it is smoothed away; nothing beside it changes.
     stripes = QImage(400, 300, QImage.Format.Format_RGB32)
     stripes.fill(QColor("#FFFFFF"))

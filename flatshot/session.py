@@ -53,6 +53,18 @@ class Request:
     record: bool = False  # open with the record tool
 
 
+def give_back_memory():
+    """Return freed memory to the system. glibc keeps big freed blocks (a
+    screenshot's pictures) for reuse, so without this the tray app stays as
+    big as its largest capture made it."""
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # not glibc
+
+
 class Session:
     def __init__(self, cfg: config.Config, request: Request, notifier: Notifier, on_finished, on_action=None,
                  on_recording=None):
@@ -268,7 +280,7 @@ class Session:
 
     def activate(self, overlay: Overlay):
         """The pointer is now over ``overlay``."""
-        if overlay is self.pointer_overlay:
+        if overlay is self.pointer_overlay or self.done:
             return
         previous = self.pointer_overlay
         self.pointer_overlay = overlay
@@ -719,9 +731,16 @@ class Session:
             self.window_finder = None
         for o in self.overlays:
             o.hide()
+            o.release()
             o.deleteLater()
+        # Nothing here may keep an overlay's pictures: a notification's
+        # buttons can keep this session for as long as the notification is
+        # in the desktop's history.
         self.overlays = []
-        self.pointer_overlay = self.toolbar_overlay = None
+        self.pointer_overlay = self.toolbar_overlay = self._countdown_overlay = None
+        self.history, self.redo_stack, self.text_edit = [], [], None
+        self._grabbed = None
+        QTimer.singleShot(1000, give_back_memory)
 
     def capture(self, overlay: Overlay, rect: QRectF | None, window: windows.Window | None = None):
         """``window`` is set when ``rect`` is a window the user clicked."""
@@ -798,10 +817,9 @@ class Session:
                        "pin": "Pin"}
             if not result.saved:
                 actions.pop("folder")
-        path, layout = result.path, pin.screen_layout()
+        path, layout, on_action = result.path, pin.screen_layout(), self.on_action  # (not `self`: see above)
         self.notifier.send(title, "  ·  ".join(bits), image=path, actions=actions,
-                           on_action=(lambda key: self.on_action(key, path, at=at, layout=layout)) if actions
-                           else None)
+                           on_action=(lambda key: on_action(key, path, at=at, layout=layout)) if actions else None)
 
     def copy_color(self, overlay: Overlay):
         """Copy the hex colour under the pointer (the one the loupe shows)."""

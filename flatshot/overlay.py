@@ -276,6 +276,16 @@ class Overlay(QWidget):
     def picker_open(self) -> bool:
         return self.picker is not None and self.picker.isVisible()
 
+    def release(self):
+        """Let go of the pictures: the overlay is closing, and its Python
+        side can outlive it (held by a closure or an undo list)."""
+        self.base = QPixmap()
+        self._pixels = None
+        self._edge_maps = None
+        self.annotations, self.undone, self.active = [], [], None
+        self.codes, self.windows, self.chips = [], [], []
+        self._code_hover = self.hover_window = self.span_hover = None
+
     def dpr(self) -> float:
         return self.base.devicePixelRatio()
 

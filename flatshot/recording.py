@@ -323,11 +323,11 @@ class Recording(QObject):
         if copied:
             bits.append("path copied" if self.cfg.clipboard == "path" else "copied to clipboard")
         actions = {}
-        if self.on_action:
+        on_action = self.on_action  # (not `self`: the notification may outlive the recording by days)
+        if on_action:
             actions = {"default": "Open", "open": "Open", "folder": "Show in folder"}
         self.notifier.send("Recording saved", "  ·  ".join(bits), image=self._save_thumbnail(path), file=path,
-                           actions=actions,
-                           on_action=(lambda key: self.on_action(key, path)) if actions else None)
+                           actions=actions, on_action=(lambda key: on_action(key, path)) if actions else None)
 
     def _save_thumbnail(self, video: Path) -> Path | None:
         """The first frame (the frozen screen), for the notification; the
