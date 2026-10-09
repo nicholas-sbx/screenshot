@@ -20,6 +20,9 @@ TOOL_KEYS = {keyval(getattr(Qt.Key, f"Key_{key}")): name for name, _, key in EDI
 COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "ellipse", "marker", "text", "counter")
 CUSTOM = len(SWATCHES)  # the colour index of your own colour
 ZOOM = (0.05, 32.0)
+# A touchpad pinch (older PyQt6 builds, as in Debian 12, don't name these).
+_gesture, _zoom = getattr(QEvent.Type, "NativeGesture", None), getattr(Qt.NativeGestureType, "ZoomNativeGesture", None)
+PINCH = (_gesture, _zoom) if _gesture is not None and _zoom is not None else None
 HINT = "Scroll to move around  ·  Ctrl+scroll to zoom  ·  Space+drag or middle-drag to pan"
 
 _open: list["Editor"] = []
@@ -626,7 +629,7 @@ class Canvas(QWidget):
         self.pan_by(d)
 
     def event(self, event):
-        if event.type() == QEvent.Type.NativeGesture and event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+        if PINCH is not None and event.type() == PINCH[0] and event.gestureType() == PINCH[1]:
             self.zoom_to(self.zoom * (1 + event.value()), event.position())
             return True
         return super().event(event)
