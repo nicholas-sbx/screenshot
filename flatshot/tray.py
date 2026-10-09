@@ -213,7 +213,9 @@ class TrayApp(QObject):
             self.tray.setToolTip("Flatshot")
         self._update_menu()
 
-    def _on_action(self, key: str, path: Path):
+    def _on_action(self, key: str, path: Path, at=None, layout=None):
+        """A notification's button. ``at`` is where a screenshot was taken
+        and ``layout`` the monitors then (pin.screen_layout)."""
         if key in ("default", "open"):
             output.open_file(path)
         elif key == "folder":
@@ -223,7 +225,9 @@ class TrayApp(QObject):
         elif key == "pin":
             image = QImage(str(path))
             if not image.isNull():
-                pin.show(image)
+                # Where it was taken, unless the monitors changed since: then
+                # the desktop places it.
+                pin.show(image, at if at is not None and layout == pin.screen_layout() else None)
 
     def show_settings(self):
         from flatshot.settings import SettingsWindow

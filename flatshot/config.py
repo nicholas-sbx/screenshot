@@ -63,6 +63,7 @@ class Config:
     show_loupe: bool = True  # magnifier with coordinates and colour
     loupe_size: int = 120  # magnifier size in logical px
     show_crosshair: bool = True
+    show_hint: bool = True  # what to do next, in the middle of the screen while capturing
     rainbow: bool = False  # the crosshair and the magnifier's square cycle through colours
     snap_edges: bool = False  # selections snap to edges in the picture (toolbar toggle, G)
     snap_distance: int = 10  # how close (logical px) the pointer must be to an edge

@@ -771,7 +771,7 @@ class Session:
             print(result.path, flush=True)
         self._play_sound()
         if self.cfg.notify:
-            self._notify(result)
+            self._notify(result, at)
         self._finish(0, result.holds_clipboard)
 
     def _play_sound(self):
@@ -780,7 +780,9 @@ class Session:
 
             sound.play(self.cfg.sound_file)
 
-    def _notify(self, result: output.Delivery):
+    def _notify(self, result: output.Delivery, at: QRect | None = None):
+        """``at``: where the capture was (global logical), for Pin to open
+        there, as long as the monitors are still laid out the same."""
         w, h = result.size
         bits = [f"{w} × {h}"]
         if result.copied:
@@ -796,9 +798,10 @@ class Session:
                        "pin": "Pin"}
             if not result.saved:
                 actions.pop("folder")
-        path = result.path
+        path, layout = result.path, pin.screen_layout()
         self.notifier.send(title, "  ·  ".join(bits), image=path, actions=actions,
-                           on_action=(lambda key: self.on_action(key, path)) if actions else None)
+                           on_action=(lambda key: self.on_action(key, path, at=at, layout=layout)) if actions
+                           else None)
 
     def copy_color(self, overlay: Overlay):
         """Copy the hex colour under the pointer (the one the loupe shows)."""

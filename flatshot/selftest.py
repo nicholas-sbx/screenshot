@@ -695,6 +695,22 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
 
         config.Config(record_dir=str(rec_dir), notify=False, clipboard="none", record_countdown=0).save()
         tray = TrayApp(app)
+        # A notification's Pin opens where the screenshot was taken, unless the
+        # monitors have changed since.
+        from flatshot import pin
+        from flatshot.qt import QRect
+
+        shot_file = rec_dir / "pin-me.png"
+        img = QImage(40, 30, QImage.Format.Format_RGB32)
+        img.fill(QColor("#3DB2FF"))
+        img.save(str(shot_file))
+        where = QRect(30, 40, 40, 30)
+        tray._on_action("pin", shot_file, at=where, layout=pin.screen_layout())
+        assert pin._open[-1].at == where, pin._open[-1].at
+        tray._on_action("pin", shot_file, at=where, layout=(("gone", (0, 0, 640, 480), 1.0),))
+        assert pin._open[-1].at is None, "pinned where it was although the monitors changed"
+        for w in pin._open[-2:]:
+            w.close()
         tray.record()
         assert wait(lambda: tray.session is not None and tray.session.overlays)
         ov = tray.session.overlays[0]
@@ -1030,6 +1046,65 @@ def _pointer_and_snapping(app, tmp: Path, desktop: QImage, out_dir):
         finally:
             p.end()
     ov._snap_point = None
+    s.cancel()
+
+    # The hint: in the middle of the screen, faded while the pointer is near
+    # it, and gone with the setting off.
+    def hint_shot(cursor, **cfg):
+        s = Session(config.Config(save_dir=str(tmp / "x"), notify=False, show_loupe=False, show_crosshair=False,
+                                  **cfg), Request(image=str(flat_src), scan=False), Notifier(interactive=False),
+                    lambda *a: None)
+        s.start()
+        ov = s.overlays[0]
+        ov.resize(400, 300)
+        ov.toolbar.hide()
+        s.pointer_overlay = ov
+        ov.cursor_pos = cursor
+        shot = ov.grab().toImage()
+        s.cancel()
+        return shot
+
+    def at_middle(shot):
+        return QColor(shot.pixel(shot.width() // 2 - 60, shot.height() // 2 - 9))
+
+    off = at_middle(hint_shot(QPointF(10, 10), show_hint=False))
+    far = at_middle(hint_shot(QPointF(10, 10)))
+    near = at_middle(hint_shot(QPointF(200, 120)))
+    diff = lambda a, b: sum(abs(x - y) for x, y in zip(a.getRgb()[:3], b.getRgb()[:3]))  # noqa: E731
+    assert diff(far, off) > 60, ("no hint in the middle", far.name(), off.name())
+    assert 0 < diff(near, off) < diff(far, off) * 0.5, ("the hint doesn't fade near the pointer", near.name())
+
+    # Code cards: none covers another, even for codes side by side; the
+    # padding round a code follows its size; hovering a code puts its card
+    # on top.
+    from flatshot.overlay import _code_box
+    from flatshot.scanner import Code
+
+    def square(x, y, side):
+        return [QPointF(x, y), QPointF(x + side, y), QPointF(x + side, y + side), QPointF(x, y + side)]
+
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False), Request(image=str(flat_src), scan=False),
+                Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    ov.resize(400, 300)
+    codes = [Code("https://example.com/one", "QRCode", square(100, 100, 60)),
+             Code("https://example.com/two", "QRCode", square(110, 108, 60)),
+             Code("tiny", "QRCode", square(300, 40, 12))]
+    ov.set_codes(codes)
+    s.refresh()
+    cards = [chip.geometry() for chip in ov.chips]
+    assert len(cards) == 3 and all(not a.intersects(b) for i, a in enumerate(cards) for b in cards[i + 1:]), cards
+    big, tiny = _code_box(ov.codes[0][1]), _code_box(ov.codes[2][1])
+    assert big.width() - 60 > tiny.width() - 12, "the padding doesn't follow the code's size"
+    first = ov.chips[0]
+    on_top = lambda w: ov.children().index(w) > max(ov.children().index(c) for c in ov.chips if c is not w)  # noqa: E731
+    ov.cursor_pos = QPointF(102, 102)  # on the first code's box only
+    ov._update_hover()
+    assert on_top(first), "hovering a code didn't put its card on top"
+    ov.cursor_pos = QPointF(ov.chips[1].geometry().center())
+    ov._update_hover()
+    assert on_top(ov.chips[1]), "hovering a card didn't put it on top"
     s.cancel()
 
     # Blur: fine detail under it is smoothed away; nothing beside it changes.

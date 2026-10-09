@@ -623,6 +623,8 @@ class SettingsWindow(QWidget):
                      "Lines across the screen through the pointer."))
         card.add(Row("Rainbow", self._toggle("rainbow"),
                      "The crosshair and the magnifier's square cycle through the colours."))
+        card.add(Row("Hints", self._toggle("show_hint"),
+                     "What to do next, in the middle of the screen. It fades when the pointer comes near."))
 
         card = self._card("QR codes and barcodes")
         card.add(Row("Scan the screen", self._toggle("scan_codes")))

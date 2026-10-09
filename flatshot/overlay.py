@@ -8,7 +8,7 @@ import time
 
 from flatshot.qt import (
     QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap,
-    QPoint, QPointF, QPolygonF, QRect, QRectF, Qt, QTimer, QWidget,
+    QPoint, QPointF, QPolygonF, QRect, QRectF, QSizeF, Qt, QTimer, QWidget,
 )
 
 from flatshot import layershell, shapes
@@ -29,6 +29,7 @@ RECORD_HINTS = {
     "armed": "Drag the edges to adjust  ·  Enter to start  ·  Esc to go back",
     "countdown": "Recording starts in {n}  ·  Esc to cancel",
 }
+HINT_NEAR = 60  # the hint fades while the pointer is this close to it (logical px)
 HANDLE = 10  # size of the resize handles on an area chosen for recording
 # Snapping a selection to edges in the picture. How far an edge pulls is a
 # setting (snap_distance); so is the sensitivity, which sets how strong an
@@ -94,6 +95,7 @@ class Overlay(QWidget):
         self.windows: list[tuple[QRectF, object]] = []  # topmost first
         self.hover_window: tuple[QRectF, object] | None = None
         self.chips: list[CodeChip] = []
+        self._code_hover: CodeChip | None = None  # a code's card on top while the pointer is on the code
         self.toolbar: Toolbar | None = None
         # Recording: the chosen area (logical), how it was chosen, and a drag
         # that moves or resizes it: (handle, press position, rect at press).
@@ -177,10 +179,53 @@ class Overlay(QWidget):
     def _place_floating(self):
         if self.toolbar and not self.toolbar.placed and self.width() > self.toolbar.width():
             self.toolbar.place()
-        for chip, (_, poly) in zip(self.chips, self.codes):
-            c = poly.boundingRect().center()
-            chip.move(round(c.x() - chip.width() / 2), round(c.y() - chip.height() / 2))
+        self._place_chips()
         self._place_panel()
+
+    def _place_chips(self):
+        """Each code's card on its code, moved down (or up) clear of the
+        cards already placed, so none covers another."""
+        placed: list[QRectF] = []
+        bounds = QRectF(self.rect()).adjusted(4, 4, -4, -4)
+        order = sorted(zip(self.chips, self.codes), key=lambda cc: (cc[1][1].boundingRect().center().y(),
+                                                                    cc[1][1].boundingRect().center().x()))
+        for chip, (_, poly) in order:
+            c = poly.boundingRect().center()
+            home = QRectF(c.x() - chip.width() / 2, c.y() - chip.height() / 2, chip.width(), chip.height())
+            home.moveLeft(max(bounds.left(), min(home.left(), bounds.right() - home.width())))
+            step = chip.height() + 4
+            spot = home
+            for n in range(1, 2 * len(order) + 2):
+                if not any(spot.adjusted(-2, -2, 2, 2).intersects(r) for r in placed) and bounds.contains(spot):
+                    break
+                shift = (n + 1) // 2 * step * (1 if n % 2 else -1)  # down 1, up 1, down 2, ...
+                spot = home.translated(0, shift)
+            else:
+                spot = home
+            placed.append(spot)
+            chip.move(round(spot.x()), round(spot.y()))
+
+    def _update_code_hover(self):
+        """The code under the pointer (its green box or its card) and its
+        card go on top of the others while it's there."""
+        hovered = None
+        if self.cursor_pos is not None and self.chips and self.chips[0].isVisible():
+            pt = self.cursor_pos
+            hovered = next((chip for chip in reversed(self.chips) if chip.geometry().contains(pt.toPoint())), None)
+            if hovered is None:
+                hovered = next((chip for chip, (_, poly) in zip(self.chips, self.codes)
+                                if _code_box(poly).contains(pt)), None)
+        if hovered is self._code_hover:
+            return
+        self._code_hover = hovered
+        for chip in self.chips:  # back to the usual order, then the hovered one on top
+            chip.raise_()
+        if hovered is not None:
+            hovered.raise_()
+        for w in (self.toolbar, self.panel, self.picker):
+            if w is not None and w.isVisible():
+                w.raise_()
+        self.update()
 
     def _place_panel(self):
         """Under the area chosen for recording, else above it, else inside."""
@@ -268,6 +313,8 @@ class Overlay(QWidget):
         self._update_hover()
 
     def _update_hover(self):
+        if self.chips:
+            self._update_code_hover()
         hover = None
         if (self.ctl.tool in ("region", "record") and self.sel_rect is None and self.rec_rect is None
                 and self.cursor_pos is not None and not self._over_floating()):
@@ -296,7 +343,10 @@ class Overlay(QWidget):
         for i, (c, _) in enumerate(self.codes):
             if c is code:
                 del self.codes[i]
-                self.chips.pop(i).deleteLater()
+                chip = self.chips.pop(i)
+                if chip is self._code_hover:
+                    self._code_hover = None
+                chip.deleteLater()
                 break
         self.update()
 
@@ -687,7 +737,7 @@ class Overlay(QWidget):
         elif ((picking and self.ctl.cfg.show_loupe or self.ctl.eyedropper) and self.cursor_pos is not None
               and self._loupe_allowed() and self.rect().contains(self.cursor_pos.toPoint())):
             self._paint_loupe(p, self.cursor_pos)
-        if self.sel_rect is None and self is self.ctl.pointer_overlay:
+        if self.sel_rect is None and self is self.ctl.pointer_overlay and self.ctl.cfg.show_hint:
             self._paint_hint(p)
 
     def _over_floating(self, margin: int = 0) -> bool:
@@ -719,8 +769,17 @@ class Overlay(QWidget):
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
         p.setBrush(C.CODE_SOFT)
-        for _, poly in self.codes:
-            p.drawRoundedRect(poly.boundingRect().adjusted(-8, -8, 8, 8), 8, 8)
+        hovered = None
+        for chip, (_, poly) in zip(self.chips, self.codes):
+            if chip is self._code_hover:
+                hovered = poly
+                continue
+            box = _code_box(poly)
+            p.drawRoundedRect(box, min(8.0, box.height() / 3), min(8.0, box.height() / 3))
+        if hovered is not None:  # on top of the others
+            box = _code_box(hovered)
+            p.setBrush(QColor(C.CODE.red(), C.CODE.green(), C.CODE.blue(), 80))
+            p.drawRoundedRect(box, min(8.0, box.height() / 3), min(8.0, box.height() / 3))
         p.restore()
 
     def _paint_selection(self, p: QPainter, r: QRectF, label: bool = True):
@@ -921,12 +980,16 @@ class Overlay(QWidget):
             text = self.ctl.hint or EYEDROPPER_HINT
         else:
             text = self.ctl.hint or (PIN_HINT if tool == "pin" else HINTS.get(tool, DRAW_HINT))
+        # In the middle of the screen, faded while the pointer is near it.
         fm = QFontMetricsF(font(12, QFont.Weight.Medium))
-        x = (self.width() - fm.horizontalAdvance(text)) / 2 - 14
-        self._pill(p, text, QPointF(x, self.height() - 52))
+        width = fm.horizontalAdvance(text) + 28
+        at = QPointF((self.width() - width) / 2, (self.height() - 28) / 2)
+        near = self.cursor_pos is not None and QRectF(at, QSizeF(width, 28)).adjusted(
+            -HINT_NEAR, -HINT_NEAR, HINT_NEAR, HINT_NEAR).contains(self.cursor_pos)
+        self._pill(p, text, at, opacity=0.3 if near else 1.0)
 
     def _pill(self, p, text, at: QPointF, anchor_bottom=False, bg=None, fg=None, mono=False, keep_inside=False,
-              small=False):
+              small=False, opacity=1.0):
         f = font(11 if small else 12, QFont.Weight.DemiBold if bg is not None else QFont.Weight.Medium, mono=mono)
         fm = QFontMetricsF(f)
         box = QRectF(0, 0, fm.horizontalAdvance(text) + (18 if small else 28), 22 if small else 28)
@@ -934,6 +997,7 @@ class Overlay(QWidget):
         if keep_inside and box.top() < 4:
             box.moveTop(at.y() + 20)  # no room above the selection: tuck inside
         p.save()
+        p.setOpacity(opacity)
         p.setPen(QPen(C.LINE, 1) if bg is None else Qt.PenStyle.NoPen)
         p.setBrush(bg or C.BASE)
         p.drawRoundedRect(box, 6 if small else 8, 6 if small else 8)
@@ -1048,6 +1112,14 @@ def _pick(xs, ys, tolerance: int, rounding: int = 0, edge_at=None) -> tuple[int 
             if score > best_score:
                 best, best_score = (vx[1] if vx else None, hy[1] if hy else None), score
     return best
+
+
+def _code_box(poly: QPolygonF) -> QRectF:
+    """The green box round a code: padded in proportion to its size, so a
+    small code isn't swamped and a big one isn't cramped."""
+    r = poly.boundingRect()
+    pad = min(max(min(r.width(), r.height()) * 0.08, 3.0), 16.0)
+    return r.adjusted(-pad, -pad, pad, pad)
 
 
 def _corner_inset(at: int, size: int, radius: float, border: int) -> int:

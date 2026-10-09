@@ -12,6 +12,13 @@ from flatshot.qt import (
 from flatshot.theme import C
 
 _open: list["PinWindow"] = []
+
+
+def screen_layout() -> tuple:
+    """The monitors' names, places and scales: a pin may open where its
+    capture was only while these are as they were then."""
+    return tuple((s.name(), s.geometry().getRect(), round(s.devicePixelRatio(), 3))
+                 for s in QGuiApplication.screens())
 _ids = count(1)
 _on_all_closed: list = []
 
