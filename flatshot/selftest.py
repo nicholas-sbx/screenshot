@@ -230,6 +230,19 @@ def run() -> int:
     assert reloaded.notify is (not before) and reloaded.dim_opacity == 0, reloaded
     settings.close()
 
+    # Tray icon styles: the plain ones are one colour on transparent.
+    from flatshot import icons
+
+    for style in icons.TRAY_STYLES:
+        pic = icons.tray_icon(style).pixmap(32, 32).toImage()
+        assert not pic.isNull(), style
+        if style in ("white", "black"):
+            seen = {pic.pixelColor(x, y).rgb() & 0xFFFFFF for x in range(32) for y in range(32)
+                    if pic.pixelColor(x, y).alpha() == 255}
+            assert seen == {0xFFFFFF if style == "white" else 0}, (style, seen)
+            assert pic.pixelColor(0, 16).alpha() == 0 and pic.pixelColor(7, 16).alpha() == 0, style
+    print("self-test: tray icon styles ok")
+
     _instant_and_extras(app, tmp, desktop, out_dir)
     _pointer_and_snapping(app, tmp, desktop, out_dir)
     _editor(app, tmp, out_dir)

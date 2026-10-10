@@ -43,6 +43,7 @@ RECORD_FORMATS = ("mp4", "webm", "gif")
 RECORD_FPS = (24, 30, 60)
 REGION_POINTER = ("toggle", "hidden", "shown")
 SCREENSHOT_METHODS = ("desktop", "screens")
+TRAY_ICONS = ("color", "theme", "white", "black", "auto")  # (icons.TRAY_STYLES)
 
 
 @dataclass
@@ -60,6 +61,7 @@ class Config:
     sound: bool = False  # play a sound after a capture
     sound_file: str = ""  # empty: the desktop's screenshot sound
     theme: str = "ember"  # see theme.THEMES
+    tray_icon: str = "color"  # color | theme | white | black | auto (white or black, like the desktop)
     # Capture
     dim_opacity: int = 60  # screen shading in %, 0 turns it off
     show_loupe: bool = True  # magnifier with coordinates and colour
@@ -128,6 +130,8 @@ class Config:
             self.region_pointer = "hidden"
         if self.screenshot_method not in SCREENSHOT_METHODS:
             self.screenshot_method = "desktop"
+        if self.tray_icon not in TRAY_ICONS:
+            self.tray_icon = "color"
         if self.backend not in BACKENDS:
             self.backend = "auto"
         self.dim_opacity = max(0, min(int(self.dim_opacity), 90))
