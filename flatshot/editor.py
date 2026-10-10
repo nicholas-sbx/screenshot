@@ -6,16 +6,18 @@ and any number of editors can be open at once. Loaded only when one opens."""
 import sys
 from pathlib import Path
 
-from flatshot import config, icons, keys, output, selection, shapes, theme, timing
+from flatshot import config, icons, keys, output, picture, selection, shapes, theme, timing
 from flatshot.qt import (
-    QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QHBoxLayout, QImage, QPainter, QPen, QPixmap, QPoint,
-    QPointF, QRectF, QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
+    QColor, QCursor, QEvent, QFont, QFontMetricsF, QGuiApplication, QHBoxLayout, QImage, QLabel, QLineEdit,
+    QPainter, QPainterPath, QPen, QPixmap, QPoint, QPointF, QRectF, QRegularExpression, QRegularExpressionValidator,
+    QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
 )
 from flatshot.theme import C, SWATCHES, font
 from flatshot.widgets import TOOLS, CustomSwatch, Divider, IconButton, SizeButton, Swatch, _Button
 
-# The overlay's drawing tools (not capturing or recording).
-EDIT_TOOLS = [t for t in TOOLS if t[0] not in ("region", "record")]
+# The overlay's drawing tools (not capturing or recording), and the picture's own.
+EDIT_TOOLS = [t for t in TOOLS if t[0] not in ("region", "record")] + [
+    ("crop", "Crop, cut out, rotate and resize", "C")]
 COLOUR_TOOLS = ("pen", "line", "arrow", "rect", "solid", "ellipse", "marker", "text", "counter")
 CUSTOM = len(SWATCHES)  # the colour index of your own colour
 ZOOM = (0.05, 32.0)
@@ -25,6 +27,9 @@ PINCH = (_gesture, _zoom) if _gesture is not None and _zoom is not None else Non
 MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in ("Shift", "Control", "Alt", "AltGr", "Meta")}
 SHAPE_HINT = "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it"
 TEXT_HINT = "Click to place text, or on text to change it  ·  Drag text to move it  ·  Shift+Enter for a new line"
+CROP_HINT = ("Drag the edges to crop, past the picture for a margin  ·  Shift keeps the shape  ·  Ctrl: from the "
+             "middle, without snapping  ·  Enter crops")
+CUT_HINT = "Drag across the {what} to cut out; the rest is joined  ·  Esc to stop"
 SELECT_HINT = "Click a drawing to select it (Alt: the one under it)  ·  Drag to move  ·  Handles resize  ·  Delete removes it"
 SELECTED_HINT = ("Drag to move (Shift: straight)  ·  Handles: Shift keeps its shape, Ctrl from the middle  ·  "
                  "Arrows nudge  ·  Colours and sizes change it")
@@ -68,12 +73,15 @@ class Editor(QWidget):
         self.alpha = image.hasAlphaChannel()
         # Annotations are kept in the picture's logical pixels, as on the
         # overlay, so a stroke is as thick here as it would be there.
-        screen = self.screen()
+        # (Not self.screen(): PySide makes what that returns the window's child, so
+        # closing the window would break every other use of that screen.)
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         self.dpr = screen.devicePixelRatio() if screen is not None else 1.0
         self.base = QPixmap.fromImage(image)
         self.base.setDevicePixelRatio(self.dpr)
         self.annotations: list[shapes.Shape] = []
         self._saved: list[shapes.Shape] = []  # the annotations as last saved (or opened)
+        self._saved_base = self.base  # the picture then (crop, rotate, ... change it)
         self.undone: list[shapes.Shape] = []
         self.active: shapes.Shape | None = None
         self.text_edit: shapes.Text | None = None
@@ -99,6 +107,10 @@ class Editor(QWidget):
         column.setSpacing(0)
         self.bar = _Bar(self)
         column.addWidget(self.bar)
+        self.cropper = Cropper(self)
+        self.picture_bar = _PictureBar(self)
+        self.picture_bar.hide()
+        column.addWidget(self.picture_bar)
         self.canvas = Canvas(self)
         self.selection = selection.Selection(self.canvas)  # the select tool's drawing
         column.addWidget(self.canvas, 1)
@@ -128,6 +140,11 @@ class Editor(QWidget):
         self.commit_text()
         if tool != "select":
             self.selection.clear()
+        if tool == "crop" and self.tool != "crop":
+            self.cropper.start()
+        elif tool != "crop":
+            self.cropper.stop()
+        self.picture_bar.setVisible(tool == "crop")
         self.tool = tool
         if tool in COLOUR_TOOLS:
             self.colour_tool = tool
@@ -258,8 +275,12 @@ class Editor(QWidget):
         self.commit_text()
         if self.annotations:
             shape = self.annotations.pop()
-            if getattr(shape, "replaces", None) is not None:
-                shape.replaces.hidden = False  # the text as it was before it was edited
+            if isinstance(shape, picture.Step):  # the picture and its drawings as they were
+                self.base, drawings = shape.before
+                self.annotations = list(drawings)
+                self._picture_changed()
+            elif getattr(shape, "replaces", None) is not None:
+                shape.replaces.hidden = False  # the drawing as it was before it was changed
             self.undone.append(shape)
             self._changed()
 
@@ -267,21 +288,51 @@ class Editor(QWidget):
         self.commit_text()
         if self.undone:
             shape = self.undone.pop()
-            if getattr(shape, "replaces", None) is not None:
+            if isinstance(shape, picture.Step):
+                self.base, drawings = shape.after
+                self.annotations = list(drawings)
+                self._picture_changed()
+            elif getattr(shape, "replaces", None) is not None:
                 shape.replaces.hidden = True
             self.annotations.append(shape)
             self._changed()
 
+    # -- the picture itself (crop, cut out, rotate, flip, resize) --------------
+
+    def change_picture(self, what: str, changed: tuple):
+        """Put in the picture a picture.* function gave, as ``changed``:
+        (new picture, how a point moves onto it). The drawings move with
+        it. One undo step."""
+        self.commit_text()
+        base, fn = changed
+        drawings = picture.move_drawings(self.annotations, fn)
+        step = picture.Step(what, (self.base, list(self.annotations)), (base, drawings))
+        self.base = base
+        self.annotations = drawings + [step]
+        self.undone.clear()
+        self._picture_changed()
+        self._changed()
+        self._say(f"{what}: {base.width()} × {base.height()}")
+
+    def _picture_changed(self):
+        self.selection.clear()
+        if self.tool == "crop":
+            self.cropper.start()
+        self.picture_bar.refresh()
+        self.canvas.fit()
+
     def _changed(self):
         # Unsaved only while it differs from what was saved: undoing back
         # to that is saved again.
-        self.dirty = self.annotations != self._saved
+        self.dirty = self.annotations != self._saved or self.base is not self._saved_base
         self.bar.refresh()
         self._title()
         self.refresh()
 
     def refresh(self):
         self.bar.refresh()
+        if self.picture_bar.isVisible():
+            self.picture_bar.refresh()
         self.canvas.update_cursor()
         self.canvas.update()
         self.status.update()
@@ -302,7 +353,8 @@ class Editor(QWidget):
                 shape.paint(p, self.base)
         p.end()
         image.setDevicePixelRatio(1.0)
-        return image.convertToFormat(QImage.Format.Format_ARGB32 if self.alpha else QImage.Format.Format_RGB32)
+        alpha = self.alpha or self.base.hasAlphaChannel()  # (a clear margin, say)
+        return image.convertToFormat(QImage.Format.Format_ARGB32 if alpha else QImage.Format.Format_RGB32)
 
     def save(self) -> bool:
         return self._save_to(self.path)
@@ -337,6 +389,7 @@ class Editor(QWidget):
             return False
         self.path, self.dirty = written, False
         self._saved = list(self.annotations)
+        self._saved_base = self.base
         self._title()
         self.bar.refresh()
         self._say(f"Saved to {written}")
@@ -384,6 +437,9 @@ class Editor(QWidget):
         if self.tool == "select" and self.selection.key(event):
             self.refresh()  # (Delete, or an arrow key nudging it)
             return
+        if self.tool == "crop" and k in (keyval(Qt.Key.Key_Return), keyval(Qt.Key.Key_Enter)):
+            self.cropper.apply()
+            return
         if self.canvas.modifier_changed(event):
             return
         if k == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
@@ -393,7 +449,11 @@ class Editor(QWidget):
                 self.close_picker()  # (its hint says Esc stops it)
             else:
                 self.close_picker()  # it closes, and Esc still does what it does
-                if not self.canvas.cancel():
+                if self.canvas.cancel():
+                    pass
+                elif self.tool == "crop":
+                    self.set_tool(self.colour_tool)  # (leaves the crop tool, not the editor)
+                else:
                     self.close()
         elif (action := self.keymap.action(event, keys.EDITOR)) is not None:
             self._do(action)
@@ -440,7 +500,8 @@ class Editor(QWidget):
         if self in _open:
             _open.remove(self)
         self.base = QPixmap()  # (its Python side may outlive the window a while)
-        self.annotations, self.undone = [], []
+        self.annotations, self.undone, self._saved = [], [], []
+        self._saved_base = QPixmap()
         if not _open:
             callbacks, _when_all_closed[:] = list(_when_all_closed), []
             for callback in callbacks:
@@ -690,6 +751,8 @@ class _Status(QWidget):
             "Click a pixel to make it your colour  ·  Esc to stop" if self.ed.eyedropper else
             SHAPE_HINT if self.ed.active is not None and hasattr(self.ed.active, "pointer") else
             TEXT_HINT if self.ed.tool == "text" else
+            CUT_HINT.format(what=self.ed.cropper.cut) if self.ed.tool == "crop" and self.ed.cropper.cut else
+            CROP_HINT if self.ed.tool == "crop" else
             (SELECTED_HINT if self.ed.selection.shape is not None else SELECT_HINT) if self.ed.tool == "select"
             else HINT)
         right = f"{self.ed.base.width()} × {self.ed.base.height()}   {round(self.ed.canvas.zoom * 100)}%"
@@ -793,14 +856,17 @@ class Canvas(QWidget):
             shape = Qt.CursorShape.OpenHandCursor
         elif self.ed.tool == "text" and not self.ed.eyedropper:
             shape = Qt.CursorShape.IBeamCursor
-        elif self.ed.tool == "select" and not self.ed.eyedropper:
+        elif self.ed.tool in ("select", "crop") and not self.ed.eyedropper:
             shape = Qt.CursorShape.ArrowCursor
         else:
             shape = Qt.CursorShape.CrossCursor
         self.setCursor(shape)
 
     def cancel(self) -> bool:
-        """Esc: drop the shape being drawn, finish the text, or deselect."""
+        """Esc: drop the shape being drawn, finish the text, deselect, or
+        put the crop back."""
+        if self.ed.tool == "crop" and self.ed.cropper.cancel():
+            return True
         if self.ed.selection.clear():
             self.ed.status.update()
             return True
@@ -854,6 +920,8 @@ class Canvas(QWidget):
         elif ed.tool == "select":
             ed.selection.press(at, event.modifiers(), self.zoom)
             ed.refresh()
+        elif ed.tool == "crop":
+            ed.cropper.press(at, event.modifiers(), self.zoom)
         else:
             ed.active = shapes.create(ed.tool, at, ed.color, ed.size)
         self.update()
@@ -879,6 +947,11 @@ class Canvas(QWidget):
             self.update()
         elif self.ed.selection.move(self.to_picture(pos), event.modifiers()):
             pass
+        elif self.ed.tool == "crop" and not self._space and not self.ed.eyedropper:
+            at = self.to_picture(pos)
+            if not self.ed.cropper.move(at, event.modifiers()):
+                self.setCursor(self.ed.cropper.cursor(at, self.zoom))
+            self.update()
         elif self.ed.tool == "select" and not self._space and not self.ed.eyedropper:
             self.setCursor(self.ed.selection.cursor(self.to_picture(pos), self.zoom))
 
@@ -899,6 +972,9 @@ class Canvas(QWidget):
             self.ed.status.update()
         elif event.button() == Qt.MouseButton.LeftButton and self.ed.selection.release():
             self.ed.refresh()
+        elif event.button() == Qt.MouseButton.LeftButton and self.ed.tool == "crop":
+            self.ed.cropper.release()
+            self.update()
 
     def wheelEvent(self, event):
         """Scrolling moves the picture (Shift: sideways); Ctrl+scroll zooms
@@ -977,7 +1053,9 @@ class Canvas(QWidget):
             p.setClipping(False)  # (its handles may stand past the picture's edges)
             self.ed.selection.paint_frame(p, self.zoom)
         p.restore()
-        if not self.ed.annotations and self.ed.active is None and self.ed.text_edit is None:
+        if self.ed.tool == "crop":
+            self.ed.cropper.paint(p, self)
+        elif not self.ed.annotations and self.ed.active is None and self.ed.text_edit is None:
             self._paint_tip(p)
 
     def _paint_tip(self, p: QPainter):
@@ -993,3 +1071,390 @@ class Canvas(QWidget):
         p.setPen(C.SOFT)
         p.setFont(f)
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+
+
+class Cropper:
+    """The crop tool: a frame round the part to keep, its edges dragged in
+    (or out past the picture, for a margin), at a fixed shape if asked; or,
+    when cutting out, a band dragged across the picture to remove."""
+
+    HANDLE = 10.0
+
+    def __init__(self, ed: Editor):
+        self.ed = ed
+        self.rect: QRectF | None = None  # what to keep (picture coordinates; may reach past it)
+        self.ratio = "free"  # see picture.RATIOS
+        self.margin_colour = False  # a margin in your colour, else clear
+        self.cut: str | None = None  # "rows" or "columns" while cutting out a slice
+        self._drag: tuple | None = None  # (handle, "move" or "new"; press position; the frame then)
+        self._band: tuple[float, float] | None = None  # a slice being dragged across: (from, to)
+        self._maps = None  # (the picture's cache key, its edge maps) for snapping
+
+    def whole(self) -> QRectF:
+        return QRectF(QPointF(0, 0), self.ed.base.deviceIndependentSize())
+
+    def _default(self) -> QRectF:
+        """The frame to start from: all of the picture (at the crop's shape)."""
+        r = self.ratio_value()
+        return picture.fit_ratio(self.whole(), r) if r else self.whole()
+
+    def start(self):
+        self.rect = self._default()
+        self._drag = self._band = None
+        self.cut = None
+
+    def stop(self):
+        self.rect = self._drag = self._band = None
+        self.cut = None
+
+    def changed(self) -> bool:
+        if self.rect is None:
+            return False
+        w = self.whole()
+        return any(abs(a - b) > 0.5 for a, b in ((self.rect.left(), w.left()), (self.rect.top(), w.top()),
+                                                 (self.rect.right(), w.right()), (self.rect.bottom(), w.bottom())))
+
+    # -- the options -----------------------------------------------------------
+
+    def ratio_value(self) -> float | None:
+        value = picture.RATIOS.get(self.ratio)
+        if value == "original":
+            w = self.whole()
+            return w.width() / w.height() if w.height() else None
+        return value
+
+    def next_ratio(self):
+        names = list(picture.RATIOS)
+        self.ratio = names[(names.index(self.ratio) + 1) % len(names)]
+        self._fit_ratio()
+        self.ed.refresh()
+
+    def _fit_ratio(self):
+        r = self.ratio_value()
+        if r and self.rect is not None:
+            self.rect = picture.fit_ratio(self.rect, r)
+
+    def set_cut(self, what: str | None):
+        self.cut = None if self.cut == what else what
+        self.ed.refresh()
+
+    # -- snapping (as the capture overlay's magnet) -------------------------------
+
+    def _snap(self, pt: QPointF, mods) -> QPointF:
+        if not self.ed.cfg.snap_edges or mods & Qt.KeyboardModifier.ControlModifier:
+            return pt
+        from flatshot.overlay import edge_maps, snap_to_edges
+
+        key = self.ed.base.cacheKey()
+        if self._maps is None or self._maps[0] != key:
+            self._maps = (key, edge_maps(self.ed.base.toImage()))
+        return snap_to_edges(self._maps[1], pt, self.ed.base.devicePixelRatio(), self.ed.cfg)
+
+    # -- the pointer ---------------------------------------------------------------
+
+    def _handles(self) -> dict:
+        r = self.rect
+        xs = {"l": r.left(), "": r.center().x(), "r": r.right()}
+        ys = {"t": r.top(), "": r.center().y(), "b": r.bottom()}
+        return {yk + xk: QPointF(x, y) for yk, y in ys.items() for xk, x in xs.items() if yk + xk}
+
+    def _handle_at(self, pos: QPointF, scale: float) -> str | None:
+        if self.rect is None:
+            return None
+        grab = (self.HANDLE / 2 + 4) / scale
+        return next((name for name, at in self._handles().items()
+                     if abs(pos.x() - at.x()) <= grab and abs(pos.y() - at.y()) <= grab), None)
+
+    def cursor(self, pos: QPointF, scale: float):
+        if self.cut:
+            return Qt.CursorShape.SplitVCursor if self.cut == "rows" else Qt.CursorShape.SplitHCursor
+        handle = self._handle_at(pos, scale)
+        if handle:
+            return selection.CURSORS[handle]
+        if self.rect is not None and self.rect.contains(pos) and self.changed():
+            return Qt.CursorShape.SizeAllCursor
+        return Qt.CursorShape.CrossCursor
+
+    def press(self, pos: QPointF, mods, scale: float):
+        if self.cut:
+            v = pos.y() if self.cut == "rows" else pos.x()
+            self._band = (v, v)
+            return
+        handle = self._handle_at(pos, scale)
+        if handle:
+            self._drag = (handle, QPointF(pos), QRectF(self.rect))
+        elif self.rect is not None and self.rect.contains(pos) and self.changed():
+            self._drag = ("move", QPointF(pos), QRectF(self.rect))
+        else:
+            self._drag = ("new", self._snap(pos, mods), None)
+
+    def move(self, pos: QPointF, mods) -> bool:
+        if self._band is not None:
+            self._band = (self._band[0], pos.y() if self.cut == "rows" else pos.x())
+            return True
+        if self._drag is None:
+            return False
+        handle, start, r0 = self._drag
+        ratio = self.ratio_value()
+        keep = ratio is not None or bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        center = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        if handle == "new":
+            end = self._snap(pos, mods)
+            d = end - start
+            if keep:
+                r = ratio or 1.0
+                if abs(d.x()) / r > abs(d.y()):
+                    d = QPointF(d.x(), abs(d.x()) / r * (1 if d.y() >= 0 else -1))
+                else:
+                    d = QPointF(abs(d.y()) * r * (1 if d.x() >= 0 else -1), d.y())
+            self.rect = QRectF(start - d, start + d) if center else QRectF(start, start + d)
+        elif handle == "move":
+            self.rect = r0.translated(pos - start)
+        else:
+            corner = QPointF(r0.left() if "l" in handle else r0.right() if "r" in handle else r0.center().x(),
+                             r0.top() if "t" in handle else r0.bottom() if "b" in handle else r0.center().y())
+            # The edge keeps its distance from the pointer, then snaps to an edge in the picture.
+            d = self._snap(corner + (pos - start), mods) - corner
+            self.rect = selection._resized(r0, handle, d, keep, center)
+        self.rect = self.rect.normalized()
+        return True
+
+    def release(self):
+        if self._band is not None:
+            a, b = self._band
+            self._band = None
+            if abs(b - a) * self.ed.base.devicePixelRatio() >= 1:
+                rows = self.cut == "rows"
+                self.ed.change_picture("Cut out", picture.cut(self.ed.base, a, b, rows))
+            return
+        if self._drag is not None:
+            self._drag = None
+            if self.rect.width() < 2 or self.rect.height() < 2:
+                self.rect = self._default()  # (a click: back to all of it)
+            self.ed.refresh()
+
+    def cancel(self) -> bool:
+        """Esc: stop cutting, or put the frame back round the whole picture."""
+        if self._drag is not None or self._band is not None:
+            self._drag = self._band = None
+        elif self.cut:
+            self.cut = None
+        elif self.rect is not None and self.rect != self._default():
+            self.start()
+        else:
+            return False
+        self.ed.refresh()
+        return True
+
+    def apply(self):
+        """Crop to the frame (Enter)."""
+        if not self.changed():
+            return
+        margin = QColor(self.ed.color) if self.margin_colour else None
+        what = "Cropped" if self.whole().contains(self.rect) else "Margin added"
+        self.ed.change_picture(what, picture.crop(self.ed.base, self.rect, margin))
+
+    # -- painting (in the canvas's own coordinates) ----------------------------------
+
+    def paint(self, p: QPainter, canvas: "Canvas"):
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        frame = QRectF(canvas.offset, canvas.picture_size() * canvas.zoom)
+        if self._band is not None:
+            a, b = sorted(self._band)
+            z = canvas.zoom
+            band = (QRectF(frame.left(), canvas.offset.y() + a * z, frame.width(), (b - a) * z) if self.cut == "rows"
+                    else QRectF(canvas.offset.x() + a * z, frame.top(), (b - a) * z, frame.height()))
+            shade = QColor(theme.REC)
+            shade.setAlpha(90)
+            p.fillRect(band.intersected(frame), shade)
+            p.setPen(QPen(theme.REC, 1.5, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(band.intersected(frame))
+        if self.rect is None or self.cut:
+            p.restore()
+            return
+        r = QRectF(canvas.offset + self.rect.topLeft() * canvas.zoom, self.rect.size() * canvas.zoom)
+        # The margin, where the frame reaches past the picture.
+        outside = QPainterPath()
+        outside.addRect(r)
+        pic = QPainterPath()
+        pic.addRect(frame)
+        margin = outside.subtracted(pic)
+        if not margin.isEmpty():
+            if self.margin_colour:
+                p.fillPath(margin, self.ed.color)
+            else:
+                p.fillPath(margin, _checks())
+        # Shade what's cut away, then the frame and its handles.
+        if self.changed():
+            shade = QColor(C.DIM)
+            shade.setAlpha(150)
+            everything = QPainterPath()
+            everything.addRect(QRectF(canvas.rect()))
+            p.fillPath(everything.subtracted(outside), shade)
+        p.setPen(QPen(C.ACCENT, 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(r)
+        p.setPen(QPen(C.ACCENT, 1.5))
+        p.setBrush(C.TEXT)
+        for at in self._handles().values():
+            v = canvas.offset + at * canvas.zoom
+            p.drawRoundedRect(QRectF(v.x() - self.HANDLE / 2, v.y() - self.HANDLE / 2, self.HANDLE, self.HANDLE), 3, 3)
+        # Its size in pixels.
+        d = self.ed.base.devicePixelRatio()
+        label = f"{round(self.rect.width() * d)} × {round(self.rect.height() * d)}"
+        f = font(12, QFont.Weight.DemiBold)
+        w = QFontMetricsF(f).horizontalAdvance(label) + 18
+        box = QRectF(r.left(), r.top() - 30, w, 24)
+        if box.top() < 4:
+            box.moveTop(r.top() + 6)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(C.ACCENT)
+        p.drawRoundedRect(box, 6, 6)
+        p.setPen(C.ON_ACCENT)
+        p.setFont(f)
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+        p.restore()
+
+
+_checks_cache: list = []
+
+
+def _checks():
+    """A grey checkerboard brush, for what's transparent."""
+    from flatshot.qt import QBrush
+
+    if not _checks_cache:
+        tile = QPixmap(16, 16)
+        tile.fill(QColor("#9A9A9A"))
+        p = QPainter(tile)
+        p.fillRect(0, 0, 8, 8, QColor("#CFCFCF"))
+        p.fillRect(8, 8, 8, 8, QColor("#CFCFCF"))
+        p.end()
+        _checks_cache.append(QBrush(tile))
+    return _checks_cache[0]
+
+
+class _PictureBar(QWidget):
+    """Under the toolbar while cropping: the crop's shape and margin, cutting
+    out rows or columns, rotating, flipping, resizing, and Crop."""
+
+    def __init__(self, ed: Editor):
+        super().__init__(ed)
+        self.ed = ed
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 5, 8, 5)
+        row.setSpacing(4)
+        crop = ed.cropper
+        self.ratio = ActionButton(ed, "Free", "ratio", "The crop's shape: click for the next. Shift keeps the shape "
+                                  "while you drag.", self, also=("1:1", "4:3", "16:9", "Original"))
+        self.ratio.clicked.connect(crop.next_ratio)
+        self.margin = ActionButton(ed, "Clear", "margin", "Past the picture's edges: a clear margin, or one in your "
+                                   "colour", self, also=("Colour",))
+        self.margin.clicked.connect(self._toggle_margin)
+        row.addWidget(self.ratio)
+        row.addWidget(self.margin)
+        row.addWidget(Divider(self))
+        self.cut_rows = IconButton(ed, "cut-rows", "Cut out rows: drag across them, and the rest is joined", self)
+        self.cut_rows.clicked.connect(lambda: crop.set_cut("rows"))
+        self.cut_cols = IconButton(ed, "cut-cols", "Cut out columns: drag across them, and the rest is joined", self)
+        self.cut_cols.clicked.connect(lambda: crop.set_cut("columns"))
+        for b in (self.cut_rows, self.cut_cols):
+            row.addWidget(b)
+        row.addWidget(Divider(self))
+        for icon, hint, fn in (
+                ("rotate-left", "Rotate left", lambda: ed.change_picture("Rotated", picture.rotate(ed.base, False))),
+                ("rotate-right", "Rotate right", lambda: ed.change_picture("Rotated", picture.rotate(ed.base, True))),
+                ("flip-h", "Flip left to right", lambda: ed.change_picture("Flipped", picture.flip(ed.base, True))),
+                ("flip-v", "Flip upside down", lambda: ed.change_picture("Flipped", picture.flip(ed.base, False)))):
+            b = IconButton(ed, icon, hint, self)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addWidget(Divider(self))
+        size = QRegularExpressionValidator(QRegularExpression(r"\d{1,5}%?"), self)
+        self.w_field, self.h_field = QLineEdit(self), QLineEdit(self)
+        for field, hint in ((self.w_field, "Width"), (self.h_field, "Height")):
+            field.setValidator(size)
+            field.setFixedWidth(64)
+            field.setToolTip(f"{hint} in pixels, or a percentage (50%)")
+            field.setPlaceholderText(hint)
+            field.returnPressed.connect(self._resize)
+        self.w_field.textEdited.connect(lambda t: self._follow(t, self.h_field, True))
+        self.h_field.textEdited.connect(lambda t: self._follow(t, self.w_field, False))
+        times = QLabel("×", self)
+        self.lock = IconButton(ed, "ratio", "", self, size=34)
+        self.lock.clicked.connect(self._toggle_lock)
+        self.locked = True
+        self.resize_button = ActionButton(ed, "Resize", "resize", "Resize the picture to this size", self)
+        self.resize_button.clicked.connect(self._resize)
+        for w in (self.w_field, times, self.h_field, self.lock, self.resize_button):
+            row.addWidget(w)
+        row.addStretch(1)
+        self.apply = ActionButton(ed, "Crop", "crop", "Crop to the frame  ·  Enter", self)
+        self.apply.clicked.connect(crop.apply)
+        row.addWidget(self.apply)
+        self.setFixedHeight(44)
+        self.setStyleSheet(f"""
+QLineEdit {{ background: {C.INK.name()}; color: {C.TEXT.name()}; border: 1px solid {C.LINE.name()};
+    border-radius: 6px; padding: 5px 7px; font-size: 13px; }}
+QLineEdit:focus {{ border-color: {C.MUTED.name()}; }}
+QLabel {{ color: {C.MUTED.name()}; background: transparent; }}""")
+        self.refresh()
+
+    def _toggle_margin(self):
+        self.ed.cropper.margin_colour = not self.ed.cropper.margin_colour
+        self.ed.refresh()
+
+    def _toggle_lock(self):
+        self.locked = not self.locked
+        self.refresh()
+
+    def _follow(self, text: str, other: QLineEdit, from_width: bool):
+        """With the shape kept, the other side follows the one typed."""
+        if not self.locked or not text:
+            return
+        w, h = self.ed.base.width(), self.ed.base.height()
+        if text.endswith("%"):
+            other.setText(text)
+        elif text.isdigit() and w and h:
+            n = int(text)
+            other.setText(str(max(1, round(n * h / w if from_width else n * w / h))))
+
+    def _target(self) -> tuple[int, int] | None:
+        """The size typed, in pixels."""
+        def value(text: str, now: int) -> int | None:
+            text = text.strip()
+            if text.endswith("%") and text[:-1].isdigit():
+                return max(1, round(now * int(text[:-1]) / 100))
+            return int(text) if text.isdigit() and int(text) > 0 else None
+
+        w = value(self.w_field.text(), self.ed.base.width())
+        h = value(self.h_field.text(), self.ed.base.height())
+        return (w, h) if w and h else None
+
+    def _resize(self):
+        size = self._target()
+        if size is None or size == (self.ed.base.width(), self.ed.base.height()):
+            return
+        self.ed.change_picture("Resized", picture.resize(self.ed.base, *size))
+        self.ed.canvas.setFocus()
+
+    def refresh(self):
+        crop = self.ed.cropper
+        names = {"free": "Free", "1:1": "1:1", "4:3": "4:3", "16:9": "16:9", "original": "Original"}
+        self.ratio.set_look(names[crop.ratio], "ratio", False)
+        self.margin.set_look("Colour" if crop.margin_colour else "Clear", "margin", False)
+        self.cut_rows.set_active(crop.cut == "rows")
+        self.cut_cols.set_active(crop.cut == "columns")
+        self.lock.set_toggle(self.locked, "ratio", "Keep the shape when resizing: on" if self.locked
+                             else "Keep the shape when resizing: off")
+        self.apply.set_look("Crop", "crop", crop.changed())
+        for field, now in ((self.w_field, self.ed.base.width()), (self.h_field, self.ed.base.height())):
+            if not field.hasFocus():
+                field.setText(str(now))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), C.BASE)
+        p.fillRect(QRectF(0, self.height() - 1, self.width(), 1), C.LINE)

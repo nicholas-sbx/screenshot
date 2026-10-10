@@ -490,77 +490,21 @@ class Overlay(QWidget):
         self.update()
 
     def _build_edges(self, image: QImage):
-        """Two maps of the picture, one byte per pixel: how much each pixel
-        differs from the one to its left, and from the one above. Qt does
-        the work (a difference blend and a greyscale conversion), about
-        150 ms for a 4K screen."""
         started = time.monotonic()
-        img = image.convertToFormat(QImage.Format.Format_RGB32)
-        img.setDevicePixelRatio(1.0)
-        maps = []
-        for dx, dy in ((1, 0), (0, 1)):
-            diff = img.copy()
-            p = QPainter(diff)
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Difference)
-            p.drawImage(dx, dy, img)
-            p.end()
-            grey = diff.convertToFormat(QImage.Format.Format_Grayscale8)
-            maps.append((grey, _buffer(grey), grey.bytesPerLine()))
-        self._edge_maps = maps
-        timing.log(f"snapping: edge maps for {img.width()} × {img.height()} in "
+        self._edge_maps = edge_maps(image)
+        timing.log(f"snapping: edge maps for {image.width()} × {image.height()} in "
                    f"{(time.monotonic() - started) * 1000:.0f} ms")
 
     def _snapped(self, pos: QPointF, modifiers) -> QPointF:
         """``pos`` moved onto nearby edges in the picture, if any (Ctrl: as
-        is). Edges that look like parts of boxes win: long straight runs,
-        and above all a vertical and a horizontal one that meet."""
+        is)."""
         if not self.ctl.snap_edges or modifiers & Qt.KeyboardModifier.ControlModifier:
             return pos
         maps = self._edge_maps
         if maps is None:  # still being built: place freely until then
             self.snap_changed()
             return pos
-        dpr = self.dpr()
-        (vgrey, vbuf, vstride), (hgrey, hbuf, hstride) = maps
-        w, h = vgrey.width(), vgrey.height()
-        x, y = int(pos.x() * dpr), int(pos.y() * dpr)
-        if not (0 <= x < w and 0 <= y < h):
-            return pos
-        cfg = self.ctl.cfg
-        sens = min(max(cfg.snap_sensitivity, 1), 10)
-        radius = max(2, round(cfg.snap_distance * dpr))
-        reach = max(8, round(SNAP_REACH * dpr))
-        step = max(1, round(dpr))  # sample about one logical pixel apart along an edge
-        rounding = round(ROUNDED_UP_TO * dpr)
-        strong = 10 + (10 - sens) * 4  # how much a pixel must differ across the edge
-        min_run = max(3, round((8 + (10 - sens) * 2.2) * dpr / step))  # in samples
-        # Vertical edges near x: each candidate column, sampled down the rows around y.
-        c0, c1 = max(1, x - radius), min(w, x + radius + 1)
-        rows = range(max(0, y - reach), min(h, y + reach + 1), step)
-        columns = zip(*(vbuf[r * vstride + c0:r * vstride + c1] for r in rows))
-        xs = _candidates(columns, c0, x, rows, y, radius, strong, min_run, rounding // step)
-        # Horizontal edges near y: each candidate row, sampled along the columns around x.
-        r0, r1 = max(1, y - radius), min(h, y + radius + 1)
-        cols = range(max(0, x - reach), min(w, x + reach + 1), step)
-        lines = (hbuf[r * hstride + cols.start:r * hstride + cols.stop:step] for r in range(r0, r1))
-        ys = _candidates(lines, r0, y, cols, x, radius, strong, min_run, rounding // step)
-
-        def edge_at(cx: float, cy: float, maps=(0, 1), spread: int = 1, faint: bool = False) -> bool:
-            """Is there an edge at (cx, cy), or within ``spread``? In the
-            vertical-edge map (0), the horizontal one (1) or either."""
-            cx, cy = round(cx), round(cy)
-            need = strong // 2 if faint else strong
-            for row in range(max(0, cy - spread), min(h, cy + spread + 1)):
-                for i in maps:
-                    buf, stride = maps_bufs[i]
-                    if max(buf[row * stride + max(0, cx - spread):row * stride + min(w, cx + spread + 1)],
-                           default=0) >= need:
-                        return True
-            return False
-
-        maps_bufs = ((vbuf, vstride), (hbuf, hstride))
-        sx, sy = _pick(xs, ys, tolerance=max(2, step * 2), rounding=rounding, edge_at=edge_at)
-        return QPointF(sx / dpr if sx is not None else pos.x(), sy / dpr if sy is not None else pos.y())
+        return snap_to_edges(maps, pos, self.dpr(), self.ctl.cfg)
 
     def _handle_at(self, pos: QPointF) -> str | None:
         """Which handle of the recording area is at ``pos``: "tl", "t", ...,
@@ -1163,6 +1107,71 @@ class Overlay(QWidget):
         p.setFont(f)
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
+
+
+def edge_maps(image: QImage):
+    """Two maps of the picture, one byte per pixel: how much each pixel
+    differs from the one to its left, and from the one above. Qt does
+    the work (a difference blend and a greyscale conversion), about
+    150 ms for a 4K screen. (For snap_to_edges; any thread.)"""
+    img = image.convertToFormat(QImage.Format.Format_RGB32)
+    img.setDevicePixelRatio(1.0)
+    maps = []
+    for dx, dy in ((1, 0), (0, 1)):
+        diff = img.copy()
+        p = QPainter(diff)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Difference)
+        p.drawImage(dx, dy, img)
+        p.end()
+        grey = diff.convertToFormat(QImage.Format.Format_Grayscale8)
+        maps.append((grey, _buffer(grey), grey.bytesPerLine()))
+    return maps
+
+
+def snap_to_edges(maps, pos: QPointF, dpr: float, cfg) -> QPointF:
+    """``pos`` (logical) moved onto nearby edges in the picture the maps
+    (edge_maps) are of, if any. Edges that look like parts of boxes win:
+    long straight runs, and above all a vertical and a horizontal one that
+    meet. ``cfg``: snap_distance and snap_sensitivity."""
+    (vgrey, vbuf, vstride), (hgrey, hbuf, hstride) = maps
+    w, h = vgrey.width(), vgrey.height()
+    x, y = int(pos.x() * dpr), int(pos.y() * dpr)
+    if not (0 <= x < w and 0 <= y < h):
+        return pos
+    sens = min(max(cfg.snap_sensitivity, 1), 10)
+    radius = max(2, round(cfg.snap_distance * dpr))
+    reach = max(8, round(SNAP_REACH * dpr))
+    step = max(1, round(dpr))  # sample about one logical pixel apart along an edge
+    rounding = round(ROUNDED_UP_TO * dpr)
+    strong = 10 + (10 - sens) * 4  # how much a pixel must differ across the edge
+    min_run = max(3, round((8 + (10 - sens) * 2.2) * dpr / step))  # in samples
+    # Vertical edges near x: each candidate column, sampled down the rows around y.
+    c0, c1 = max(1, x - radius), min(w, x + radius + 1)
+    rows = range(max(0, y - reach), min(h, y + reach + 1), step)
+    columns = zip(*(vbuf[r * vstride + c0:r * vstride + c1] for r in rows))
+    xs = _candidates(columns, c0, x, rows, y, radius, strong, min_run, rounding // step)
+    # Horizontal edges near y: each candidate row, sampled along the columns around x.
+    r0, r1 = max(1, y - radius), min(h, y + radius + 1)
+    cols = range(max(0, x - reach), min(w, x + reach + 1), step)
+    lines = (hbuf[r * hstride + cols.start:r * hstride + cols.stop:step] for r in range(r0, r1))
+    ys = _candidates(lines, r0, y, cols, x, radius, strong, min_run, rounding // step)
+
+    def edge_at(cx: float, cy: float, maps=(0, 1), spread: int = 1, faint: bool = False) -> bool:
+        """Is there an edge at (cx, cy), or within ``spread``? In the
+        vertical-edge map (0), the horizontal one (1) or either."""
+        cx, cy = round(cx), round(cy)
+        need = strong // 2 if faint else strong
+        for row in range(max(0, cy - spread), min(h, cy + spread + 1)):
+            for i in maps:
+                buf, stride = maps_bufs[i]
+                if max(buf[row * stride + max(0, cx - spread):row * stride + min(w, cx + spread + 1)],
+                       default=0) >= need:
+                    return True
+        return False
+
+    maps_bufs = ((vbuf, vstride), (hbuf, hstride))
+    sx, sy = _pick(xs, ys, tolerance=max(2, step * 2), rounding=rounding, edge_at=edge_at)
+    return QPointF(sx / dpr if sx is not None else pos.x(), sy / dpr if sy is not None else pos.y())
 
 
 def _candidates(lines, first: int, at: int, along: range, at_along: int, radius: int, strong: int,
