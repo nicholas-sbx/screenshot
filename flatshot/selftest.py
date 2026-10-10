@@ -243,7 +243,7 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     """Instant capture modes, last region, file name templates, pinning and
     the colour picker — without a real compositor (the grab and the window
     query are stubbed)."""
-    from flatshot import capture, config, output, pin, windows
+    from flatshot import capture, config, output, pin, scanner, windows
     from flatshot.notify import Notifier
     from flatshot.qt import QGuiApplication, QPoint, QRect, QWheelEvent
     from flatshot.session import Request, Session
@@ -374,6 +374,21 @@ def _instant_and_extras(app, tmp: Path, desktop: QImage, out_dir):
     wait(lambda: done)
     assert done == [0] and not ctl.overlays, done
     print("self-test: instant modes, last region, templates, pin and colour picker ok")
+
+    # Codes hidden: nothing is scanned until they're shown.
+    if scanner.backend() is not None:
+        ctl = Session(config.Config(save_dir=str(out), notify=False, clipboard="none", show_codes=False),
+                      Request(image=str(src)), Notifier(interactive=False), lambda *a: None)
+        ctl.start()
+        ov = ctl.overlays[0]
+        wait(lambda: False)  # past the start-up scan delay
+        assert not ctl.scanning and ctl.codes_unscanned() and not ctl.code_count()
+        ctl.toggle_codes()
+        assert ctl.scanning and not ctl.codes_unscanned()
+        wait(lambda: not ctl.scanning)
+        assert ctl.code_count() == 2, ctl.code_count()
+        ctl.cancel()
+        print("self-test: hidden codes are scanned when shown")
 
     # Toolbar pin toggle (K): the drag still captures at once, but pins instead of saving.
     from flatshot.qt import QRectF

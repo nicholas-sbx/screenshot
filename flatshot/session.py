@@ -113,6 +113,7 @@ class Session:
         self.text_edit: tuple[Overlay, shapes.Text] | None = None
         self.hint: str | None = None
         self._scan_source: QImage | None = None  # the capture still waiting to be scanned
+        self.scanning = False
         self.scanner = scanner.Scanner()
         self.scanner.finished.connect(self._codes_found)
         self.window_finder: windows.WindowFinder | None = None
@@ -209,6 +210,7 @@ class Session:
         if image is None:
             return
         self._scan_clock = timing.Clock("code scan")
+        self.scanning = True
         self.scanner.start(image)
 
     def _finish_instant(self):
@@ -328,6 +330,7 @@ class Session:
         self.refresh()
 
     def _codes_found(self, codes):
+        self.scanning = False
         if hasattr(self, "_scan_clock"):
             self._scan_clock.step("done", f"{len(codes)} code{'s' if len(codes) != 1 else ''} found, "
                                           f"at {self.clock.since_start():.0f} ms into the capture")
@@ -595,6 +598,10 @@ class Session:
         except OSError as e:
             print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
         self.refresh()
+
+    def codes_unscanned(self) -> bool:
+        """The capture will be scanned once codes are shown."""
+        return self._scan_source is not None
 
     def code_count(self) -> int:
         return sum(len(o.codes) for o in self.overlays)

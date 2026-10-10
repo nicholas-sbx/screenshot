@@ -442,7 +442,12 @@ class Toolbar(_Draggable):
                                        km.hint("Hide the mouse pointer" if shown else "Show the mouse pointer",
                                                "pointer") + ("  ·  shown in the capture" if shown else ""))
         n = self.ctl.code_count()
-        found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
+        if self.ctl.scanning:
+            found = "Looking for codes…"
+        elif self.ctl.codes_unscanned():
+            found = "Not looked for yet"
+        else:
+            found = f"{n} code{'s' if n != 1 else ''} found" if n else "No codes found"
         if self.ctl.codes_visible:
             self.codes_button.set_toggle(True, "codes", km.hint("Hide QR / barcodes", "codes") + f"  ·  {found}")
         else:
