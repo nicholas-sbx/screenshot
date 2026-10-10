@@ -569,9 +569,10 @@ class Overlay(QWidget):
         # Nothing to move when it's the whole screen: a drag picks a new area.
         return "move" if r.contains(pos) and r != QRectF(self.rect()) else None
 
-    def _drag_area(self, pos: QPointF, snapped: QPointF | None = None):
+    def _drag_area(self, pos: QPointF, snapped: QPointF | None = None, center: bool = False):
         """Move or resize the recording area; a resized edge goes to
-        ``snapped`` when snapping found an edge there."""
+        ``snapped`` when snapping found an edge there. ``center`` (Ctrl):
+        the opposite edge moves the other way, so the area stays centred."""
         handle, start, r0 = self._rec_drag
         d = pos - start
         r = QRectF(r0)
@@ -583,15 +584,26 @@ class Overlay(QWidget):
         else:
             sx = snapped.x() if snapped is not None and snapped.x() != pos.x() else None
             sy = snapped.y() if snapped is not None and snapped.y() != pos.y() else None
-            if "l" in handle:
-                r.setLeft(sx if sx is not None else r0.left() + d.x())
-            if "r" in handle:
-                r.setRight(sx if sx is not None else r0.right() + d.x())
-            if "t" in handle:
-                r.setTop(sy if sy is not None else r0.top() + d.y())
-            if "b" in handle:
-                r.setBottom(sy if sy is not None else r0.bottom() + d.y())
-            r = r.normalized().intersected(bounds)
+            if center:
+                c = r0.center()
+                if "l" in handle or "r" in handle:
+                    half = min(abs(pos.x() - c.x()), c.x() - bounds.left(), bounds.right() - c.x())
+                    r.setLeft(c.x() - half)
+                    r.setRight(c.x() + half)
+                if "t" in handle or "b" in handle:
+                    half = min(abs(pos.y() - c.y()), c.y() - bounds.top(), bounds.bottom() - c.y())
+                    r.setTop(c.y() - half)
+                    r.setBottom(c.y() + half)
+            else:
+                if "l" in handle:
+                    r.setLeft(sx if sx is not None else r0.left() + d.x())
+                if "r" in handle:
+                    r.setRight(sx if sx is not None else r0.right() + d.x())
+                if "t" in handle:
+                    r.setTop(sy if sy is not None else r0.top() + d.y())
+                if "b" in handle:
+                    r.setBottom(sy if sy is not None else r0.bottom() + d.y())
+                r = r.normalized().intersected(bounds)
         self.rec_rect = r
         self.rec_window = None
         self.ctl.area_moved(self)
@@ -684,7 +696,7 @@ class Overlay(QWidget):
             if self.ctl.spans():
                 self.ctl.selection_moved(self, pos)
         elif self._rec_drag is not None:
-            self._drag_area(pos, self._snap_point)
+            self._drag_area(pos, self._snap_point, bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
         elif self._text_drag is not None and self.ctl.text_edit and self.ctl.text_edit[0] is self:
             start, origin = self._text_drag
             if (pos - start).manhattanLength() > 3 or self.ctl.text_edit[1].pos != origin:
