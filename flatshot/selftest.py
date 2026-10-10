@@ -12,7 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPen, QPointF, QRectF, Qt
+from flatshot.qt import QColor, QFont, QImage, QLinearGradient, QPainter, QPen, QPointF, QRectF, QSizeF, Qt
 
 TEST_URL = "https://github.com/nicholas-sbx/screenshot"
 TEST_EAN = "4006381333931"
@@ -150,6 +150,12 @@ def run() -> int:
     ov.cursor_pos = at(1500, 900)
     ov._update_hover()
     assert ov.hover_window is None
+    # A window's label: above its top left; inside a window at the top of the
+    # screen; below or beside one too small and at the top.
+    label = QSizeF(200, 22)
+    assert ov._label_box(QRectF(100, 100, 40, 20), label).topLeft() == QPointF(100, 72)
+    assert ov._label_box(QRectF(QPointF(0, 0), QSizeF(ov.size())), label).topLeft() == QPointF(8, 8)
+    assert ov._label_box(QRectF(100, 0, 40, 20), label).topLeft() == QPointF(100, 26)
 
     if which is not None:
         n = ctl.code_count()
@@ -191,6 +197,11 @@ def run() -> int:
     assert ctl.color_index == 2
     key(Qt.Key.Key_P, "p")
     assert ctl.tool == "pen"
+    # Beautify, from the toolbar (or Ctrl+B): this capture and the next.
+    ov.toolbar.beauty_button.click()
+    assert ctl.cfg.beautify and config.load().beautify and ov.toolbar.beauty_button.toggled_on
+    key(Qt.Key.Key_B, "", Qt.KeyboardModifier.ControlModifier)
+    assert not ctl.cfg.beautify and not config.load().beautify and not ov.toolbar.beauty_button.toggled_on
     if out_dir:
         ov.toolbar.place()
         ov.grab().save(str(Path(out_dir) / "overlay-draw.png"))
@@ -240,7 +251,7 @@ def run() -> int:
             seen = {pic.pixelColor(x, y).rgb() & 0xFFFFFF for x in range(32) for y in range(32)
                     if pic.pixelColor(x, y).alpha() == 255}
             assert seen == {0xFFFFFF if style == "white" else 0}, (style, seen)
-            assert pic.pixelColor(0, 16).alpha() == 0 and pic.pixelColor(7, 16).alpha() == 0, style
+            assert pic.pixelColor(0, 16).alpha() == 0 and pic.pixelColor(10, 16).alpha() == 0, style
     print("self-test: tray icon styles ok")
 
     # A transparent picture (a window with its shadow) saved as JPEG is filled in white.
@@ -1164,6 +1175,22 @@ def _selecting(app, tmp: Path, desktop: QImage, out_dir):
     if out_dir:
         ed.grab().save(str(Path(out_dir) / "editor-select.png"))
     # Esc deselects first.
+    key(Qt.Key.Key_Escape)
+    assert ed.selection.shape is None
+    # The text tool clicks into a text only when nothing covers it there.
+    key(Qt.Key.Key_T, "t")
+    mouse("press", P(230, 20))
+    for ch in "hi":
+        key(Qt.Key.Key_A, ch)
+    key(Qt.Key.Key_Return, "", Qt.KeyboardModifier.ControlModifier)
+    typed = ed.annotations[-1]
+    assert isinstance(typed, shapes.Text) and ed.text_at(P(235, 30)) is typed
+    key(Qt.Key.Key_F, "f")
+    drag(P(220, 10), P(290, 60))
+    assert ed.text_at(P(235, 30)) is None, "a text behind a filled box can be clicked into"
+    key(Qt.Key.Key_T, "t")
+    mouse("press", P(235, 30))
+    assert ed.text_edit is not None and ed.text_edit.replaces is None, "it edited the covered text"
     key(Qt.Key.Key_Escape)
     assert ed.selection.shape is None and ed.isVisible()
     image = ed.render()

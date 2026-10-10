@@ -196,8 +196,12 @@ for kind, x, y in (("move", 110, 260), ("move", 120, 270), ("release", 120, 270)
     mouse(right, kind, x, y)
 moved = left.annotations[-1]
 assert moved.rect() == QRectF(720, 120, 200, 200) and box.hidden, moved.rect()
+shown = right.grab().toImage()
+assert shown.pixelColor(120, 270).red() > 200 and shown.pixelColor(100, 250).red() < 100, "not moved on the right"
 s.undo()
 assert not box.hidden and left.annotations[-1] is box
+shown = right.grab().toImage()
+assert shown.pixelColor(100, 250).red() > 150 and shown.pixelColor(120, 270).red() < 100, "the undo isn't shown there"
 # Text begun on the left, reaching onto the right: the text tool edits it from there.
 s.set_tool("text")
 mouse(left, "press", 760, 400)

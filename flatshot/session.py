@@ -627,12 +627,14 @@ class Session:
         return next((o for o, local in self._from_top(overlay, pos) if o.selection.hits(local)), overlay)
 
     def text_at(self, overlay: Overlay, pos: QPointF):
-        """The topmost text at ``pos`` on ``overlay``, wherever it was typed:
-        (its overlay, the text, ``pos`` in that overlay's coordinates)."""
+        """The text at ``pos`` on ``overlay``, wherever it was typed, if it's
+        the topmost drawing there (not one behind something else): (its
+        overlay, the text, ``pos`` in that overlay's coordinates)."""
         for o, local in self._from_top(overlay, pos):
-            text = o.text_at(local)
-            if text is not None:
-                return o, text, local
+            hits = o.selection.hits(local)
+            top = hits[0] if hits else o.text_at(local)  # (a text's box reaches a little past its letters)
+            if top is not None:
+                return (o, top, local) if isinstance(top, shapes.Text) else None
         return None
 
     def _selected(self):
@@ -654,6 +656,17 @@ class Session:
             print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
         for o in self.overlays:
             o.snap_changed()
+        self.refresh()
+
+    def toggle_beautify(self):
+        """Beautify this capture and the next ones (Settings → After capture
+        → Beautify), or not."""
+        saved = config.load()
+        saved.beautify = self.cfg.beautify = not self.cfg.beautify
+        try:
+            saved.save()
+        except OSError as e:
+            print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
         self.refresh()
 
     def toggle_pointer(self):
@@ -945,6 +958,8 @@ class Session:
             self.toggle_snap()
         elif action == "pointer":
             self.toggle_pointer()
+        elif action == "beautify":
+            self.toggle_beautify()
         elif action == "copy_color":
             self.copy_color(target)
         elif action.startswith("tool."):

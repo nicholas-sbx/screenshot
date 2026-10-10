@@ -49,6 +49,27 @@ check(g.owner_of("Meta+Shift+X", "region") == "", "no conflict with itself")
 again = shortcuts.GlobalShortcuts()
 check(again.start() and again.get("region") == "Meta+Shift+X", "user shortcut survives re-registration")
 
+# A change made elsewhere (System Settings, another instance) reaches a running one, so the
+# tray menu shows the keys as they are.
+heard = []
+again.changed.connect(lambda: heard.append(1))
+
+
+def from_system_settings():
+    """As System Settings changes another app's shortcut (the daemon tells that app)."""
+    aid = shortcuts._action_id("last")
+    try:
+        dbus.call(shortcuts.SERVICE, shortcuts.PATH, shortcuts.IFACE, "setForeignShortcutKeys", "asa(ai)", aid,
+                  shortcuts._wire(["Meta+Shift+L"]))
+    except dbus.DBusError:  # (KF5)
+        dbus.call(shortcuts.SERVICE, shortcuts.PATH, shortcuts.IFACE, "setForeignShortcut", "asai", aid,
+                  shortcuts.to_keys("Meta+Shift+L"))
+
+
+QTimer.singleShot(200, from_system_settings)
+run_until(lambda: heard)
+check(bool(heard) and again.get("last") == "Meta+Shift+L", "a shortcut changed elsewhere is heard")
+
 pressed = []
 g.triggered.connect(pressed.append)
 QTimer.singleShot(200, lambda: dbus.call(shortcuts.SERVICE, "/component/flatshot", shortcuts.COMPONENT_IFACE,

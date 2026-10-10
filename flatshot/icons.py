@@ -506,9 +506,12 @@ def _draw_logo(p: QPainter, size: int, back: QColor | None, frame: QColor, dot: 
         width = 18
     else:
         lo, hi = 52, 204  # the marks, with room for their stroke
-        p.scale(size / (hi - lo), size / (hi - lo))
+        fill = 0.7  # of the icon, with a margin round it as Breeze's own have
+        k = fill * size / (hi - lo)
+        p.translate(size * (1 - fill) / 2, size * (1 - fill) / 2)
+        p.scale(k, k)
         p.translate(-lo, -lo)
-        width = max(1.3 * 152 / size, 9.5)  # (about 1.3 px at 22 px: Breeze's line)
+        width = max(1.2, size / 18) / k  # (about 1.2 px at 22 px: Breeze's line)
     pen = QPen(frame, width)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)

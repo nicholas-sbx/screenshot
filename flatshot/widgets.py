@@ -403,6 +403,9 @@ class Toolbar(_Draggable):
             row.addWidget(b)
         row.addWidget(Divider(self))
 
+        self.beauty_button = IconButton(ctl, "beautify", "", self)
+        self.beauty_button.clicked.connect(ctl.toggle_beautify)
+        row.addWidget(self.beauty_button)
         self.pin_button = IconButton(ctl, "pin", "", self)
         self.pin_button.clicked.connect(ctl.toggle_pin)
         row.addWidget(self.pin_button)
@@ -422,7 +425,8 @@ class Toolbar(_Draggable):
             b.set_active(name == self.ctl.tool)
             b.set_dimmed(recording and name not in ("region", "record"))
         # Colours, sizes, codes, undo and pinning don't apply to a recording.
-        for w in self.swatches + [self.size_button, self.codes_button, self.pin_button, self.pointer_button]:
+        for w in self.swatches + [self.size_button, self.codes_button, self.pin_button, self.pointer_button,
+                                  self.beauty_button]:
             w.setEnabled(not recording)
         self.history_buttons[0].setEnabled(not recording and self.ctl.can_undo())
         self.history_buttons[1].setEnabled(not recording and self.ctl.can_redo())
@@ -433,6 +437,9 @@ class Toolbar(_Draggable):
         self.size_button.set_size(self.ctl.size)
         self.pin_button.set_active(self.ctl.pin_mode)
         km = self.ctl.keymap
+        on = self.ctl.cfg.beautify
+        self.beauty_button.set_toggle(on, "beautify", km.hint("Beautify is on" if on else "Beautify: on a background",
+                                                              "beautify"))
         self.pin_button.hint = km.hint("Pinning: the capture stays on screen, not saved" if self.ctl.pin_mode
                                        else "Pin the capture to the screen instead of saving it", "pin")
         self.snap_button.set_toggle(self.ctl.snap_edges, "magnet",

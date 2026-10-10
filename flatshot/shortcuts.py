@@ -114,7 +114,8 @@ class GlobalShortcuts(QObject):
             return False
         self._listener = dbus.SignalListener([
             {"interface": COMPONENT_IFACE, "member": "globalShortcutPressed", "path": path},
-            {"interface": IFACE, "member": "yourShortcutsChanged", "path": PATH},
+            {"interface": IFACE, "member": "yourShortcutsChanged", "path": PATH},  # (KF6)
+            {"interface": IFACE, "member": "yourShortcutGotChanged", "path": PATH},  # (KF5)
         ])
         self._listener.received.connect(self._on_signal)
         self.active = self._listener.start()
@@ -134,7 +135,8 @@ class GlobalShortcuts(QObject):
         if member == "globalShortcutPressed" and len(body) >= 2 and body[0] == COMPONENT:
             if body[1] in ACTIONS:
                 self.triggered.emit(body[1])
-        elif member == "yourShortcutsChanged" and body and list(body[0])[:1] == [COMPONENT]:
+        elif member in ("yourShortcutsChanged", "yourShortcutGotChanged") and body \
+                and list(body[0])[:1] == [COMPONENT]:
             self.changed.emit()
 
     def get(self, action: str) -> str:
