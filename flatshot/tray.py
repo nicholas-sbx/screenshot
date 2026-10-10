@@ -4,7 +4,7 @@ notification actions, and the target of `flatshot` invocations."""
 import sys
 from pathlib import Path
 
-from flatshot import config, ipc, output, pin, recording, theme
+from flatshot import config, icons, ipc, output, pin, recording, theme
 from flatshot.notify import Notifier
 from flatshot.qt import (
     QAction, QIcon, QImage, QMenu, QObject, QPainter, QPixmap, QRectF, QSystemTrayIcon, Qt, QTimer,
@@ -12,7 +12,7 @@ from flatshot.qt import (
 from flatshot.capture import parse_geometry
 from flatshot.session import MODES, Request, Session
 from flatshot.shortcuts import ACTIONS, GlobalShortcuts
-from flatshot.theme import C, ICON_PATH, REC
+from flatshot.theme import C, REC
 
 # Let a menu or notification popup fade out before the screen is frozen.
 MENU_DELAY_MS = 220
@@ -92,7 +92,7 @@ class TrayApp(QObject):
     def _build_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
-        self.tray = QSystemTrayIcon(QIcon(ICON_PATH), self)
+        self.tray = QSystemTrayIcon(self._icon(), self)
         self.tray.setToolTip("Flatshot")
         menu = QMenu()
         # Active window makes no sense straight from the menu (the menu has focus).
@@ -115,6 +115,20 @@ class TrayApp(QObject):
         self.tray.activated.connect(self._activated)
         self._update_menu()
         self.tray.show()
+        from flatshot.qt import QGuiApplication
+
+        hints = QGuiApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):  # (Qt 6.5+) for the "auto" icon
+            hints.colorSchemeChanged.connect(lambda *_: self.update_icon())
+
+    def _icon(self, style: str | None = None) -> QIcon:
+        return icons.tray_icon(style or config.load().tray_icon)
+
+    def update_icon(self, style: str | None = None):
+        """Show the icon style from the settings (unless recording: then
+        it's the stop button until the recording ends)."""
+        if self.tray and self.recording is None:
+            self.tray.setIcon(self._icon(style))
 
     def _update_menu(self):
         for action, item in self.menu_actions.items():
@@ -219,7 +233,7 @@ class TrayApp(QObject):
         self.recording = None
         self._clock.stop()
         if self.tray:
-            self.tray.setIcon(QIcon(ICON_PATH))
+            self.update_icon()
             self.tray.setToolTip("Flatshot")
         self._update_menu()
 
@@ -264,6 +278,7 @@ class TrayApp(QObject):
 
         if self.settings is None:
             self.settings = SettingsWindow(config.load(), self.shortcuts)
+            self.settings.tray_icon_changed.connect(self.update_icon)
         self.settings.show()
         self.settings.raise_()
         self.settings.activateWindow()

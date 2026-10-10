@@ -329,3 +329,93 @@ def _draw(p: QPainter, name: str, rect: QRectF, color: QColor) -> None:
     p.setBrush(Qt.BrushStyle.NoBrush)
     _ICONS[name](p, color)
     p.restore()
+
+
+# -- the tray icon ---------------------------------------------------------------
+
+TRAY_STYLES = ("color", "theme", "white", "black", "auto")
+
+
+def _desktop_is_dark() -> bool:
+    """Whether the desktop uses a dark colour scheme, for the "auto" tray
+    icon. Qt is told to ignore the desktop's palette, so this asks the
+    style hints first, then KDE's own colours; unknown counts as dark (the
+    usual panel)."""
+    import configparser
+    import os
+    from pathlib import Path
+
+    from flatshot.qt import QGuiApplication
+
+    hints = QGuiApplication.styleHints()
+    scheme = getattr(hints, "colorScheme", lambda: None)()
+    if scheme is not None:
+        name = getattr(scheme, "name", str(scheme))
+        if name.endswith("Dark"):
+            return True
+        if name.endswith("Light"):
+            return False
+    home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    kde = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        kde.read(Path(home) / "kdeglobals")
+        r, g, b = (int(v) for v in kde["Colors:Window"]["BackgroundNormal"].split(",")[:3])
+    except (KeyError, ValueError, OSError, configparser.Error):
+        return True
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128
+
+
+def _draw_logo(p: QPainter, size: int, back: QColor | None, frame: QColor, dot: QColor) -> None:
+    """The Flatshot logo (assets/flatshot.svg, a 256 grid) at ``size`` px.
+    Without a background the marks fill the icon and are drawn bolder, as
+    symbolic tray icons are."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if back is not None:
+        p.scale(size / 256, size / 256)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(back)
+        p.drawRoundedRect(QRectF(8, 8, 240, 240), 56, 56)
+        width = 18
+    else:
+        lo, hi = 44, 212  # the marks, with room for their stroke
+        p.scale(size / (hi - lo), size / (hi - lo))
+        p.translate(-lo, -lo)
+        width = 24
+    pen = QPen(frame, width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(_path([(60, 104), (60, 60), (104, 60)], [(152, 60), (196, 60), (196, 104)],
+                     [(196, 152), (196, 196), (152, 196)], [(104, 196), (60, 196), (60, 152)]))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(dot)
+    grow = 0 if back is not None else 6
+    p.drawRoundedRect(QRectF(104 - grow, 104 - grow, 48 + 2 * grow, 48 + 2 * grow), 12, 12)
+    p.restore()
+
+
+def tray_icon(style: str):
+    """The tray icon in ``style`` (TRAY_STYLES): the app's own colours, the
+    theme's, or one plain colour on a transparent background."""
+    from flatshot.qt import QIcon
+    from flatshot.theme import C, ICON_PATH
+
+    if style not in TRAY_STYLES or style == "color":
+        return QIcon(ICON_PATH)
+    if style == "auto":
+        style = "white" if _desktop_is_dark() else "black"
+    icon = QIcon()
+    for size in (16, 22, 24, 32, 48, 64, 128):
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        if style == "theme":
+            _draw_logo(p, size, C.BASE, C.ACCENT, C.CODE)
+        else:
+            ink = QColor("#FFFFFF" if style == "white" else "#000000")
+            _draw_logo(p, size, None, ink, ink)
+        p.end()
+        icon.addPixmap(pm)
+    return icon

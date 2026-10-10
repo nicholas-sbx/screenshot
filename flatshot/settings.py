@@ -447,6 +447,7 @@ class Row(QWidget):
 
 class SettingsWindow(QWidget):
     closed = Signal()
+    tray_icon_changed = Signal(str)  # (the tray app shows it at once)
 
     def __init__(self, cfg: config.Config, shortcuts: GlobalShortcuts | None):
         super().__init__()
@@ -560,6 +561,8 @@ class SettingsWindow(QWidget):
         self.nav.setStyleSheet(f"background: {C.INK.name()};")
         for w in self.findChildren(QWidget):
             w.update()
+        if self.cfg.tray_icon == "theme":
+            self.tray_icon_changed.emit(self.cfg.tray_icon)
 
     # -- pages ---------------------------------------------------------------
 
@@ -576,6 +579,21 @@ class SettingsWindow(QWidget):
         line.addStretch(1)
         card.add(Row("Theme", None, "For the toolbar, the settings and the other panels. "
                                     "Your drawing colours stay the same.", below=picker))
+        icon = Segmented([("color", "Colour"), ("theme", "Theme"), ("white", "White"), ("black", "Black"),
+                          ("auto", "Auto")], self.cfg.tray_icon)
+
+        def icon_changed(style):
+            self._save(tray_icon=style)
+            self.tray_icon_changed.emit(style)
+
+        icon.changed.connect(icon_changed)
+        icon_box = QWidget()
+        line = QHBoxLayout(icon_box)
+        line.setContentsMargins(0, 2, 0, 0)
+        line.addWidget(icon)
+        line.addStretch(1)
+        card.add(Row("Tray icon", None, "White and black are plain outlines, for panels that use symbolic icons. "
+                                        "Auto picks white or black to suit a dark or light desktop.", below=icon_box))
         start = Toggle(autostart.enabled())
         start.toggled.connect(autostart.set_enabled)
         card.add(Row("Start at login", start, "Keeps Flatshot in the system tray so shortcuts work."))
