@@ -1696,7 +1696,7 @@ class _BeautyPanel(QWidget):
         self.colour = ui.Button("Use the toolbar's colour")
         self.colour.clicked.connect(lambda: ed.set_beauty(color=ed.color.name().upper()))
         col.addWidget(self.colour)
-        self.picture = ui.Button("Choose a picture…")
+        self.picture = ui.Button("Choose an image…")
         self.picture.clicked.connect(self._choose_picture)
         col.addWidget(self.picture)
         self.picture_name = ui._label("", "hint", wrap=True)
@@ -1712,7 +1712,7 @@ class _BeautyPanel(QWidget):
         self.padding = slider("Padding", "padding", 0, 200, 4,
                               lambda v: f"{v}%" if self.ed.beauty.padding_percent else f"{v}px")
         line = QHBoxLayout()
-        line.addWidget(ui._label("As a % of its longer side", "hint"))
+        line.addWidget(ui._label("Percentage of the longer side", "hint"))
         self.percent = ui.Toggle(style.padding_percent)
         self.percent.toggled.connect(lambda on: ed.set_beauty(padding_percent=on))
         line.addStretch(1)
@@ -1729,7 +1729,7 @@ class _BeautyPanel(QWidget):
         self.presets = combo([], ed.use_preset)
         save = QHBoxLayout()
         self.preset_name = QLineEdit()
-        self.preset_name.setPlaceholderText("Name this style")
+        self.preset_name.setPlaceholderText("Preset name")
         self.preset_name.returnPressed.connect(self._save_preset)
         save_button = ui.Button("Save")
         save_button.clicked.connect(self._save_preset)
@@ -1737,8 +1737,8 @@ class _BeautyPanel(QWidget):
         save.addWidget(save_button)
         col.addLayout(save)
         col.addSpacing(8)
-        col.addWidget(ui._label("Save, Save as and Copy include it. Settings → After capture → Beautify puts every "
-                                "capture on the style you used last.", "hint", wrap=True))
+        col.addWidget(ui._label("Save, Save as and Copy include the background. Settings → After capture → "
+                                "Beautify applies the last style to every capture.", "hint", wrap=True))
         col.addStretch(1)
         self.refresh()
 
@@ -1769,7 +1769,7 @@ class _BeautyPanel(QWidget):
         self.colour.setVisible(style.background == "color")
         self.picture.setVisible(style.background == "image")
         self.picture_name.setVisible(style.background == "image")
-        self.picture_name.setText(Path(style.image).name if style.image else "No picture chosen")
+        self.picture_name.setText(Path(style.image).name if style.image else "No image selected")
         for s, key in ((self.padding, "padding"), (self.radius, "radius"), (self.shadow, "shadow"),
                        (self.offset, "shadow_offset"), (self.opacity, "shadow_opacity")):
             value = getattr(style, key)
@@ -1781,7 +1781,7 @@ class _BeautyPanel(QWidget):
         self.percent.blockSignals(False)
         self.presets.blockSignals(True)
         self.presets.clear()
-        self.presets.addItem("Use a preset…", None)
+        self.presets.addItem("Presets…", None)
         for name in self.ed.cfg.beautify_presets:
             self.presets.addItem(name, name)
         self.presets.setCurrentIndex(0)
