@@ -112,6 +112,8 @@ class Session:
         self.redo_stack: list[Overlay] = []
         self.text_edit: tuple[Overlay, shapes.Text] | None = None
         self.hint: str | None = None
+        self._scan_source: QImage | None = None  # the capture still waiting to be scanned
+        self.scanning = False
         self.scanner = scanner.Scanner()
         self.scanner.finished.connect(self._codes_found)
         self.window_finder: windows.WindowFinder | None = None
@@ -197,11 +199,18 @@ class Session:
         if self._may_span():
             self._desktop_image = image
         if self.cfg.scan_codes and self.request.scan:
-            # Let the overlay reach the screen before scanning competes for CPU.
-            QTimer.singleShot(60, lambda: None if self.done else self._scan(image))
+            self._scan_source = image  # kept so hidden codes can be scanned on demand
+            if self.codes_visible:
+                # Let the overlay reach the screen before scanning competes for CPU.
+                QTimer.singleShot(60, lambda: None if self.done else self._scan())
 
-    def _scan(self, image: QImage):
+    def _scan(self):
+        """Scan the capture once; later calls do nothing."""
+        image, self._scan_source = self._scan_source, None
+        if image is None:
+            return
         self._scan_clock = timing.Clock("code scan")
+        self.scanning = True
         self.scanner.start(image)
 
     def _finish_instant(self):
@@ -321,6 +330,7 @@ class Session:
         self.refresh()
 
     def _codes_found(self, codes):
+        self.scanning = False
         if hasattr(self, "_scan_clock"):
             self._scan_clock.step("done", f"{len(codes)} code{'s' if len(codes) != 1 else ''} found, "
                                           f"at {self.clock.since_start():.0f} ms into the capture")
@@ -579,6 +589,8 @@ class Session:
     def toggle_codes(self):
         """Show or hide the codes found; remembered for next time, like snapping."""
         self.codes_visible = not self.codes_visible
+        if self.codes_visible and not self.done:
+            self._scan()  # hidden at the start, so not scanned yet
         saved = config.load()
         saved.show_codes = self.cfg.show_codes = self.codes_visible
         try:
@@ -586,6 +598,10 @@ class Session:
         except OSError as e:
             print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
         self.refresh()
+
+    def codes_unscanned(self) -> bool:
+        """The capture will be scanned once codes are shown."""
+        return self._scan_source is not None
 
     def code_count(self) -> int:
         return sum(len(o.codes) for o in self.overlays)
