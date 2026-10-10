@@ -243,6 +243,12 @@ def run() -> int:
             assert pic.pixelColor(0, 16).alpha() == 0 and pic.pixelColor(7, 16).alpha() == 0, style
     print("self-test: tray icon styles ok")
 
+    # A transparent picture (a window with its shadow) saved as JPEG is filled in white.
+    clear = QImage(40, 30, QImage.Format.Format_ARGB32_Premultiplied)
+    clear.fill(0)
+    jpg = output.save(clear, config.load(), str(tmp / "clear.jpg"))
+    assert QImage(str(jpg)).pixelColor(5, 5).lightness() > 250, QImage(str(jpg)).pixelColor(5, 5).name()
+
     _instant_and_extras(app, tmp, desktop, out_dir)
     _pointer_and_snapping(app, tmp, desktop, out_dir)
     _editor(app, tmp, out_dir)

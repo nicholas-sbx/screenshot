@@ -161,9 +161,27 @@ def save(image: QImage, cfg: Config, explicit: str | None = None, shot: Shot | N
         path = _unique(target_path(cfg, shot or Shot(), (image.width(), image.height()), fmt[0]))
     path.parent.mkdir(parents=True, exist_ok=True)
     quality = cfg.quality if fmt[3] else -1
+    if fmt[0] == "jpg":
+        image = flatten(image)
     if not image.save(str(path), fmt[2], quality):
         raise OSError(f"could not write {path}")
     return path
+
+
+def flatten(image: QImage, background: str = "#FFFFFF") -> QImage:
+    """``image`` on a plain background, for formats without transparency
+    (JPEG); unchanged when it has none."""
+    if not image.hasAlphaChannel():
+        return image
+    from flatshot.qt import QColor, QPainter
+
+    out = QImage(image.size(), QImage.Format.Format_RGB32)
+    out.setDevicePixelRatio(image.devicePixelRatio())
+    out.fill(QColor(background))
+    p = QPainter(out)
+    p.drawImage(0, 0, image)
+    p.end()
+    return out
 
 
 def _pipe_to(argv: list[str], data: bytes) -> bool:

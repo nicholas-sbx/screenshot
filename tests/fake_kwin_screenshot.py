@@ -10,6 +10,11 @@ CaptureScreen answers for the screens in $FAKE_KWIN_SCREENS ("A:800x600,
 B:960x720": name and native size), in ARGB32 (5): the i-th screen's pixel
 (x, y) is 0xFF000000 | (x % 256) << 16 | (y % 256) << 8 | (0x10 * (i + 1)),
 plus 0x80 in the low byte when the pointer was asked for.
+
+CaptureActiveWindow answers with a 300 x 200 window, plus 20 px each side
+for its frame (include-decoration) and 30 px each side for its shadow
+(include-shadow), in ARGB32_Premultiplied (6): the window's pixels are
+0xFF3366AA, its frame 0xFF202020, and the shadow transparent (0).
 """
 
 import os
@@ -46,6 +51,18 @@ def screen_pixels(w: int, h: int, tag: int) -> bytes:
     return b"".join(rows)
 
 
+def window_pixels(decoration: bool, shadow: bool) -> tuple[int, int, bytes]:
+    frame, margin = 20 * decoration, 30 * shadow
+    w, h = 300 + 2 * (frame + margin), 200 + 2 * (frame + margin)
+    out = bytearray(w * h * 4)
+    for y in range(margin, h - margin):
+        for x in range(margin, w - margin):
+            inside = margin + frame <= x < w - margin - frame and margin + frame <= y < h - margin - frame
+            out[(y * w + x) * 4:(y * w + x) * 4 + 4] = bytes((0xAA, 0x66, 0x33, 0xFF) if inside
+                                                            else (0x20, 0x20, 0x20, 0xFF))
+    return w, h, bytes(out)
+
+
 def main():
     data = pixels()
     screens = {}
@@ -68,6 +85,12 @@ def main():
             picture = pictures[options.get("include-cursor", ("b", False))[1]]
             results = {"type": ("s", "raw"), "width": ("u", w), "height": ("u", h_),
                        "stride": ("u", w * 4), "format": ("u", 5), "scale": ("d", 1.0)}
+        elif member == "CaptureActiveWindow":
+            options, fd = msg.body
+            w, h_, picture = window_pixels(options.get("include-decoration", ("b", False))[1],
+                                           options.get("include-shadow", ("b", False))[1])
+            results = {"type": ("s", "raw"), "width": ("u", w), "height": ("u", h_),
+                       "stride": ("u", w * 4), "format": ("u", 6), "scale": ("d", 1.0)}
         elif member == "CaptureWorkspace":
             options, fd = msg.body
             picture = data

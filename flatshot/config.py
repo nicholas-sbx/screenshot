@@ -82,6 +82,10 @@ class Config:
     # each screen on its own, at its own scale (KWin, grim), all at once.
     screenshot_method: str = "desktop"
     include_pointer: bool = False  # draw the mouse pointer into instant (no-UI) captures
+    # The active window (instant capture) on KDE is KWin's picture of it: with
+    # its title bar and borders, and its shadow (transparent around it).
+    window_frame: bool = True
+    window_shadow: bool = True
     # The pointer when picking a region: "hidden" or "shown" (one
     # screenshot), or "toggle" (hidden at first, the toolbar's button shows
     # it; two screenshots are taken at once).

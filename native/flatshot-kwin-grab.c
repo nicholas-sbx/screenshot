@@ -1,6 +1,6 @@
 /*
- * flatshot-kwin-grab — capture the whole desktop through KWin's
- * org.kde.KWin.ScreenShot2 D-Bus API.
+ * flatshot-kwin-grab — capture the whole desktop, a screen or the active
+ * window through KWin's org.kde.KWin.ScreenShot2 D-Bus API.
  *
  * KWin only answers callers whose executable is named, with
  * X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2, in an
@@ -11,6 +11,10 @@
  * Usage:
  *   flatshot-kwin-grab [--cursor]   one capture, written raw to stdout
  *                                   (--cursor draws the mouse pointer in)
+ *   flatshot-kwin-grab --window [--decoration] [--shadow] [--cursor]
+ *                                   the active window on its own, with its
+ *                                   title bar and borders, and its shadow,
+ *                                   if asked (transparent around it)
  *   flatshot-kwin-grab --serve      stays running for Flatshot: see serve()
  *   flatshot-kwin-grab --version
  *
@@ -56,24 +60,36 @@ static int variant_uint(DBusMessageIter *variant, uint64_t *out)
     }
 }
 
+/* What to include, for capture_send(). */
+#define WITH_CURSOR 1
+#define WITH_DECORATION 2 /* (the active window only) */
+#define WITH_SHADOW 4 /* (the active window only) */
+#define ACTIVE_WINDOW ((const char *)1) /* capture_send()'s ``screen`` for the active window */
+
 /*
- * Ask KWin for the whole workspace, or for one screen (``screen``: its
- * name) at that screen's own scale, without waiting for the answer. KWin
- * replies with the picture's size and then writes its pixels into ``fd``
- * from a thread of its own, closing it when done. NULL on failure, with
- * the reason in ``why``.
+ * Ask KWin for the whole workspace, for one screen (``screen``: its name)
+ * at that screen's own scale, or for the active window (``screen`` is
+ * ACTIVE_WINDOW), without waiting for the answer. KWin replies with the
+ * picture's size and then writes its pixels into ``fd`` from a thread of
+ * its own, closing it when done. NULL on failure, with the reason in
+ * ``why``.
  */
-static DBusPendingCall *capture_send(DBusConnection *conn, dbus_bool_t cursor, const char *screen, int fd, char *why,
+static DBusPendingCall *capture_send(DBusConnection *conn, int with, const char *screen, int fd, char *why,
                                      size_t why_len)
 {
-    DBusMessage *msg = dbus_message_new_method_call(SERVICE, PATH, IFACE, screen ? "CaptureScreen" : "CaptureWorkspace");
+    const char *method = screen == ACTIVE_WINDOW ? "CaptureActiveWindow" : screen ? "CaptureScreen" : "CaptureWorkspace";
+    DBusMessage *msg = dbus_message_new_method_call(SERVICE, PATH, IFACE, method);
     DBusMessageIter args, dict;
     dbus_message_iter_init_append(msg, &args);
-    if (screen)
+    if (screen && screen != ACTIVE_WINDOW)
         dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &screen);
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &dict);
     add_bool(&dict, "native-resolution", TRUE);
-    add_bool(&dict, "include-cursor", cursor);
+    add_bool(&dict, "include-cursor", (with & WITH_CURSOR) != 0);
+    if (screen == ACTIVE_WINDOW) {
+        add_bool(&dict, "include-decoration", (with & WITH_DECORATION) != 0);
+        add_bool(&dict, "include-shadow", (with & WITH_SHADOW) != 0);
+    }
     dbus_message_iter_close_container(&args, &dict);
     dbus_message_iter_append_basic(&args, DBUS_TYPE_UNIX_FD, &fd);
     DBusPendingCall *pending = NULL;
@@ -132,9 +148,10 @@ static int capture_finish(DBusPendingCall *pending, uint64_t info[4], char *why,
     return 0;
 }
 
-static int capture(DBusConnection *conn, dbus_bool_t cursor, int fd, uint64_t info[4], char *why, size_t why_len)
+static int capture(DBusConnection *conn, int with, const char *what, int fd, uint64_t info[4], char *why,
+                   size_t why_len)
 {
-    DBusPendingCall *pending = capture_send(conn, cursor, NULL, fd, why, why_len);
+    DBusPendingCall *pending = capture_send(conn, with, what, fd, why, why_len);
     return pending ? capture_finish(pending, info, why, why_len) : 3;
 }
 
@@ -149,7 +166,7 @@ static void raw_line(char *out, size_t len, const uint64_t info[4])
 /*
  * --serve: stay connected to the bus and capture on request, so a capture
  * costs neither starting a process nor connecting to D-Bus. fd 0 is a
- * SOCK_SEQPACKET socket from Flatshot. It says "FLATSHOT-SERVE 4"; then
+ * SOCK_SEQPACKET socket from Flatshot. It says "FLATSHOT-SERVE 5"; then
  * each request is "grab" or "grab cursor" with the write end of a pipe
  * attached (SCM_RIGHTS), handed straight to KWin, so the pixels go from
  * KWin to Flatshot without passing through here. The answer is
@@ -161,11 +178,15 @@ static void raw_line(char *out, size_t len, const uint64_t info[4])
  * and as many pipes attached, in the same order. All are asked before any
  * answer is awaited, so they cost about one frame together. The answer has
  * a line per picture, as above.
+ *
+ * "window", followed by any of " cursor", " decoration" and " shadow",
+ * asks for the active window on its own, with one pipe, answered as
+ * "grab" is.
  */
 static int serve(DBusConnection *conn)
 {
     const int sock = 0;
-    const char hello[] = "FLATSHOT-SERVE 4\n";
+    const char hello[] = "FLATSHOT-SERVE 5\n";
     if (send(sock, hello, sizeof hello - 1, MSG_NOSIGNAL) < 0) {
         perror("flatshot-kwin-grab: --serve needs a socket on stdin");
         return 8;
@@ -210,7 +231,8 @@ static int serve(DBusConnection *conn)
                 if (strlen(line) < 3)
                     break;
                 why[0] = '\0';
-                pending[count] = capture_send(conn, line[0] == '1', line + 2, fds[count], why, sizeof why);
+                pending[count] = capture_send(conn, line[0] == '1' ? WITH_CURSOR : 0, line + 2, fds[count], why,
+                                              sizeof why);
                 count++;
                 line = end;
             }
@@ -226,9 +248,12 @@ static int serve(DBusConnection *conn)
             }
             if (count == 0)
                 snprintf(out, sizeof out, "ERR bad request\n");
-        } else if (fd < 0 || strncmp(buf, "grab", 4) != 0) {
+        } else if (fd < 0 || (strncmp(buf, "grab", 4) != 0 && strncmp(buf, "window", 6) != 0)) {
             snprintf(out, sizeof out, "ERR bad request\n");
-        } else if (capture(conn, strstr(buf, "cursor") != NULL, fd, info, why, sizeof why) == 0) {
+        } else if (capture(conn,
+                           (strstr(buf, "cursor") ? WITH_CURSOR : 0) | (strstr(buf, "decoration") ? WITH_DECORATION : 0)
+                               | (strstr(buf, "shadow") ? WITH_SHADOW : 0),
+                           buf[0] == 'w' ? ACTIVE_WINDOW : NULL, fd, info, why, sizeof why) == 0) {
             raw_line(out, sizeof out, info);
         } else {
             snprintf(out, sizeof out, "ERR %s\n", why);
@@ -243,10 +268,21 @@ static int serve(DBusConnection *conn)
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--version") == 0) {
-        puts("flatshot-kwin-grab 4");
+        puts("flatshot-kwin-grab 5");
         return 0;
     }
-    dbus_bool_t cursor = argc > 1 && strcmp(argv[1], "--cursor") == 0;
+    int with = 0;
+    const char *what = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--cursor") == 0)
+            with |= WITH_CURSOR;
+        else if (strcmp(argv[i], "--decoration") == 0)
+            with |= WITH_DECORATION;
+        else if (strcmp(argv[i], "--shadow") == 0)
+            with |= WITH_SHADOW;
+        else if (strcmp(argv[i], "--window") == 0)
+            what = ACTIVE_WINDOW;
+    }
 
     DBusError err;
     dbus_error_init(&err);
@@ -265,7 +301,7 @@ int main(int argc, char **argv)
     }
     char why[400];
     uint64_t info[4];
-    int failed = capture(conn, cursor, fds[1], info, why, sizeof why);
+    int failed = capture(conn, with, what, fds[1], info, why, sizeof why);
     close(fds[1]); /* EOF comes when KWin closes its end */
     if (failed) {
         fprintf(stderr, "flatshot-kwin-grab: %s\n", why);

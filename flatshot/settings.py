@@ -639,6 +639,12 @@ class SettingsWindow(QWidget):
         sensitivity.changed.connect(lambda v: self._save(snap_sensitivity=v))
         card.add(Row("Snap sensitivity", sensitivity, "Higher snaps to fainter and shorter edges too."))
 
+        card = self._card("Active window")
+        card.add(Row("Title bar and borders", self._toggle("window_frame"),
+                     "KDE Plasma takes the window on its own, even where something covers it."))
+        card.add(Row("Shadow", self._toggle("window_shadow"),
+                     "Its real shadow and rounded corners, transparent around it. JPEG fills that in white."))
+
         card = self._card("Magnifier and crosshair")
         loupe = self._toggle("show_loupe")
         card.add(Row("Magnifier", loupe, "Zoomed pixels, coordinates and colour beside the pointer."))

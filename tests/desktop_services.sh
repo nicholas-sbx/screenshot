@@ -55,6 +55,14 @@ for i in range(3):
 extra = []
 img = capture.grab_desktop("kwin", also_pointer=extra)
 assert extra and extra[0].pixel(300, 200) == want, "both at once"
+# The active window on its own: frame and shadow as asked, transparent around it.
+assert capture.can_grab_window("kwin")
+for frame, shadow, size in ((True, True, (400, 300)), (True, False, (340, 240)), (False, False, (300, 200))):
+    win = capture.grab_active_window(False, frame, shadow)
+    assert (win.width(), win.height()) == size, (frame, shadow, win.size())
+    assert win.hasAlphaChannel() and win.pixel(size[0] // 2, size[1] // 2) == 0xFF3366AA, hex(win.pixel(150, 100))
+    assert win.pixelColor(0, 0).alpha() == (0 if shadow else 255), (frame, shadow)
+    print(f"kwin helper ok ({capture.last_grab}): {size[0]}x{size[1]}")
 PYEOF
 done
 
@@ -83,6 +91,8 @@ $PY -m flatshot --full   # forwarded to the tray over the local socket
 sleep 2
 $PY -m flatshot --monitor
 sleep 2
+$PY -m flatshot --window   # KWin's picture of the window itself (transparent shadow)
+sleep 2
 $PY -m flatshot --region 200x100+10+20
 sleep 2
 $PY -c "from flatshot import dbus, shortcuts as s
@@ -93,7 +103,7 @@ sleep 1
 cat "$SHOTS.log"
 count=$(ls "$SHOTS"/*.png 2>/dev/null | wc -l)
 echo "screenshots taken by the tray: $count"
-[ "$count" -eq 5 ] || { echo "FAIL: expected 5 screenshots"; exit 1; }
+[ "$count" -eq 6 ] || { echo "FAIL: expected 6 screenshots"; exit 1; }
 # --region and then "last region" both crop to the same 200x100 logical area.
 $PY - "$SHOTS" <<'PYEOF'
 import sys
@@ -103,6 +113,9 @@ app = QGuiApplication(sys.argv[:1])
 shots = sorted(Path(sys.argv[1]).glob("*.png"), key=lambda p: p.stat().st_mtime_ns)
 sizes = [QImage(str(p)).size() for p in shots]
 print("sizes:", [(s.width(), s.height()) for s in sizes])
+window = QImage(str(shots[3]))
+assert (window.width(), window.height()) == (400, 300), "the window with its frame and shadow"
+assert window.hasAlphaChannel() and window.pixelColor(0, 0).alpha() == 0, "a transparent shadow"
 assert sizes[-1] == sizes[-2] and sizes[-1].width() < 1500, "region / last region crop"
 PYEOF
 echo "tray end-to-end ok"
