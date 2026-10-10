@@ -728,6 +728,10 @@ class SettingsWindow(QWidget):
         save.toggled.connect(sync)
         sync(self.cfg.save_to_disk)
 
+        card.add(Row("Beautify", self._toggle("beautify"),
+                     "Each capture on a background, with padding, rounded corners and a shadow: the style last "
+                     "used in the annotation editor's Background panel (Ctrl+B there)."))
+
         card = self._card("Then")
         clip = Segmented([("image", "Image"), ("path", "File path"), ("none", "Nothing")], self.cfg.clipboard)
         clip.changed.connect(lambda v: self._save(clipboard=v))

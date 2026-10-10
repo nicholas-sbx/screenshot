@@ -254,6 +254,7 @@ def run() -> int:
     _editor(app, tmp, out_dir)
     _selecting(app, tmp, desktop, out_dir)
     _picture_tools(app, tmp, out_dir)
+    _beautify(app, tmp, out_dir)
     _drawing_and_text(app, tmp, desktop, out_dir)
     _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
@@ -787,6 +788,100 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
             os.environ["FLATSHOT_RECORDER"] = forced
         shutil.rmtree(rec_dir, ignore_errors=True)
     print("self-test: record tool, countdown, pause, stop and discard ok")
+
+
+def _beautify(app, tmp: Path, out_dir):
+    """Beautify: background, padding, rounded corners, shadow and shape, at
+    full resolution; in the editor's Background panel and after capture."""
+    from flatshot import beautify, config, editor, output
+    from flatshot.qt import QEvent, QKeyEvent
+
+    red = QColor("#E02020")
+    pic = QImage(100, 60, QImage.Format.Format_RGB32)
+    pic.fill(red)
+    style = beautify.Style(background="color", color="#2040C0", padding=20, radius=10, shadow=0)
+    out = beautify.render(pic, style)
+    assert (out.width(), out.height()) == (140, 100), out.size()
+    assert out.pixelColor(70, 50) == red and out.pixelColor(5, 5) == QColor("#2040C0")
+    assert out.pixelColor(20, 20) != red and out.pixelColor(24, 24) == red, "corners not rounded"
+    shadowed = beautify.render(pic, beautify.Style(background="color", color="#FFFFFF", padding=40, shadow=16,
+                                                   shadow_offset=8, shadow_opacity=60))
+    below = shadowed.pixelColor(90, 40 + 60 + 6)
+    assert below.lightness() < 235, f"no shadow under it ({below.name()})"
+    assert shadowed.pixelColor(2, 2) == QColor("#FFFFFF"), "the shadow reaches the corner"
+    wide = beautify.render(pic, beautify.Style(padding=10, ratio="16:9", shadow=0))
+    assert abs(wide.width() / wide.height() - 16 / 9) < 0.02, wide.size()
+    pct = beautify.layout(pic.size(), beautify.Style(padding=10, padding_percent=True))[0]
+    assert pct == pic.size() + qt.QSize(20, 20), pct  # (10% of 100 each side)
+    clear = beautify.render(pic, beautify.Style(background="none", padding=10, shadow=0))
+    assert clear.hasAlphaChannel() and clear.pixelColor(1, 1).alpha() == 0
+    # Edge colour: the margin continues the picture's border.
+    framed = QImage(100, 60, QImage.Format.Format_RGB32)
+    framed.fill(QColor("#F0F0E8"))
+    paint = QPainter(framed)
+    paint.fillRect(30, 20, 40, 20, red)
+    paint.end()
+    edge = beautify.render(framed, beautify.Style(background="edge", padding=10, shadow=0, radius=0))
+    c = edge.pixelColor(2, 2)
+    assert abs(c.red() - 0xF0) < 8 and abs(c.blue() - 0xE8) < 8, c.name()
+    # A window KWin cut out (transparent round it): no second shadow or corners.
+    window = QImage(80, 50, QImage.Format.Format_ARGB32_Premultiplied)
+    window.fill(0)
+    paint = QPainter(window)
+    paint.fillRect(10, 10, 60, 30, red)
+    paint.end()
+    assert beautify.has_own_shape(window) and not beautify.has_own_shape(pic)
+    kept = beautify.render(window, beautify.Style(background="none", padding=20, shadow=30, shadow_opacity=100))
+    assert kept.pixelColor(20 + 40, 20 + 45).alpha() == 0, "a second shadow was added"
+    # JPEG has no transparency: a clear background is saved on white.
+    jpg = output.save(clear, config.load(), str(tmp / "beautified.jpg"))
+    assert QImage(str(jpg)).pixelColor(1, 1).lightness() > 245
+
+    # The editor's Background panel: shown round the picture, and in what's saved.
+    src = tmp / "beautify-me.png"
+    pic.save(str(src))
+    ed = editor.open_file(src)
+    ed.resize(1100, 700)
+    app.processEvents()
+    ed.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier, ""))
+    assert ed.beauty_on and ed.beauty_panel.isVisible() and ed.bar.beauty_button.active and ed.dirty
+    ed.beauty_panel.kind.setCurrentIndex(ed.beauty_panel.kind.findData("color"))
+    assert ed.beauty.background == "color" and ed.beauty_panel.colour.isVisible()
+    ed.set_beauty(color="#20C040", padding=16, radius=0, shadow=0, ratio="auto")
+    assert ed.beauty_panel.padding.slider.value == 16
+    box = ed.canvas.view_box()
+    assert box.width() > 100 and box.left() < 0, box  # (the view takes in the background)
+    shot = ed.render()
+    k = ed.dpr
+    assert shot.width() == round(100 + 32 * k) and shot.pixelColor(2, 2) == QColor("#20C040"), shot.size()
+    if out_dir:
+        ed.grab().save(str(Path(out_dir) / "editor-beautify.png"))
+    saved = tmp / "beautified.png"
+    assert ed._save_to(saved) and QImage(str(saved)).size() == shot.size() and not ed.dirty
+    # It's the last style used (for Beautify after capture), and can be a preset.
+    ed._remember_beauty()
+    assert config.load().beautify_style["color"] == "#20C040"
+    ed.save_preset("House")
+    assert config.load().beautify_presets["House"]["padding"] == 16
+    ed.set_beauty(padding=40)
+    ed.use_preset("House")
+    assert ed.beauty.padding == 16
+    ed.toggle_beauty()
+    assert not ed.beauty_on and ed.render().size() == pic.size()
+    ed._closing = True
+    ed.close()
+
+    # After capture: every capture beautified with the last style.
+    from flatshot.notify import Notifier
+    from flatshot.session import Request, Session
+
+    cfg = config.Config(save_dir=str(tmp / "beautified"), notify=False, clipboard="none", beautify=True,
+                        beautify_style={"background": "color", "color": "#20C040", "padding": 10, "shadow": 0})
+    s = Session(cfg, Request(image=str(src), scan=False), Notifier(interactive=False), lambda *a: None)
+    s._deliver(pic, None, qt.QRect(0, 0, 100, 60))
+    files = list((tmp / "beautified").glob("*.png"))
+    assert len(files) == 1 and QImage(str(files[0])).size() == qt.QSize(120, 80), files
+    print("self-test: beautify ok")
 
 
 def _picture_tools(app, tmp: Path, out_dir):
