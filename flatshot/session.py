@@ -160,7 +160,7 @@ class Session:
         if not self.request.image and (self.mode in ("monitor", "window") or self._names_window()
                                        or (self.mode == "region" and self.cfg.detect_windows)):
             # Ask the compositor about windows now, while they are as captured.
-            self.window_finder = windows.WindowFinder()
+            self.window_finder = windows.WindowFinder(self.cfg.detect_all_windows)
             self.window_finder.found.connect(self._desktop_found)
             if not self.window_finder.start(background=not instant):
                 self.window_finder = None
@@ -201,7 +201,7 @@ class Session:
                         f"{layershell.last_overlay}")
         if self._may_span():
             self._desktop_image = image
-        if self.cfg.scan_codes and self.request.scan:
+        if self.request.scan:
             self._scan_source = image  # kept so hidden codes can be scanned on demand
             if self.codes_visible:
                 # Let the overlay reach the screen before scanning competes for CPU.
@@ -489,18 +489,19 @@ class Session:
         phys = capture.to_pixels(image, area)
         out = image.copy(phys).convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
         sx, sy = phys.width() / max(1, area.width()), phys.height() / max(1, area.height())
+        # Pixelate and blur take what's under them from this picture of the
+        # whole area, so one reaching across monitors covers both parts.
+        under = QPixmap.fromImage(out.copy())
+        under.setDevicePixelRatio(sx)
         p = QPainter(out)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.scale(sx, sy)
         for o in self.overlays:
-            if o.annotations:
-                g = o.target_screen.geometry()
-                p.save()
-                p.scale(sx, sy)
-                p.translate(g.x() - area.x(), g.y() - area.y())
-                for shape in o.annotations:
-                    if not shape.hidden:
-                        shape.paint(p, o.base)
-                p.restore()
+            g = o.target_screen.geometry()
+            d = QPointF(g.x() - area.x(), g.y() - area.y())
+            for shape in o.annotations:
+                if not shape.hidden:
+                    shape.moved(d).paint(p, under)
         p.end()
         return out.convertToFormat(QImage.Format.Format_RGB32)
 
@@ -605,6 +606,34 @@ class Session:
         for o in self.overlays:
             if o is not overlay:
                 o.selection.clear()
+
+    def _from_top(self, overlay: Overlay, pos: QPointF):
+        """Each overlay, topmost drawings first, with ``pos`` (on ``overlay``)
+        in its coordinates: drawings reach across monitors, and the other
+        overlays' are painted over this one's own."""
+        order = [overlay] + [o for o in self.overlays if o is not overlay]
+        for o in reversed(order):
+            yield o, pos + o.offset_from(overlay)
+
+    def select_owner(self, overlay: Overlay, pos: QPointF) -> Overlay:
+        """The overlay whose select tool takes a press at ``pos`` on
+        ``overlay``: the one with a drawing selected, on its handles or
+        frame; else the one owning the topmost drawing there."""
+        held = self._selected()
+        if held is not None:
+            local = pos + held.host.offset_from(overlay)
+            if held._handle_at(local, 1.0) or held.shape in held.hits(local):
+                return held.host
+        return next((o for o, local in self._from_top(overlay, pos) if o.selection.hits(local)), overlay)
+
+    def text_at(self, overlay: Overlay, pos: QPointF):
+        """The topmost text at ``pos`` on ``overlay``, wherever it was typed:
+        (its overlay, the text, ``pos`` in that overlay's coordinates)."""
+        for o, local in self._from_top(overlay, pos):
+            text = o.text_at(local)
+            if text is not None:
+                return o, text, local
+        return None
 
     def _selected(self):
         """The Selection holding a drawing, if any."""

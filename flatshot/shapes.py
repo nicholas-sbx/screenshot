@@ -570,7 +570,7 @@ class Text(Shape):
         return True
 
     def key(self, event) -> bool | str:
-        """A key while typing: "commit" (Enter, Esc), True if it was used,
+        """A key while typing: "commit" (Esc, Ctrl+Enter), True if it was used,
         False if it's for whoever else (a Ctrl shortcut the text has no use
         for: undo, save, ...)."""
         from flatshot.qt import QGuiApplication, keyval
@@ -588,10 +588,10 @@ class Text(Shape):
         if is_("Escape"):
             return "commit"
         if is_("Return", "Enter"):
-            if shift:
-                self.insert("\n")
-                return True
-            return "commit"
+            if ctrl:
+                return "commit"  # (Ctrl+Enter finishes, as Esc or a click elsewhere does)
+            self.insert("\n")
+            return True
         if is_("Backspace"):
             self._delete(*((a, b) if a != b else (self._word_left(a) if ctrl else max(0, a - 1), a)))
             return True

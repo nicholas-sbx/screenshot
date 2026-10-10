@@ -43,7 +43,7 @@ shots = tmp / "shots"
 def session(**changes):
     done = []
     cfg = config.Config(**{"save_dir": str(shots), "filename": "{n}", "notify": False, "clipboard": "none",
-                           "scan_codes": False, "detect_windows": False, **changes})
+                           "show_codes": False, "detect_windows": False, **changes})
     s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda code, holds: done.append(code))
     s.start()
     for o in s.overlays:
@@ -177,4 +177,40 @@ assert s.toolbar_overlay is right and right.picker_open() and not left.picker_op
     (s.toolbar_overlay is right, right.picker_open(), left.picker_open())
 s.cancel()
 print("ok   your colour's picker follows the toolbar to another monitor")
+# Drawing across monitors: a box begun on the left reaches onto the right one,
+# shows there, is in a capture of the right monitor alone, and the select tool
+# picks it up from the right one.
+s, done = session(default_tool="rect")
+left, right = s.overlays
+for kind, x, y in (("press", 700, 100), ("move", 800, 200), ("move", 900, 300)):
+    mouse(left, kind, x, y)
+assert right.grab().toImage().pixelColor(100, 200).red() > 200, "the box isn't shown on the right while drawn"
+mouse(left, "release", 900, 300)
+box = left.annotations[-1]
+assert isinstance(box, shapes.Box) and box.rect() == QRectF(700, 100, 200, 200)
+assert right.render(None).pixelColor(100, 200).red() > 200, "the right monitor's part of the box is missing"
+s.set_tool("select")
+mouse(right, "press", 100, 250)  # (its right edge, on the right monitor)
+assert s.select_owner(right, QPointF(100, 250)) is left and left.selection.shape is box
+for kind, x, y in (("move", 110, 260), ("move", 120, 270), ("release", 120, 270)):
+    mouse(right, kind, x, y)
+moved = left.annotations[-1]
+assert moved.rect() == QRectF(720, 120, 200, 200) and box.hidden, moved.rect()
+s.undo()
+assert not box.hidden and left.annotations[-1] is box
+# Text begun on the left, reaching onto the right: the text tool edits it from there.
+s.set_tool("text")
+mouse(left, "press", 760, 400)
+mouse(left, "release", 760, 400)
+for ch in "a long line of text":
+    s.key(left, QKeyEvent(QEvent.Type.KeyPress, keyval(Qt.Key.Key_A), Qt.KeyboardModifier.NoModifier, ch))
+s.key(left, QKeyEvent(QEvent.Type.KeyPress, keyval(Qt.Key.Key_Escape), Qt.KeyboardModifier.NoModifier))
+s.key_release(left, QKeyEvent(QEvent.Type.KeyRelease, keyval(Qt.Key.Key_Escape), Qt.KeyboardModifier.NoModifier))
+text = left.annotations[-1]
+assert isinstance(text, shapes.Text) and text.bounds().right() > 800, text.bounds()
+mouse(right, "press", 20, 412)
+mouse(right, "release", 20, 412)
+assert s.text_edit is not None and s.text_edit[0] is left and s.text_edit[1].replaces is text, s.text_edit
+s.cancel()
+print("ok   drawings cross monitors: shown, captured, selected and edited from either")
 print("selections across monitors ok")

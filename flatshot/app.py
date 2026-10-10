@@ -208,7 +208,10 @@ def main(argv=None) -> int:
         tray = TrayApp(app)
         if not tray.start():
             return 1
-        return app.exec()
+        code = app.exec()
+        if tray.restarting:
+            _restart()
+        return code
     if args.settings:
         from flatshot.settings import SettingsWindow
 
@@ -219,6 +222,24 @@ def main(argv=None) -> int:
     if args.image:
         return run_editor(app, args.image, args.output)
     return run_once(app, args)
+
+
+def _restart() -> None:
+    """Start this tray app again in this process's place (the AppImage's
+    mount stays: it's the same process)."""
+    argv = sys.argv[:]
+    if argv and argv[0].endswith("__main__.py"):  # python -m flatshot
+        argv = [sys.executable, "-m", "flatshot", *argv[1:]]
+    elif argv and argv[0].endswith(".py") or not os.access(argv[0], os.X_OK):
+        argv = [sys.executable, *argv]
+    if "--tray" not in argv:
+        argv.append("--tray")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(argv[0], argv)
+    except OSError as e:
+        print(f"flatshot: could not start again: {e}", file=sys.stderr)
 
 
 def run_editor(app, path: str, save_to: str | None) -> int:

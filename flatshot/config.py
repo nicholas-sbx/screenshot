@@ -78,8 +78,8 @@ class Config:
     snap_sensitivity: int = 5  # 1-10: higher snaps to fainter and shorter edges
     span_monitors: bool = True  # a selection or a clicked window may cross monitors
     detect_windows: bool = True  # hover + click a window to capture it (KDE)
-    scan_codes: bool = True
-    show_codes: bool = True
+    detect_all_windows: bool = True  # ... panels, notifications, popups and the like too, not just app windows
+    show_codes: bool = True  # QR codes and barcodes are looked for while shown (Q)
     toolbar_follows_mouse: bool = True
     backend: str = "auto"  # see BACKENDS
     # "desktop": one picture of the whole desktop, cut up per screen; "screens":

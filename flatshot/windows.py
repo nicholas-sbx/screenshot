@@ -45,10 +45,18 @@ SCRIPT = r"""
     }
     var act = workspace.activeWindow || workspace.activeClient;  // Plasma 6 / 5
     var active = -1;
+    var all = %ALL%;  // panels, notifications, popups and the like too
+    function wanted(w) {
+        if (w.normalWindow || w.dialog) return true;
+        if (!all || w.desktopWindow || w.pid === %PID%) return false;  // (not the wallpaper, nor Flatshot's own)
+        return !!(w.dock || w.notification || w.criticalNotification || w.onScreenDisplay || w.utility || w.splash
+                  || w.toolbar || w.menu || w.popupMenu || w.dropdownMenu || w.tooltip || w.comboBox || w.popupWindow
+                  || w.appletPopup);
+    }
     for (var i = 0; i < list.length; i++) {
         var w = list[i];
         try {
-            if (!(w.normalWindow || w.dialog) || w.minimized || w.deleted || w.hidden) continue;
+            if (!wanted(w) || w.minimized || w.deleted || w.hidden) continue;
             if (!onCurrent(w)) continue;
             var g = w.frameGeometry;
             if (!g || g.width < 8 || g.height < 8) continue;
@@ -174,8 +182,11 @@ def query_compositor() -> Desktop | None:
 class WindowFinder(QObject):
     found = Signal(object)  # Desktop
 
-    def __init__(self):
+    def __init__(self, everything: bool = True):
+        """``everything``: panels, notifications, popups and the like too,
+        not just normal windows and dialogs."""
         super().__init__()
+        self.everything = everything
         self._listener = None
         self._script_name = ""
         self._script_file = ""
@@ -210,7 +221,8 @@ class WindowFinder(QObject):
         self._listener.received.connect(self._on_message)
         if not self._listener.start():
             return False
-        script = (SCRIPT.replace("%SERVICE%", self._listener.unique_name)
+        script = (SCRIPT.replace("%ALL%", "true" if self.everything else "false").replace("%PID%", str(os.getpid()))
+                  .replace("%SERVICE%", self._listener.unique_name)
                   .replace("%PATH%", REPORT_PATH).replace("%IFACE%", REPORT_IFACE))
         fd, self._script_file = tempfile.mkstemp(prefix="flatshot-windows-", suffix=".js")
         with os.fdopen(fd, "w") as f:

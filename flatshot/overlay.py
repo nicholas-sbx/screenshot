@@ -20,7 +20,7 @@ HINTS = {
     "region": "Drag to capture  ·  Click for whole screen  ·  Esc to cancel",
     "codes": "Drag to capture  ·  {codes} hides detected codes  ·  Esc to cancel",
     "windows": "Drag to capture  ·  Click a window to capture it  ·  Esc to cancel",
-    "text": "Click to place text, or on text to change it  ·  Drag text to move it  ·  Enter to finish",
+    "text": "Click to place text, or on text to change it  ·  Enter for a new line  ·  Esc or Ctrl+Enter to finish",
     "shape": "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it",
     "select": "Click a drawing to select it  ·  Drag to move  ·  Handles resize  ·  Delete removes it",
     "selected": "Drag to move (Shift: straight)  ·  Handles: Shift keeps its shape, Ctrl from the middle  ·  "
@@ -125,9 +125,16 @@ class Overlay(QWidget):
         self._edge_thread: threading.Thread | None = None
         self._snap_point: QPointF | None = None
         self._loupe_box = QRect()
-        # The text tool: a text being dragged to a new place (press position, its position then).
-        self._text_drag: tuple[QPointF, QPointF] | None = None
+        # The text tool: dragging selects text in the text being typed (the select tool moves texts).
+        self._text_select: "Overlay | None" = None  # whose text's letters a drag here selects
         self.selection = selection.Selection(self)  # the select tool's drawing, on this monitor
+        # Drawings may cross onto other monitors: each overlay owns those begun on
+        # it (in its own coordinates) and also paints the others' that reach it.
+        self._foreign: dict = {}  # id(another's shape) -> (it, offset, its copy moved here)
+        self._state = None  # what this overlay's drawings were at the last paint
+        self._spilled = False  # some of them reached past this monitor then
+        self._select_on: "Overlay | None" = None  # a select drag on a drawing another overlay owns
+
         self._rainbow: QTimer | None = None
         if ctl.cfg.rainbow:
             self._rainbow = QTimer(self)
@@ -414,7 +421,11 @@ class Overlay(QWidget):
     def update_cursor(self):
         text = self.ctl.tool == "text" and not self.ctl.eyedropper
         if self.ctl.tool == "select" and not self.ctl.eyedropper:
-            shape = self.selection.cursor(self.cursor_pos) if self.cursor_pos is not None else Qt.CursorShape.ArrowCursor
+            if self.cursor_pos is None:
+                shape = Qt.CursorShape.ArrowCursor
+            else:
+                owner = self._select_on or self.ctl.select_owner(self, self.cursor_pos)
+                shape = owner.selection.cursor(self.cursor_pos + owner.offset_from(self))
         else:
             shape = Qt.CursorShape.IBeamCursor if text else Qt.CursorShape.CrossCursor
         self.setCursor(shape)
@@ -455,7 +466,8 @@ class Overlay(QWidget):
             return True
         if self.sel_rect is not None or self.active is not None or self._rec_drag is not None:
             spanned = self.sel_rect is not None and self.ctl.spans()
-            self.sel_origin = self.sel_rect = self.active = self._rec_drag = self._text_drag = None
+            self.sel_origin = self.sel_rect = self.active = self._rec_drag = None
+            self._text_select = None
             if spanned:
                 self.ctl.selection_moved(self, None)
             self.ctl.refresh()
@@ -566,6 +578,94 @@ class Overlay(QWidget):
 
     # -- output ------------------------------------------------------------
 
+    # -- drawings across monitors ------------------------------------------------
+
+    def offset_from(self, other: "Overlay") -> QPointF:
+        """Add this to a point in ``other``'s coordinates to have it in this one's."""
+        return QPointF(other.target_screen.geometry().topLeft() - self.target_screen.geometry().topLeft())
+
+    def _moved_here(self, shape: shapes.Shape, d: QPointF) -> shapes.Shape:
+        """Another overlay's drawing as it shows here (kept while it's the same)."""
+        kept = self._foreign.get(id(shape))
+        if kept is None or kept[0] is not shape or kept[1] != d:
+            kept = (shape, QPointF(d), shape.moved(d))
+            if len(self._foreign) > 512:
+                self._foreign.clear()
+            self._foreign[id(shape)] = kept
+        return kept[2]
+
+    def _paint_drawings(self, p: QPainter, live: bool = True):
+        """This overlay's drawings, then the parts of the other overlays'
+        that reach onto this monitor (each painted from this monitor's own
+        pixels, so pixelate and blur are right here too). ``live``: with
+        the shape being drawn, the text being typed and the selection."""
+        for shape in self.annotations:
+            if not shape.hidden:
+                shape.paint(p, self.base)
+        editing = self.ctl.text_edit
+        if live:
+            if self.active is not None:
+                self.active.paint(p, self.base)
+            if editing and editing[0] is self:
+                editing[1].paint(p, self.base)
+            if self.ctl.tool == "select":
+                self.selection.paint(p, self.base)
+        here = QRectF(self.rect()).adjusted(-60, -60, 60, 60)
+        for o in self.ctl.overlays:
+            if o is self:
+                continue
+            d = self.offset_from(o)
+            view = here.translated(-d)  # (this monitor, in the other's coordinates)
+            for shape in o.annotations:
+                if not shape.hidden and shape.bounds().intersects(view):
+                    self._moved_here(shape, d).paint(p, self.base)
+            if not live:
+                continue
+            if o.active is not None and o.active.bounds().intersects(view):
+                o.active.moved(d).paint(p, self.base)
+            if editing and editing[0] is o and editing[1].bounds().intersects(view):
+                typing = editing[1].moved(d)
+                typing.editing = True
+                typing.paint(p, self.base)
+            if self.ctl.tool == "select":
+                moving = o.selection._moving()
+                if moving is not None:
+                    moving.moved(d).paint(p, self.base)
+                p.save()
+                p.translate(d)
+                o.selection.paint_frame(p)
+                p.restore()
+
+    def _own_state(self):
+        """What this overlay's drawings are now, to tell when they change."""
+        editing = self.ctl.text_edit
+        typing = editing[1] if editing and editing[0] is self else None
+        moving = self.selection._moving()
+        return (len(self.annotations), id(self.annotations[-1]) if self.annotations else 0,
+                self.active.bounds().getRect() if self.active is not None else None,
+                (typing.text, typing.pos.x(), typing.pos.y(), typing.cursor, typing.anchor) if typing else None,
+                id(self.selection.shape), moving.bounds().getRect() if moving is not None else None)
+
+    def _share_changes(self):
+        """After a paint: if this overlay's drawings changed and reach (or
+        reached) past its monitor, the others repaint to show their part."""
+        if len(self.ctl.overlays) < 2:
+            return
+        state = self._own_state()
+        if state == self._state:
+            return
+        self._state = state
+        mine = QRectF(self.rect())
+        editing = self.ctl.text_edit
+        live = [self.active, editing[1] if editing and editing[0] is self else None, self.selection._moving()]
+        spills = any(not mine.contains(s.bounds()) for s in self.annotations + [s for s in live if s is not None]
+                     if not s.hidden and not s.bounds().isNull())
+        if spills or self._spilled or self.selection.shape is not None:
+            for o in self.ctl.overlays:
+                if o is not self:
+                    o.update()
+        self._spilled = spills
+
     def render(self, rect: QRectF | None) -> QImage:
         """The capture plus annotations, cropped to ``rect`` (logical)."""
         dpr = self.dpr()
@@ -578,9 +678,7 @@ class Overlay(QWidget):
         image.setDevicePixelRatio(dpr)
         p = QPainter(image)
         p.translate(-phys.x() / dpr, -phys.y() / dpr)
-        for shape in self.annotations:
-            if not shape.hidden:
-                shape.paint(p, self.base)
+        self._paint_drawings(p, live=False)
         p.end()
         image.setDevicePixelRatio(1.0)
         return image.convertToFormat(QImage.Format.Format_RGB32)
@@ -600,15 +698,17 @@ class Overlay(QWidget):
             return
         self.ctl.close_picker()  # a click elsewhere closes it, and does what it would anyway
         editing = self.ctl.text_edit
-        if editing and editing[0] is self and editing[1].contains(pos):
-            # In the text being typed: the caret goes there (Shift: selects
-            # to there); a drag moves the text.
-            shape = editing[1]
-            shape.place(shape.index_at(pos), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
-            self._text_drag = (pos, QPointF(shape.pos))
+        if editing and editing[1].contains(pos + editing[0].offset_from(self)):
+            # In the text being typed (on whichever monitor it was begun): the
+            # caret goes there (Shift: selects to there); a drag selects.
+            shape, owner = editing[1], editing[0]
+            shape.place(shape.index_at(pos + owner.offset_from(self)),
+                        bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+            self._text_select = owner
+            owner.update()
             self.update()
             return
-        if self.ctl.commit_text() and self.ctl.tool == "text" and self.text_at(pos) is None:
+        if self.ctl.commit_text() and self.ctl.tool == "text" and self.ctl.text_at(self, pos) is None:
             return  # first click just finishes the text being typed
         tool = self.ctl.tool
         if tool == "record" and self.ctl.countdown is not None:
@@ -624,19 +724,22 @@ class Overlay(QWidget):
             self.sel_rect = QRectF(pos, pos)
             self.ctl.refresh()
         elif tool == "text":
-            old = self.text_at(pos)
-            if old is not None:  # edit it again (a copy, so undo brings back the original)
+            found = self.ctl.text_at(self, pos)
+            if found is not None:  # edit it again (a copy, so undo brings back the original)
+                owner, old, local = found
                 shape = old.copy_for_editing()
-                shape.place(shape.index_at(pos))
-                self._text_drag = (pos, QPointF(shape.pos))
+                shape.place(shape.index_at(local))
+                self._text_select = owner
+                self.ctl.begin_text(owner, shape)
             else:
-                shape = shapes.Text(pos, self.ctl.color, self.ctl.size)
-            self.ctl.begin_text(self, shape)
+                self.ctl.begin_text(self, shapes.Text(pos, self.ctl.color, self.ctl.size))
         elif tool == "counter":
             self.commit(shapes.Counter(pos, self.ctl.color, self.ctl.size, self.ctl.next_number()))
         elif tool == "select":
-            self.ctl.select_on(self)
-            self.selection.press(pos, event.modifiers())
+            owner = self.ctl.select_owner(self, pos)
+            self._select_on = owner
+            self.ctl.select_on(owner)
+            owner.selection.press(pos + owner.offset_from(self), event.modifiers())
             self.ctl.refresh()
         else:
             self.active = shapes.create(tool, pos, self.ctl.color, self.ctl.size)
@@ -657,14 +760,14 @@ class Overlay(QWidget):
                 self.ctl.selection_moved(self, pos)
         elif self._rec_drag is not None:
             self._drag_area(pos, self._snap_point, bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
-        elif self._text_drag is not None and self.ctl.text_edit and self.ctl.text_edit[0] is self:
-            start, origin = self._text_drag
-            if (pos - start).manhattanLength() > 3 or self.ctl.text_edit[1].pos != origin:
-                self.ctl.text_edit[1].pos = origin + (pos - start)
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self._text_select is not None and self.ctl.text_edit and self.ctl.text_edit[0] is self._text_select:
+            owner, shape = self.ctl.text_edit
+            shape.place(shape.index_at(pos + owner.offset_from(self)), select=True)
+            owner.update()
         elif self.active is not None:
             self.active.extend(pos, **shapes.modifiers(event.modifiers()))
-        elif self.selection.move(pos, event.modifiers()):
+        elif self._select_on is not None and self._select_on.selection.move(
+                pos + self._select_on.offset_from(self), event.modifiers()):
             pass
         else:
             self._update_hover()
@@ -677,9 +780,8 @@ class Overlay(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        if self._text_drag is not None:
-            self._text_drag = None
-            self.update_cursor()
+        if self._text_select is not None:
+            self._text_select = None
             return
         if self.sel_origin is not None:
             rect = self.sel_rect
@@ -711,8 +813,10 @@ class Overlay(QWidget):
             if shape.is_valid():
                 self.commit(shape)
             self.update()
-        elif self.selection.release():
-            self.ctl.refresh()
+        elif self._select_on is not None:
+            owner, self._select_on = self._select_on, None
+            if owner.selection.release():
+                self.ctl.refresh()
 
     def wheelEvent(self, event):
         """Scrolling zooms the magnifier in (up) and out (down)."""
@@ -784,15 +888,8 @@ class Overlay(QWidget):
             p.fillRect(self.rect(), C.INK)
         p.drawPixmap(0, 0, self.base)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        for shape in self.annotations:
-            if not shape.hidden:
-                shape.paint(p, self.base)
-        if self.active is not None:
-            self.active.paint(p, self.base)
-        if self.ctl.text_edit and self.ctl.text_edit[0] is self:
-            self.ctl.text_edit[1].paint(p, self.base)
-        if self.ctl.tool == "select":
-            self.selection.paint(p, self.base)
+        self._paint_drawings(p)
+        self._share_changes()
 
         region = self.ctl.tool in ("region", "record")
         picking = region and self.rec_rect is None  # still choosing an area
