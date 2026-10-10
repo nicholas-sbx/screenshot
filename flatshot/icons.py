@@ -119,10 +119,26 @@ def _save_as(p, c):
 
 
 def _fit(p, c):
-    # A magnifier with a picture in its lens: zoom to fit (not full screen).
+    # A picture with arrows out to the window's corners: fit it in the window.
+    p.drawRoundedRect(QRectF(8, 9, 8, 6), 1.2, 1.2)
+    p.drawPath(_path([(3.5, 8), (3.5, 3.5), (8, 3.5)], [(16, 3.5), (20.5, 3.5), (20.5, 8)],
+                     [(20.5, 16), (20.5, 20.5), (16, 20.5)], [(8, 20.5), (3.5, 20.5), (3.5, 16)]))
+
+
+def _zoom(p, c, plus: bool):
     p.drawEllipse(QRectF(3.5, 3.5, 13, 13))
     p.drawLine(QPointF(14.6, 14.6), QPointF(20.5, 20.5))
-    p.drawRoundedRect(QRectF(6.8, 7.6, 6.4, 4.8), 1, 1)
+    p.drawLine(QPointF(7, 10), QPointF(13, 10))
+    if plus:
+        p.drawLine(QPointF(10, 7), QPointF(10, 13))
+
+
+def _zoom_in(p, c):
+    _zoom(p, c, True)
+
+
+def _zoom_out(p, c):
+    _zoom(p, c, False)
 
 
 def _counter(p, c):
@@ -368,6 +384,27 @@ def _beautify(p, c):
     p.drawPath(_path([(19, 1.5), (19, 5.5)], [(17, 3.5), (21, 3.5)]))
 
 
+def _links(p, gap: float):
+    """Two chain links along a diagonal, ``gap`` apart (less than 0: through each other)."""
+    p.save()
+    p.translate(12, 12)
+    p.rotate(-45)
+    w = 9.5
+    p.drawRoundedRect(QRectF(-w - gap / 2 + 2, -3.2, w, 6.4), 3.2, 3.2)
+    p.drawRoundedRect(QRectF(gap / 2 - 2, -3.2, w, 6.4), 3.2, 3.2)
+    p.restore()
+
+
+def _link(p, c):
+    """Two chain links, joined: width and height kept together."""
+    _links(p, 0)
+
+
+def _unlink(p, c):
+    """The two links apart."""
+    _links(p, 7)
+
+
 _ICONS = {
     "region": _region, "select": _select, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate, "blur": _blur,
@@ -376,10 +413,10 @@ _ICONS = {
     "codes": _codes, "codes-off": _codes_off, "pin": _pin, "record": _record, "mic": _mic,
     "speaker": _speaker, "cursor": _cursor, "cursor-off": _cursor_off, "solid": _solid, "pause": _pause,
     "resume": _resume, "stop": _stop, "trash": _trash,
-    "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit, "save": _save,
+    "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit, "zoom-in": _zoom_in, "zoom-out": _zoom_out, "save": _save,
     "save-as": _save_as, "crop": _crop, "rotate-left": _rotate_left, "rotate-right": _rotate_right,
     "flip-h": _flip_h, "flip-v": _flip_v, "cut-rows": _cut_rows, "cut-cols": _cut_cols, "resize": _resize,
-    "ratio": _ratio, "margin": _margin, "beautify": _beautify,
+    "ratio": _ratio, "margin": _margin, "beautify": _beautify, "link": _link, "unlink": _unlink,
 }
 
 
@@ -457,8 +494,8 @@ def _desktop_is_dark() -> bool:
 
 def _draw_logo(p: QPainter, size: int, back: QColor | None, frame: QColor, dot: QColor) -> None:
     """The Flatshot logo (assets/flatshot.svg, a 256 grid) at ``size`` px.
-    Without a background the marks fill the icon and are drawn bolder, as
-    symbolic tray icons are."""
+    Without a background the marks fill the icon in thin lines, as the
+    desktop's own symbolic tray icons are drawn."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     if back is not None:
@@ -468,10 +505,10 @@ def _draw_logo(p: QPainter, size: int, back: QColor | None, frame: QColor, dot: 
         p.drawRoundedRect(QRectF(8, 8, 240, 240), 56, 56)
         width = 18
     else:
-        lo, hi = 44, 212  # the marks, with room for their stroke
+        lo, hi = 52, 204  # the marks, with room for their stroke
         p.scale(size / (hi - lo), size / (hi - lo))
         p.translate(-lo, -lo)
-        width = 24
+        width = max(1.3 * 152 / size, 9.5)  # (about 1.3 px at 22 px: Breeze's line)
     pen = QPen(frame, width)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -481,8 +518,10 @@ def _draw_logo(p: QPainter, size: int, back: QColor | None, frame: QColor, dot: 
                      [(196, 152), (196, 196), (152, 196)], [(104, 196), (60, 196), (60, 152)]))
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(dot)
-    grow = 0 if back is not None else 6
-    p.drawRoundedRect(QRectF(104 - grow, 104 - grow, 48 + 2 * grow, 48 + 2 * grow), 12, 12)
+    if back is not None:
+        p.drawRoundedRect(QRectF(104, 104, 48, 48), 12, 12)
+    else:  # (a smaller dot, in step with the thin lines)
+        p.drawRoundedRect(QRectF(112, 112, 32, 32), 7, 7)
     p.restore()
 
 

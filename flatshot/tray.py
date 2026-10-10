@@ -66,6 +66,7 @@ class TrayApp(QObject):
         self.settings = None
         self.tray: QSystemTrayIcon | None = None
         self.menu_actions: dict[str, QAction] = {}
+        self.restarting = False  # quit, then start again (app.main does)
 
     def start(self) -> bool:
         if not self.server.listen():
@@ -109,6 +110,7 @@ class TrayApp(QObject):
         menu.addAction("Open screenshots folder").triggered.connect(self._open_folder)
         menu.addAction("Settings…").triggered.connect(self.show_settings)
         menu.addSeparator()
+        menu.addAction("Restart Flatshot").triggered.connect(self.restart)
         menu.addAction("Quit Flatshot").triggered.connect(self.quit)
         self._menu = menu  # QSystemTrayIcon doesn't take ownership
         self.tray.setContextMenu(menu)
@@ -171,6 +173,8 @@ class TrayApp(QObject):
             self.show_settings()
         elif name == "quit":
             self.quit()
+        elif name == "restart":
+            self.restart()
         elif name == "record":
             try:
                 delay = float(rest[0]) if rest else 0
@@ -282,6 +286,12 @@ class TrayApp(QObject):
         self.settings.show()
         self.settings.raise_()
         self.settings.activateWindow()
+
+    def restart(self):
+        """Quit (saving a recording first) and start again: picks up an
+        upgrade, or gets a stuck helper going again."""
+        self.restarting = True
+        self.quit()
 
     def quit(self):
         if self.recording is not None:

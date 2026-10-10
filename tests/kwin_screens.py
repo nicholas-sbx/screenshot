@@ -55,7 +55,7 @@ print("ok   with and without the pointer, each screen")
 tmp = Path(tempfile.mkdtemp())
 done = []
 cfg = config.Config(save_dir=str(tmp), notify=False, clipboard="none", backend="kwin", screenshot_method="screens",
-                    scan_codes=False, detect_windows=False)
+                    show_codes=False, detect_windows=False)
 s = Session(cfg, Request(scan=False), Notifier(interactive=False), lambda code, holds: done.append(code))
 s.start()
 a, b = sorted(s.overlays, key=lambda o: o.target_screen.name())
@@ -71,7 +71,7 @@ print("ok   overlays show each screen's own pixels; a selection on B saved at 15
 
 # The pointer button: each screen's own picture with the pointer.
 cfg_toggle = config.Config(save_dir=str(tmp), notify=False, clipboard="none", backend="kwin",
-                           screenshot_method="screens", scan_codes=False, detect_windows=False, region_pointer="toggle")
+                           screenshot_method="screens", show_codes=False, detect_windows=False, region_pointer="toggle")
 s = Session(cfg_toggle, Request(scan=False), Notifier(interactive=False), lambda *a: None)
 s.start()
 b = max(s.overlays, key=lambda o: o.target_screen.name())

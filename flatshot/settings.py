@@ -616,6 +616,9 @@ class SettingsWindow(QWidget):
                      "Show the toolbar on the monitor the pointer is on."))
         card.add(Row("Detect windows", self._toggle("detect_windows"),
                      "Hover a window and click to capture just that window. KDE Plasma."))
+        card.add(Row("Panels, notifications and popups too", self._toggle("detect_all_windows"),
+                     "Not just app windows: panels, docks, notifications, on-screen displays, menus and tooltips "
+                     "can be clicked as well."))
         card.add(Row("Select across monitors", self._toggle("span_monitors"),
                      "A drag, or a clicked window, may cross onto other monitors. The toolbar stays on one."))
         card.add(Row("Include the mouse pointer", self._toggle("include_pointer"),
@@ -662,8 +665,8 @@ class SettingsWindow(QWidget):
                      "What to do next, in the middle of the screen. It fades when the pointer comes near."))
 
         card = self._card("QR codes and barcodes")
-        card.add(Row("Scan the screen", self._toggle("scan_codes")))
-        card.add(Row("Show results", self._toggle("show_codes"), "Q or the toolbar's code button changes this too."))
+        card.add(Row("Find and show them", self._toggle("show_codes"),
+                     "Looked for only while shown. Q or the toolbar's code button changes this too."))
 
         card = self._card("Advanced")
         combo = Combo()

@@ -26,7 +26,8 @@ _gesture, _zoom = getattr(QEvent.Type, "NativeGesture", None), getattr(Qt.Native
 PINCH = (_gesture, _zoom) if _gesture is not None and _zoom is not None else None
 MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in ("Shift", "Control", "Alt", "AltGr", "Meta")}
 SHAPE_HINT = "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it"
-TEXT_HINT = "Click to place text, or on text to change it  ·  Drag text to move it  ·  Shift+Enter for a new line"
+TEXT_HINT = ("Click to place text, or on text to change it  ·  Drag to select  ·  Enter for a new line  ·  "
+             "Esc or Ctrl+Enter to finish  ·  The select tool moves it")
 CROP_HINT = ("Drag the edges to crop, past the picture for a margin  ·  Shift keeps the shape  ·  Ctrl: from the "
              "middle, without snapping  ·  Enter crops")
 CUT_HINT = "Drag across the {what} to cut out; the rest is joined  ·  Esc to stop"
@@ -166,13 +167,14 @@ class Editor(QWidget):
     def set_color(self, index: int):
         """A colour; from a tool that has none (pixelate, blur), back to the
         last drawing tool, so the colour is used. With the select tool, it
-        changes the selected drawing."""
+        changes the selected drawing; with the crop tool, it stays (the
+        colour is the margin's)."""
         self.color_index = index
-        if self.tool == "select" and self.selection.restyle(color=self.color):
+        if self.tool == "select" and self.selection.restyle(color=self.color) or self.tool == "crop":
             self.refresh()
             return
         if self.tool not in COLOUR_TOOLS:
-            self.tool = self.colour_tool
+            self.set_tool(self.colour_tool)
         if self.text_edit:
             self.text_edit.color = self.color
         self.refresh()
@@ -723,14 +725,11 @@ class _Bar(QWidget):
         row.addWidget(Divider(self))
         km = ed.keymap
         self.history = []
-        for icon, hint, slot in (("undo", km.hint("Undo", "undo"), ed.undo), ("redo", km.hint("Redo", "redo"), ed.redo),
-                                 ("fit", km.hint("Zoom to fit the picture in the window", "fit"),
-                                  lambda: ed.canvas.fit())):
+        for icon, hint, slot in (("undo", km.hint("Undo", "undo"), ed.undo), ("redo", km.hint("Redo", "redo"), ed.redo)):
             b = IconButton(ed, icon, hint, self)
             b.clicked.connect(slot)
             self.history.append(b)
             row.addWidget(b)
-        self.history.pop()  # (fit is always there to use)
         self.beauty_button = IconButton(ed, "beautify", km.hint("Background, padding and shadow", "beautify"), self)
         self.beauty_button.clicked.connect(ed.toggle_beauty)
         row.addWidget(self.beauty_button)
@@ -744,7 +743,7 @@ class _Bar(QWidget):
         self._copied_timer.timeout.connect(lambda: copy.set_look("Copy", "copy", False))
         save_as = ActionButton(ed, "Save as", "save-as", km.hint("Save to another file", "save_as"), self)
         save_as.clicked.connect(ed.save_as)
-        self.save_button = ActionButton(ed, "Save", "save", "", self, also=("Saved",))
+        self.save_button = ActionButton(ed, "Save", "save", "", self)
         self.save_button.clicked.connect(ed.save)
         for b in (copy, save_as, self.save_button):
             row.addWidget(b)
@@ -765,10 +764,11 @@ class _Bar(QWidget):
             s.set_selected(s.index == self.ed.color_index)
             s.update()
         self.size_button.set_size(self.ed.size)
-        # Save stands out only while there's something to save; then it
-        # says so (that, and the window's title, are the unsaved mark).
+        # Save stands out while there's something to save, and is greyed out
+        # when there isn't; its word and icon stay the same.
         unsaved = self.ed.dirty
-        self.save_button.set_look("Save" if unsaved else "Saved", "save" if unsaved else "check", unsaved)
+        self.save_button.set_look("Save", "save", unsaved)
+        self.save_button.setEnabled(unsaved)
         self.save_button.hint = self.ed.keymap.hint(f"Save to {self.ed.path}", "save") if unsaved \
             else f"Saved in {self.ed.path}"
 
@@ -802,7 +802,9 @@ class ActionButton(_Button):
 
     def paintEvent(self, event):
         p = self._painter()
-        hover = self.underMouse()
+        hover = self.underMouse() and self.isEnabled()
+        if not self.isEnabled():
+            p.setOpacity(0.4)
         if self.strong:
             p.setBrush(C.ACCENT.lighter(108) if hover else C.ACCENT)
             fg = C.ON_ACCENT
@@ -819,14 +821,87 @@ class ActionButton(_Button):
         p.drawText(QRectF(x + 25, 0, text_w + 2, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text)
 
 
+ZOOM_STEPS = (10, 25, 50, 75, 100, 150, 200, 300, 400, 800)  # the zoom menu's, in %
+
+
+class _ZoomLabel(_Button):
+    """The zoom, as a percentage: click for a menu of zooms."""
+
+    def __init__(self, ed: Editor, parent=None):
+        super().__init__(ed, "Choose a zoom", parent)
+        self.ed = ed
+        self._font = font(12, QFont.Weight.DemiBold)
+        self.setFixedSize(round(QFontMetricsF(self._font).horizontalAdvance("8888%")) + 18, 26)
+        self.clicked.connect(self._menu)
+
+    def _menu(self):
+        from flatshot.qt import QMenu
+
+        menu = QMenu(self)
+        menu.addAction("Fit in the window").triggered.connect(self.ed.canvas.fit)
+        menu.addSeparator()
+        for z in ZOOM_STEPS:
+            menu.addAction(f"{z}%").triggered.connect(lambda _=False, z=z: self.ed.canvas.zoom_to(z / 100))
+        menu.exec(self.mapToGlobal(QPoint(0, 0)) - QPoint(0, menu.sizeHint().height()))
+
+    def paintEvent(self, event):
+        p = self._painter()
+        if self.underMouse():
+            p.setBrush(C.HOVER)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        p.setFont(self._font)
+        p.setPen(C.TEXT if self.underMouse() else C.SOFT)
+        p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, f"{round(self.ed.canvas.zoom * 100)}%")
+
+
 class _Status(QWidget):
-    """The bottom line: a hint (or what just happened), and the picture's
-    size and zoom."""
+    """The bottom line: a hint (or what just happened), the picture's size,
+    and the zoom: out, a slider, in, the zoom (a menu of them) and fit."""
 
     def __init__(self, ed: Editor):
+        from flatshot.settings import Slider
+
         super().__init__(ed)
         self.ed = ed
-        self.setFixedHeight(28)
+        self.setFixedHeight(34)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 2, 8, 2)
+        row.setSpacing(2)
+        row.addStretch(1)  # (the hint and the size are painted there)
+        km = ed.keymap
+        self.zoom_out = IconButton(ed, "zoom-out", km.hint("Zoom out", "zoom_out"), self, size=28)
+        self.zoom_out.clicked.connect(lambda: ed.canvas.zoom_to(ed.canvas.zoom / 1.25))
+        self.slider = Slider(self._position(1.0), 0, 1000, 1)
+        self.slider.setFixedSize(132, 24)
+        self.slider.changed.connect(lambda v: ed.canvas.zoom_to(self._zoom(v)))
+        self.zoom_in = IconButton(ed, "zoom-in", km.hint("Zoom in", "zoom_in"), self, size=28)
+        self.zoom_in.clicked.connect(lambda: ed.canvas.zoom_to(ed.canvas.zoom * 1.25))
+        self.zoom_label = _ZoomLabel(ed, self)
+        self.fit = IconButton(ed, "fit", km.hint("Fit the picture in the window", "fit"), self, size=28)
+        self.fit.clicked.connect(lambda: ed.canvas.fit())
+        for w in (self.zoom_out, self.slider, self.zoom_in, self.zoom_label, self.fit):
+            row.addWidget(w)
+        self._controls = self.zoom_out
+
+    @staticmethod
+    def _position(zoom: float) -> int:
+        """Where ``zoom`` is on the slider (evenly spaced as ratios)."""
+        import math
+
+        lo, hi = ZOOM
+        return round(1000 * math.log(min(max(zoom, lo), hi) / lo) / math.log(hi / lo))
+
+    @staticmethod
+    def _zoom(position: int) -> float:
+        lo, hi = ZOOM
+        return lo * (hi / lo) ** (position / 1000)
+
+    def sync(self):
+        """Show the zoom now (without the slider zooming again)."""
+        self.slider.value = self._position(self.ed.canvas.zoom)
+        self.slider.update()
+        self.zoom_label.update()
+        self.fit.set_active(self.ed.canvas.fitted)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -843,11 +918,12 @@ class _Status(QWidget):
             CROP_HINT if self.ed.tool == "crop" else
             (SELECTED_HINT if self.ed.selection.shape is not None else SELECT_HINT) if self.ed.tool == "select"
             else HINT)
-        right = f"{self.ed.base.width()} × {self.ed.base.height()}   {round(self.ed.canvas.zoom * 100)}%"
+        right = f"{self.ed.base.width()} × {self.ed.base.height()}"
         rw = QFontMetricsF(f).horizontalAdvance(right)
-        p.drawText(QRectF(12, 0, self.width() - rw - 36, self.height()), Qt.AlignmentFlag.AlignVCenter, text)
+        end = self._controls.x() - 14  # (the zoom's controls are to the right of it)
+        p.drawText(QRectF(12, 0, end - rw - 36, self.height()), Qt.AlignmentFlag.AlignVCenter, text)
         p.setPen(C.MUTED)
-        p.drawText(QRectF(self.width() - rw - 12, 0, rw, self.height()), Qt.AlignmentFlag.AlignVCenter, right)
+        p.drawText(QRectF(end - rw, 0, rw, self.height()), Qt.AlignmentFlag.AlignVCenter, right)
 
 
 class Canvas(QWidget):
@@ -864,7 +940,7 @@ class Canvas(QWidget):
         self._pan: QPointF | None = None  # where a pan began (pointer, offset)
         self._pan_offset = QPointF(0, 0)
         self._space = False
-        self._text_drag: tuple[QPointF, QPointF] | None = None  # a text being moved: (press, its position then)
+        self._text_select = False  # dragging selects text in the text being typed (the select tool moves it)
         self._backdrop: tuple | None = None  # (key, beautify's background, where the picture is on it)
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
@@ -946,6 +1022,7 @@ class Canvas(QWidget):
 
     def _changed(self):
         self.update()
+        self.ed.status.sync()
         self.ed.status.update()
 
     def resizeEvent(self, event):
@@ -1007,10 +1084,10 @@ class Canvas(QWidget):
         ed.close_picker()
         if ed.text_edit is not None and ed.text_edit.contains(at):
             # In the text being typed: the caret goes there (Shift: selects
-            # to there); a drag moves the text.
+            # to there); a drag selects.
             shape = ed.text_edit
             shape.place(shape.index_at(at), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
-            self._text_drag = (at, QPointF(shape.pos))
+            self._text_select = True
             self.update()
             return
         if ed.commit_text() and ed.tool == "text" and ed.text_at(at) is None:
@@ -1020,7 +1097,7 @@ class Canvas(QWidget):
             if old is not None:  # edit it again (a copy, so undo brings back the original)
                 shape = old.copy_for_editing()
                 shape.place(shape.index_at(at))
-                self._text_drag = (at, QPointF(shape.pos))
+                self._text_select = True
             else:
                 shape = shapes.Text(at, ed.color, ed.size)
             ed.begin_text(shape)
@@ -1044,13 +1121,10 @@ class Canvas(QWidget):
             self._keep_in_view()
             self._changed()
             return
-        if self._text_drag is not None and self.ed.text_edit is not None:
-            start, origin = self._text_drag
-            at = self.to_picture(pos)
-            if (at - start).manhattanLength() * self.zoom > 3 or self.ed.text_edit.pos != origin:
-                self.ed.text_edit.pos = origin + (at - start)
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
-                self.update()
+        if self._text_select and self.ed.text_edit is not None:
+            shape = self.ed.text_edit
+            shape.place(shape.index_at(self.to_picture(pos)), select=True)
+            self.update()
         elif self.ed.active is not None:
             self.ed.active.extend(self.to_picture(pos), **shapes.modifiers(event.modifiers()))
             self.update()
@@ -1065,9 +1139,8 @@ class Canvas(QWidget):
             self.setCursor(self.ed.selection.cursor(self.to_picture(pos), self.zoom))
 
     def mouseReleaseEvent(self, event):
-        if self._text_drag is not None and event.button() == Qt.MouseButton.LeftButton:
-            self._text_drag = None
-            self.update_cursor()
+        if self._text_select and event.button() == Qt.MouseButton.LeftButton:
+            self._text_select = False
             return
         if self._pan is not None and event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.LeftButton):
             self._pan = None
@@ -1505,7 +1578,7 @@ class _PictureBar(QWidget):
         self.w_field.textEdited.connect(lambda t: self._follow(t, self.h_field, True))
         self.h_field.textEdited.connect(lambda t: self._follow(t, self.w_field, False))
         times = QLabel("×", self)
-        self.lock = IconButton(ed, "ratio", "", self, size=34)
+        self.lock = IconButton(ed, "link", "", self, size=34)
         self.lock.clicked.connect(self._toggle_lock)
         self.locked = True
         self.resize_button = ActionButton(ed, "Resize", "resize", "Resize the picture to this size", self)
@@ -1569,8 +1642,9 @@ QLabel {{ color: {C.MUTED.name()}; background: transparent; }}""")
         self.margin.set_look("Colour" if crop.margin_colour else "Clear", "margin", False)
         self.cut_rows.set_active(crop.cut == "rows")
         self.cut_cols.set_active(crop.cut == "columns")
-        self.lock.set_toggle(self.locked, "ratio", "Keep the shape when resizing: on" if self.locked
-                             else "Keep the shape when resizing: off")
+        self.lock.set_toggle(self.locked, "link" if self.locked else "unlink",
+                             "Width and height linked: the shape is kept" if self.locked
+                             else "Width and height unlinked: each on its own")
         self.apply.set_look("Crop", "crop", crop.changed())
         for field, now in ((self.w_field, self.ed.base.width()), (self.h_field, self.ed.base.height())):
             if not field.hasFocus():

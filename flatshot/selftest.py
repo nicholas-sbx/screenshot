@@ -176,14 +176,14 @@ def run() -> int:
     ctl.redo()
     assert len(ov.annotations) == 7
 
-    # Keyboard: tool hotkey, typing into a text box, Enter, Ctrl+Z.
+    # Keyboard: tool hotkey, typing into a text box, Esc to finish, Ctrl+Z.
     key(Qt.Key.Key_T, "t")
     assert ctl.tool == "text", ctl.tool
     ctl.begin_text(ov, shapes.Text(at(1000, 760), ctl.color, 1))
     for ch in "hi!":
         key(Qt.Key.Key_A, ch)  # the key code doesn't matter while typing
     key(Qt.Key.Key_Backspace)
-    key(Qt.Key.Key_Return)
+    key(Qt.Key.Key_Return, "", Qt.KeyboardModifier.ControlModifier)
     assert ctl.text_edit is None and ov.annotations[-1].text == "hi", ov.annotations[-1]
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
     assert len(ov.annotations) == 7
@@ -933,8 +933,18 @@ def _picture_tools(app, tmp: Path, out_dir):
     key(Qt.Key.Key_N, "n")
     mouse("press", P(150 * k, 70 * k))
     mouse("release", P(150 * k, 70 * k))
+    # The zoom, in the bottom bar: in, out, the slider and fit.
+    status = ed.status
+    status.zoom_in.click()
+    assert abs(canvas.zoom - 1.25) < 0.01 and not canvas.fitted and not status.fit.active, canvas.zoom
+    status.slider._set(status._position(2.0))
+    assert abs(canvas.zoom - 2.0) < 0.02 and status.zoom_label.isVisible(), canvas.zoom
+    status.fit.click()
+    assert canvas.fitted and status.fit.active and status.slider.value == status._position(canvas.zoom)
     key(Qt.Key.Key_C, "c")
     assert ed.tool == "crop" and ed.picture_bar.isVisible() and ed.cropper.rect == ed.cropper.whole()
+    key(Qt.Key.Key_3, "3")  # (a colour: for the margin; the crop tool stays)
+    assert ed.tool == "crop" and ed.picture_bar.isVisible()
     # Crop: the left edge in; the drawings stay where they were on the picture.
     drag(P(0, 50 * k), P(5 * k, 50 * k))
     assert ed.cropper.changed() and abs(ed.cropper.rect.left() - 5) < 0.01, ed.cropper.rect
@@ -1246,16 +1256,16 @@ def _editor(app, tmp: Path, out_dir):
     width = ed.bar.save_button.width()
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
     assert not ed.annotations
-    assert not ed.dirty and not ed.windowTitle().startswith("●") and ed.bar.save_button.text == "Saved", \
+    assert not ed.dirty and not ed.windowTitle().startswith("●") and ed.bar.save_button.text == "Save" and not ed.bar.save_button.isEnabled(), \
         "undoing back to the saved picture still shows unsaved"
     key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
     assert len(ed.annotations) == 1
-    # Text: click, type, Enter.
+    # Text: click, type, Ctrl+Enter.
     key(Qt.Key.Key_T, "t")
     mouse("press", QPointF(150, 30))
     for ch in "hi":
         key(Qt.Key.Key_A, ch)
-    key(Qt.Key.Key_Return)
+    key(Qt.Key.Key_Return, "", Qt.KeyboardModifier.ControlModifier)
     assert ed.text_edit is None and ed.annotations[-1].text == "hi"
     # Blur over the stripes.
     key(Qt.Key.Key_U, "u")
@@ -1294,7 +1304,7 @@ def _editor(app, tmp: Path, out_dir):
     # Save writes back to the file; Save as to another, which Save then uses.
     key(Qt.Key.Key_S, "", Qt.KeyboardModifier.ControlModifier)
     assert not ed.dirty and not ed.windowTitle().startswith("●")
-    assert ed.bar.save_button.text == "Saved" and not ed.bar.save_button.strong
+    assert ed.bar.save_button.text == "Save" and not ed.bar.save_button.strong and not ed.bar.save_button.isEnabled()
     assert ed.bar.save_button.width() == width, "Save changed width (the toolbar shifts)"
     saved = QImage(str(src))
     k_px = round(20 * k)
@@ -1368,7 +1378,9 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
     assert t.undo_edit() and t.text == "X\nyworld", t.text
     assert t.undo_edit(redo=True) and t.text == "X\n"
     assert press(t, Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier) is False, "Ctrl+Z is for the caller"
-    assert press(t, Qt.Key.Key_Return, "\r") == "commit"
+    assert press(t, Qt.Key.Key_Return, "\r") is True and t.text == "X\n\n", "Enter starts a new line"
+    assert press(t, Qt.Key.Key_Return, "\r", Qt.KeyboardModifier.ControlModifier) == "commit"
+    assert press(t, Qt.Key.Key_Escape) == "commit"
     assert t.contains(QPointF(12, 14)) and not t.contains(QPointF(400, 400))
 
     # Screenshots become RGB32 as they arrive: ARGB32 relabelled, others converted.
@@ -1438,7 +1450,7 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
         mouse(QEvent.Type.MouseButtonRelease, QPointF(200, 600))
         for ch in "abc":
             s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
-        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier, "\r"))
         first = ov.annotations[-1]
         assert first.text == "abc" and s.text_edit is None
         n = len(ov.annotations)
@@ -1450,7 +1462,7 @@ def _drawing_and_text(app, tmp: Path, desktop: QImage, out_dir):
         s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier, ""))
         assert s.text_edit is not None and s.text_edit[1].text == "abc", "Ctrl+Z while typing undoes typing"
         s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, "!"))
-        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier, "\r"))
         assert len(ov.annotations) == n + 1 and ov.annotations[-1].text == "abc!" and first.hidden
         s.undo()
         assert not first.hidden and len(ov.annotations) == n, "undo didn't bring the old text back"
