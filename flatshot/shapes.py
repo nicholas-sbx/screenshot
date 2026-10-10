@@ -2,6 +2,7 @@
 painted with whatever QPainter is handed in — the live overlay or the
 high-DPI output image — so what you see is what gets saved."""
 
+import copy
 import math
 
 from flatshot.qt import (
@@ -28,8 +29,23 @@ def modifiers(mods) -> dict:
             "move": bool(mods & Qt.KeyboardModifier.AltModifier)}
 
 
+def _to_segment(pos: QPointF, a: QPointF, b: QPointF) -> float:
+    """How far ``pos`` is from the segment a–b."""
+    d = b - a
+    length2 = d.x() ** 2 + d.y() ** 2
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, QPointF.dotProduct(pos - a, d) / length2))
+    return QLineF(pos, a + d * t).length()
+
+
 class Shape:
-    hidden = False  # replaced by an edited copy (see Text.replaces)
+    """A drawing. A drawing that's moved, resized, restyled or removed is
+    replaced by a copy (``replaces`` the one it changes, which is hidden
+    meanwhile), so undo brings the old one back by dropping the copy."""
+
+    hidden = False  # replaced by a changed copy, see ``replaces``
+    replaces: "Shape | None" = None
+    resizable = True  # (text and counters can only be moved)
+    ends = False  # resized by its two ends (lines, arrows), not a box
 
     def __init__(self, color: QColor, size: int):
         self.color = QColor(color)
@@ -48,6 +64,73 @@ class Shape:
     def paint(self, p: QPainter, base: QPixmap) -> None:
         raise NotImplementedError
 
+    # -- picking it up again (the select tool) -----------------------------------
+
+    def bounds(self) -> QRectF:
+        """The box the shape's geometry fills (without its stroke)."""
+        raise NotImplementedError
+
+    def contains(self, pos: QPointF, slack: float = 4.0) -> bool:
+        """Is ``pos`` on the shape: within its stroke (and ``slack``) for
+        lines and outlines, anywhere inside for filled ones."""
+        return self.bounds().adjusted(-slack, -slack, slack, slack).contains(pos)
+
+    def clone(self) -> "Shape":
+        """A copy that replaces this one (see ``replaces``)."""
+        c = copy.copy(self)
+        c.color = QColor(self.color)
+        c._own_points()
+        c.replaces, c.hidden = self, False
+        return c
+
+    def _own_points(self) -> None:
+        """Give a copy its own points (copy.copy shares them)."""
+
+    def _map(self, fn) -> None:
+        """Move each point through ``fn`` (QPointF -> QPointF)."""
+        raise NotImplementedError
+
+    def mapped(self, fn) -> "Shape":
+        c = self.clone()
+        c._map(fn)
+        return c
+
+    def moved(self, d: QPointF) -> "Shape":
+        return self.mapped(lambda pt: pt + d)
+
+    def fitted(self, old: QRectF, new: QRectF) -> "Shape":
+        """A copy stretched from the box ``old`` to ``new``."""
+        sx = new.width() / old.width() if old.width() else 1.0
+        sy = new.height() / old.height() if old.height() else 1.0
+        return self.mapped(lambda pt: QPointF(new.left() + (pt.x() - old.left()) * sx,
+                                              new.top() + (pt.y() - old.top()) * sy))
+
+    def restyled(self, color: QColor | None = None, size: int | None = None) -> "Shape":
+        c = self.clone()
+        if color is not None:
+            c.color = QColor(color)
+        if size is not None:
+            c.size = size
+        return c
+
+
+class Removed(Shape):
+    """A deleted drawing: nothing, in place of ``shape`` (hidden while this
+    is there), so undo brings it back."""
+
+    def __init__(self, shape: Shape):
+        super().__init__(shape.color, shape.size)
+        self.replaces = shape
+
+    def paint(self, p, base):
+        pass
+
+    def bounds(self):
+        return QRectF()
+
+    def contains(self, pos, slack=4.0):
+        return False
+
 
 class Stroke(Shape):
     """Freehand pen, or a translucent highlighter when ``marker`` is set."""
@@ -60,6 +143,24 @@ class Stroke(Shape):
     def extend(self, pos, constrain=False, center=False, move=False):
         if QLineF(self.points[-1], pos).length() >= 1.0:
             self.points.append(QPointF(pos))
+
+    def _reach(self) -> float:
+        return (self.width * 3 + 10 if self.marker else self.width) / 2
+
+    def bounds(self):
+        return QPolygonF(self.points).boundingRect()
+
+    def contains(self, pos, slack=4.0):
+        reach = self._reach() + slack
+        if len(self.points) == 1:
+            return QLineF(pos, self.points[0]).length() <= reach
+        return any(_to_segment(pos, a, b) <= reach for a, b in zip(self.points, self.points[1:]))
+
+    def _own_points(self):
+        self.points = [QPointF(pt) for pt in self.points]
+
+    def _map(self, fn):
+        self.points = [fn(pt) for pt in self.points]
 
     def paint(self, p, base):
         color = QColor(self.color)
@@ -118,8 +219,36 @@ class Drag(Shape):
     def is_valid(self):
         return QLineF(self.start, self.end).length() > 2
 
+    def bounds(self):
+        return self.rect()
+
+    def _own_points(self):
+        self.start, self.end, self.anchor, self.pointer = (QPointF(self.start), QPointF(self.end),
+                                                           QPointF(self.anchor), QPointF(self.pointer))
+        if hasattr(self, "_cache"):
+            self._cache = None
+
+    def _map(self, fn):
+        self.start, self.end = fn(self.start), fn(self.end)
+        self.anchor, self.pointer = QPointF(self.start), QPointF(self.end)
+
+    def with_end(self, which: int, pos: QPointF) -> "Drag":
+        """A copy with its start (0) or end (1) at ``pos``."""
+        c = self.clone()
+        if which == 0:
+            c.start = QPointF(pos)
+        else:
+            c.end = QPointF(pos)
+        c.anchor, c.pointer = QPointF(c.start), QPointF(c.end)
+        return c
+
 
 class Line(Drag):
+    ends = True
+
+    def contains(self, pos, slack=4.0):
+        return _to_segment(pos, self.start, self.end) <= self.width / 2 + slack
+
     def _constrain(self, d):
         # Snap to 45 degree steps.
         line = QLineF(QPointF(0, 0), d)
@@ -135,6 +264,10 @@ class Line(Drag):
 
 
 class Arrow(Line):
+    def contains(self, pos, slack=4.0):
+        head = min(10 + self.width * 3.2, QLineF(self.start, self.end).length() * 0.6)
+        return super().contains(pos, slack) or QLineF(pos, self.end).length() <= head + slack
+
     def paint(self, p, base):
         line = QLineF(self.start, self.end)
         length = line.length()
@@ -155,7 +288,16 @@ class Arrow(Line):
         p.restore()
 
 
+def _on_outline(pos: QPointF, r: QRectF, reach: float) -> bool:
+    outer = r.adjusted(-reach, -reach, reach, reach)
+    inner = r.adjusted(reach, reach, -reach, -reach)
+    return outer.contains(pos) and not (inner.isValid() and inner.contains(pos))
+
+
 class Box(Drag):
+    def contains(self, pos, slack=4.0):
+        return _on_outline(pos, self.rect(), self.width / 2 + slack)
+
     def paint(self, p, base):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -177,6 +319,17 @@ class SolidBox(Drag):
 
 
 class Ellipse(Drag):
+    def contains(self, pos, slack=4.0):
+        r = self.rect()
+        rx, ry = r.width() / 2, r.height() / 2
+        if rx < 1 or ry < 1:
+            return _on_outline(pos, r, self.width / 2 + slack)
+        d = pos - r.center()
+        # How far out along its own radius, times the radius there: near the line, about the distance to it.
+        k = math.hypot(d.x() / rx, d.y() / ry)
+        radius = math.hypot(d.x(), d.y()) / k if k else min(rx, ry)
+        return abs(k - 1) * radius <= self.width / 2 + slack
+
     def paint(self, p, base):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -325,8 +478,21 @@ class Text(Shape):
         h = fm.height() + (len(lines) - 1) * fm.lineSpacing()
         return QRectF(self.pos.x(), self.pos.y(), w, h)
 
-    def contains(self, pos: QPointF) -> bool:
-        return self.bounds().adjusted(-self.PAD, -self.PAD, self.PAD, self.PAD).contains(pos)
+    def contains(self, pos: QPointF, slack: float = PAD) -> bool:
+        return self.bounds().adjusted(-slack, -slack, slack, slack).contains(pos)
+
+    resizable = False
+
+    def clone(self):
+        c = super().clone()
+        c.editing, c._undo, c._redo, c._typing = False, [], [], False
+        return c
+
+    def _own_points(self):
+        self.pos = QPointF(self.pos)
+
+    def _map(self, fn):
+        self.pos = fn(self.pos)
 
     def caret_rect(self) -> QRectF:
         fm = self._metrics()
@@ -517,11 +683,25 @@ class Text(Shape):
 
 class Counter(Shape):
     RADII = [11, 14, 18]
+    resizable = False
 
     def __init__(self, pos, color, size, number):
         super().__init__(color, size)
         self.pos = QPointF(pos)
         self.number = number
+
+    def bounds(self):
+        r = self.RADII[self.size]
+        return QRectF(self.pos.x() - r, self.pos.y() - r, 2 * r, 2 * r)
+
+    def contains(self, pos, slack=4.0):
+        return QLineF(pos, self.pos).length() <= self.RADII[self.size] + slack
+
+    def _own_points(self):
+        self.pos = QPointF(self.pos)
+
+    def _map(self, fn):
+        self.pos = fn(self.pos)
 
     def paint(self, p, base):
         r = self.RADII[self.size]
@@ -539,6 +719,11 @@ class Counter(Shape):
 
 DRAG_TOOLS = {"line": Line, "arrow": Arrow, "rect": Box, "solid": SolidBox, "ellipse": Ellipse, "pixelate": Pixelate,
               "blur": Blur}
+
+
+def next_number(drawings) -> int:
+    """The number for a new counter: one more than the highest shown."""
+    return 1 + max((s.number for s in drawings if isinstance(s, Counter) and not s.hidden), default=0)
 
 
 def create(tool: str, pos: QPointF, color: QColor, size: int) -> Shape | None:

@@ -12,6 +12,7 @@ CAPTURE, EDITOR, BOTH = "capture", "editor", "both"
 BINDINGS = {
     "tool.region": ("Capture region", "R", CAPTURE),
     "tool.record": ("Record screen", "V", CAPTURE),
+    "tool.select": ("Select, move and resize drawings", "S", BOTH),
     "tool.pen": ("Pen", "P", BOTH),
     "tool.line": ("Line", "L", BOTH),
     "tool.arrow": ("Arrow", "A", BOTH),

@@ -6,7 +6,7 @@ and any number of editors can be open at once. Loaded only when one opens."""
 import sys
 from pathlib import Path
 
-from flatshot import config, icons, keys, output, shapes, theme, timing
+from flatshot import config, icons, keys, output, selection, shapes, theme, timing
 from flatshot.qt import (
     QColor, QEvent, QFont, QFontMetricsF, QGuiApplication, QHBoxLayout, QImage, QPainter, QPen, QPixmap, QPoint,
     QPointF, QRectF, QSizeF, Qt, QTimer, QVBoxLayout, QWidget, keyval,
@@ -25,6 +25,9 @@ PINCH = (_gesture, _zoom) if _gesture is not None and _zoom is not None else Non
 MODIFIER_KEYS = {keyval(getattr(Qt.Key, f"Key_{k}")) for k in ("Shift", "Control", "Alt", "AltGr", "Meta")}
 SHAPE_HINT = "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it"
 TEXT_HINT = "Click to place text, or on text to change it  ·  Drag text to move it  ·  Shift+Enter for a new line"
+SELECT_HINT = "Click a drawing to select it (Alt: the one under it)  ·  Drag to move  ·  Handles resize  ·  Delete removes it"
+SELECTED_HINT = ("Drag to move (Shift: straight)  ·  Handles: Shift keeps its shape, Ctrl from the middle  ·  "
+                 "Arrows nudge  ·  Colours and sizes change it")
 HINT = "Scroll to move around  ·  Ctrl+scroll to zoom  ·  Space+drag or middle-drag to pan"
 
 _open: list["Editor"] = []
@@ -97,6 +100,7 @@ class Editor(QWidget):
         self.bar = _Bar(self)
         column.addWidget(self.bar)
         self.canvas = Canvas(self)
+        self.selection = selection.Selection(self.canvas)  # the select tool's drawing
         column.addWidget(self.canvas, 1)
         self.status = _Status(self)
         column.addWidget(self.status)
@@ -122,6 +126,8 @@ class Editor(QWidget):
 
     def set_tool(self, tool: str):
         self.commit_text()
+        if tool != "select":
+            self.selection.clear()
         self.tool = tool
         if tool in COLOUR_TOOLS:
             self.colour_tool = tool
@@ -129,10 +135,14 @@ class Editor(QWidget):
 
     def set_color(self, index: int):
         """A colour; from a tool that has none (pixelate, blur), back to the
-        last drawing tool, so the colour is used."""
+        last drawing tool, so the colour is used. With the select tool, it
+        changes the selected drawing."""
+        self.color_index = index
+        if self.tool == "select" and self.selection.restyle(color=self.color):
+            self.refresh()
+            return
         if self.tool not in COLOUR_TOOLS:
             self.tool = self.colour_tool
-        self.color_index = index
         if self.text_edit:
             self.text_edit.color = self.color
         self.refresh()
@@ -141,6 +151,8 @@ class Editor(QWidget):
         self.size = min(max(size, 0), len(theme.SIZES) - 1)
         if self.text_edit:
             self.text_edit.size = self.size
+        if self.tool == "select":
+            self.selection.restyle(size=self.size)
         self.refresh()
 
     def cycle_size(self):
@@ -203,7 +215,7 @@ class Editor(QWidget):
     # -- drawing -------------------------------------------------------------
 
     def next_number(self) -> int:
-        return 1 + sum(isinstance(s, shapes.Counter) for s in self.annotations)
+        return shapes.next_number(self.annotations)
 
     def commit(self, shape: shapes.Shape):
         self.annotations.append(shape)
@@ -369,6 +381,9 @@ class Editor(QWidget):
             if used:
                 self.canvas.update()
                 return
+        if self.tool == "select" and self.selection.key(event):
+            self.refresh()  # (Delete, or an arrow key nudging it)
+            return
         if self.canvas.modifier_changed(event):
             return
         if k == keyval(Qt.Key.Key_Space) and not event.isAutoRepeat():
@@ -674,7 +689,9 @@ class _Status(QWidget):
         text = self.ed._status or self.ed.hint or (
             "Click a pixel to make it your colour  ·  Esc to stop" if self.ed.eyedropper else
             SHAPE_HINT if self.ed.active is not None and hasattr(self.ed.active, "pointer") else
-            TEXT_HINT if self.ed.tool == "text" else HINT)
+            TEXT_HINT if self.ed.tool == "text" else
+            (SELECTED_HINT if self.ed.selection.shape is not None else SELECT_HINT) if self.ed.tool == "select"
+            else HINT)
         right = f"{self.ed.base.width()} × {self.ed.base.height()}   {round(self.ed.canvas.zoom * 100)}%"
         rw = QFontMetricsF(f).horizontalAdvance(right)
         p.drawText(QRectF(12, 0, self.width() - rw - 36, self.height()), Qt.AlignmentFlag.AlignVCenter, text)
@@ -700,6 +717,15 @@ class Canvas(QWidget):
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled)  # (accents, compose, CJK in text)
+
+    # -- for the select tool (selection.Selection's host) ----------------------
+
+    @property
+    def annotations(self) -> list:
+        return self.ed.annotations
+
+    def commit(self, shape: shapes.Shape):
+        self.ed.commit(shape)
 
     # -- the view ------------------------------------------------------------
 
@@ -767,12 +793,17 @@ class Canvas(QWidget):
             shape = Qt.CursorShape.OpenHandCursor
         elif self.ed.tool == "text" and not self.ed.eyedropper:
             shape = Qt.CursorShape.IBeamCursor
+        elif self.ed.tool == "select" and not self.ed.eyedropper:
+            shape = Qt.CursorShape.ArrowCursor
         else:
             shape = Qt.CursorShape.CrossCursor
         self.setCursor(shape)
 
     def cancel(self) -> bool:
-        """Esc: drop the shape being drawn, or finish the text."""
+        """Esc: drop the shape being drawn, finish the text, or deselect."""
+        if self.ed.selection.clear():
+            self.ed.status.update()
+            return True
         if self.active_shape() is not None:
             self.ed.active = None
             self.update()
@@ -820,6 +851,9 @@ class Canvas(QWidget):
             ed.begin_text(shape)
         elif ed.tool == "counter":
             ed.commit(shapes.Counter(at, ed.color, ed.size, ed.next_number()))
+        elif ed.tool == "select":
+            ed.selection.press(at, event.modifiers(), self.zoom)
+            ed.refresh()
         else:
             ed.active = shapes.create(ed.tool, at, ed.color, ed.size)
         self.update()
@@ -843,6 +877,10 @@ class Canvas(QWidget):
         elif self.ed.active is not None:
             self.ed.active.extend(self.to_picture(pos), **shapes.modifiers(event.modifiers()))
             self.update()
+        elif self.ed.selection.move(self.to_picture(pos), event.modifiers()):
+            pass
+        elif self.ed.tool == "select" and not self._space and not self.ed.eyedropper:
+            self.setCursor(self.ed.selection.cursor(self.to_picture(pos), self.zoom))
 
     def mouseReleaseEvent(self, event):
         if self._text_drag is not None and event.button() == Qt.MouseButton.LeftButton:
@@ -859,6 +897,8 @@ class Canvas(QWidget):
                 self.ed.commit(shape)
             self.update()
             self.ed.status.update()
+        elif event.button() == Qt.MouseButton.LeftButton and self.ed.selection.release():
+            self.ed.refresh()
 
     def wheelEvent(self, event):
         """Scrolling moves the picture (Shift: sideways); Ctrl+scroll zooms
@@ -932,6 +972,10 @@ class Canvas(QWidget):
             self.ed.active.paint(p, self.ed.base)
         if self.ed.text_edit is not None:
             self.ed.text_edit.paint(p, self.ed.base)
+        if self.ed.tool == "select":
+            self.ed.selection.paint_moving(p, self.ed.base)
+            p.setClipping(False)  # (its handles may stand past the picture's edges)
+            self.ed.selection.paint_frame(p, self.zoom)
         p.restore()
         if not self.ed.annotations and self.ed.active is None and self.ed.text_edit is None:
             self._paint_tip(p)

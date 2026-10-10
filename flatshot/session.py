@@ -517,6 +517,8 @@ class Session:
         self.commit_text()
         if self.tool == "record" and tool != "record":
             self.disarm()
+        if tool != "select":
+            self.select_on(None)
         self.tool = tool
         if tool in COLOUR_TOOLS:
             self.colour_tool = tool
@@ -527,9 +529,13 @@ class Session:
         go back to the last drawing tool, so the colour is used."""
         if self.tool == "record":
             return
+        self.color_index = index
+        if self.tool == "select" and self._selected() is not None:
+            self._selected().restyle(color=self.color)  # (it changes the selected drawing)
+            self.refresh()
+            return
         if self.tool not in COLOUR_TOOLS:
             self.tool = self.colour_tool
-        self.color_index = index
         if self.text_edit:
             self.text_edit[1].color = self.color
         self.refresh()
@@ -588,7 +594,21 @@ class Session:
         self.size = min(max(size, 0), len(theme.SIZES) - 1)
         if self.text_edit:
             self.text_edit[1].size = self.size
+        if self.tool == "select" and self._selected() is not None:
+            self._selected().restyle(size=self.size)
         self.refresh()
+
+    # The select tool: one drawing selected at a time, on one monitor.
+
+    def select_on(self, overlay: Overlay | None):
+        """Selecting on ``overlay``: drop what's selected on the others."""
+        for o in self.overlays:
+            if o is not overlay:
+                o.selection.clear()
+
+    def _selected(self):
+        """The Selection holding a drawing, if any."""
+        return next((o.selection for o in self.overlays if o.selection.shape is not None), None)
 
     def toggle_pin(self):
         self.pin_mode = not self.pin_mode
@@ -651,7 +671,7 @@ class Session:
             o.update()
 
     def next_number(self) -> int:
-        return 1 + sum(isinstance(s, shapes.Counter) for o in self.overlays for s in o.annotations)
+        return shapes.next_number(s for o in self.overlays for s in o.annotations)
 
     # -- recording ---------------------------------------------------------
 
@@ -857,6 +877,9 @@ class Session:
                 editing.update()
                 return
 
+        if self.tool == "select" and (selected := self._selected()) is not None and selected.key(event):
+            self.refresh()  # (Delete, or an arrow key nudging it)
+            return
         if k == K["Escape"]:
             # Acted on when the key comes up (key_release): closing on the way
             # down hands the release to the window underneath.
