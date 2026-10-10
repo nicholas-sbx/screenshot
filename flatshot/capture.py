@@ -97,8 +97,8 @@ def _kwin(pointer: bool) -> QImage:
     return _kwin_once(helper, pointer)
 
 
-def _kwin_once(helper: str, pointer: bool) -> QImage:
-    proc = subprocess.Popen([helper] + (["--cursor"] if pointer else []), stdin=subprocess.DEVNULL,
+def _kwin_once(helper: str, pointer: bool, args: list[str] | None = None) -> QImage:
+    proc = subprocess.Popen([helper] + (args or []) + (["--cursor"] if pointer else []), stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     try:
         started = time.monotonic()
@@ -236,13 +236,13 @@ class _KWinServer:
             self.close()
             raise _ServerGone("no hello from flatshot-kwin-grab --serve")
 
-    def grab(self, pointer: bool) -> QImage:
+    def grab(self, pointer: bool, request: bytes = b"grab") -> QImage:
         r, w = _big_pipe()
         started = time.monotonic()
         try:
             with self.lock:  # (one request at a time; the pixels are read after, side by side)
                 try:
-                    socket.send_fds(self.sock, [b"grab cursor" if pointer else b"grab"], [w])
+                    socket.send_fds(self.sock, [request + (b" cursor" if pointer else b"")], [w])
                     os.close(w)
                     w = -1
                     head = self.sock.recv(512)
@@ -345,6 +345,66 @@ def _drop_server(server: _KWinServer):
         if _server is server:
             _server = None
     server.close()
+
+
+_versions: dict = {}  # (helper, mtime) -> its version
+
+
+def _helper_version(helper: str) -> int:
+    try:
+        key = (helper, os.stat(helper).st_mtime_ns)
+    except OSError:
+        return 0
+    if key not in _versions:
+        try:
+            version = subprocess.run([helper, "--version"], capture_output=True, timeout=5).stdout.split()
+            _versions[key] = int(version[-1]) if len(version) >= 2 else 0
+        except (OSError, ValueError, subprocess.SubprocessError):
+            _versions[key] = 0
+    return _versions[key]
+
+
+def can_grab_window(preferred: str = "auto") -> bool:
+    """Whether the active window can be taken on its own (KWin's
+    CaptureActiveWindow, through flatshot-kwin-grab 5 or newer), with
+    ``preferred`` (the backend setting) allowing it."""
+    order = backend_order() if preferred in ("", "auto") else [preferred]
+    helper = kwin_helper()
+    return (helper is not None and order[:1] == ["kwin"] and dbus_has_kwin()
+            and _helper_version(helper) >= 5)
+
+
+def dbus_has_kwin() -> bool:
+    from flatshot import dbus
+
+    return dbus.available() and dbus.has_owner("org.kde.KWin")
+
+
+def grab_active_window(pointer: bool = False, decoration: bool = True, shadow: bool = True) -> QImage:
+    """The active window on its own, from KWin: nothing covering it, the
+    parts off screen included, and (``shadow``) its shadow, with
+    transparency around its rounded corners and the shadow (ARGB32)."""
+    global last_grab
+    helper = kwin_helper()
+    if helper is None:
+        raise CaptureError("flatshot-kwin-grab is not installed")
+    flags = [b"decoration"] * decoration + [b"shadow"] * shadow
+    server = _kwin_server(helper)
+    image = None
+    if server is not None and server.version >= 5:
+        try:
+            image = server.grab(pointer, b" ".join([b"window", *flags]))
+        except _ServerGone:
+            _drop_server(server)
+    if image is None:
+        if _helper_version(helper) < 5:
+            raise CaptureError("the active window on its own needs flatshot-kwin-grab 5 or newer")
+        image = _kwin_once(helper, pointer, ["--window"] + [f"--{f.decode()}" for f in flags])
+    if image.format() != QImage.Format.Format_ARGB32_Premultiplied:
+        image.convertTo(QImage.Format.Format_ARGB32_Premultiplied)
+    what = ", the active window" + (" with its frame" if decoration else "") + (" and shadow" if shadow else "")
+    last_grab = _describe("kwin", what + (", with the pointer" if pointer else ""))
+    return image
 
 
 def kwin_kept_running() -> bool:

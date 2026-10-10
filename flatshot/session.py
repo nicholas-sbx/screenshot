@@ -120,6 +120,7 @@ class Session:
         self._desktop: windows.Desktop | None = None
         self.mode = request.mode if request.mode in MODES else "region"
         self._grabbed: QImage | None = None  # an instant capture waiting for the desktop state
+        self._window_alone = False  # _grabbed is the active window on its own (KWin), not the desktop
         # Selections across monitors: the whole desktop grab, kept while the
         # overlays are up (only with more than one monitor and the setting on).
         self._desktop_image: QImage | None = None
@@ -168,6 +169,8 @@ class Session:
                 image = QImage(self.request.image)
                 if image.isNull():
                     raise capture.CaptureError(f"cannot read {self.request.image}")
+            elif self.mode == "window" and (image := self._grab_window()) is not None:
+                pass
             else:
                 # The overlay's picture can show the pointer or not (the
                 # toolbar's pointer button): both are taken at once.
@@ -204,6 +207,22 @@ class Session:
                 # Let the overlay reach the screen before scanning competes for CPU.
                 QTimer.singleShot(60, lambda: None if self.done else self._scan())
 
+    def _grab_window(self) -> QImage | None:
+        """The active window on its own, where KWin can give it (nothing
+        covering it, with its frame and shadow as set); else None, and it's
+        cut from the desktop as elsewhere."""
+        backend = self.request.backend or self.cfg.backend
+        if not capture.can_grab_window(backend):
+            return None
+        try:
+            image = capture.grab_active_window(self.cfg.include_pointer, self.cfg.window_frame,
+                                               self.cfg.window_shadow)
+        except capture.CaptureError as e:
+            timing.log(f"active window on its own failed ({e}); cutting it from the desktop")
+            return None
+        self._window_alone = True
+        return image
+
     def _scan(self):
         """Scan the capture once; later calls do nothing."""
         image, self._scan_source = self._scan_source, None
@@ -230,6 +249,21 @@ class Session:
             point = desktop.cursor if desktop.cursor is not None else QCursor.pos()
             screen = QGuiApplication.screenAt(point) or QGuiApplication.primaryScreen()
             rect, shot.mode, shot.monitor = screen.geometry(), "monitor", screen.name()
+        elif self.mode == "window" and self._window_alone:
+            # KWin's picture of the window itself: nothing to cut.
+            shot.mode = "window"
+            at = None
+            if desktop.active is not None:
+                # Its logical size from its pixels (the frame and shadow make it bigger
+                # than the window), centred where the window is.
+                r = desktop.active.rect
+                screen = QGuiApplication.screenAt(r.center()) or QGuiApplication.primaryScreen()
+                dpr = screen.devicePixelRatio()
+                at = QRect(0, 0, round(image.width() / dpr), round(image.height() / dpr))
+                at.moveCenter(r.center())
+            self.clock.step("window on its own", f"{image.width()} × {image.height()}")
+            self._deliver(image, shot, at)
+            return
         elif self.mode == "window":
             if desktop.active is None:
                 self.fail("No active window to capture. Active-window capture needs KDE Plasma, Sway or Hyprland.")
