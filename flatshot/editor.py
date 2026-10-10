@@ -276,9 +276,12 @@ class Editor(QWidget):
         return True
 
     def text_at(self, pos: QPointF):
-        """The text drawn at ``pos`` (picture coordinates, topmost), if any."""
-        return next((s for s in reversed(self.annotations)
-                     if isinstance(s, shapes.Text) and not s.hidden and s.contains(pos)), None)
+        """The text drawn at ``pos`` (picture coordinates), if it's the
+        topmost drawing there (not one behind something else)."""
+        hits = self.selection.hits(pos)
+        top = hits[0] if hits else next((s for s in reversed(self.annotations)
+                                         if isinstance(s, shapes.Text) and not s.hidden and s.contains(pos)), None)
+        return top if isinstance(top, shapes.Text) else None
 
     def can_undo(self) -> bool:
         return bool(self.annotations) or self.text_edit is not None

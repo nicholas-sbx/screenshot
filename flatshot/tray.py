@@ -7,7 +7,7 @@ from pathlib import Path
 from flatshot import config, icons, ipc, output, pin, recording, theme
 from flatshot.notify import Notifier
 from flatshot.qt import (
-    QAction, QIcon, QImage, QMenu, QObject, QPainter, QPixmap, QRectF, QSystemTrayIcon, Qt, QTimer,
+    QAction, QIcon, QImage, QKeySequence, QMenu, QObject, QPainter, QPixmap, QRectF, QSystemTrayIcon, Qt, QTimer,
 )
 from flatshot.capture import parse_geometry
 from flatshot.session import MODES, Request, Session
@@ -96,8 +96,8 @@ class TrayApp(QObject):
         self.tray = QSystemTrayIcon(self._icon(), self)
         self.tray.setToolTip("Flatshot")
         menu = QMenu()
-        # Active window makes no sense straight from the menu (the menu has focus).
-        for action in ("region", "monitor", "screen", "last", "pin", "record"):
+        # (Active window: the window active before the menu, once the menu has gone.)
+        for action in ("region", "window", "monitor", "screen", "last", "pin", "record"):
             self.menu_actions[action] = menu.addAction(ACTIONS[action][0])
             self.menu_actions[action].triggered.connect(
                 lambda _=False, a=action: self._shortcut(a, delay_ms=MENU_DELAY_MS))
@@ -138,7 +138,11 @@ class TrayApp(QObject):
             label = ACTIONS[action][0]
             if action == "record" and self.recording is not None:
                 label = "Stop recording"
-            item.setText(f"{label}\t{keys}" if keys else label)
+            item.setText(label)
+            # As the action's shortcut, not after a tab in its text: KDE's tray
+            # menus (D-Bus menus) show only that.
+            item.setShortcut(QKeySequence(keys) if keys else QKeySequence())
+            item.setShortcutVisibleInContextMenu(True)
 
     def _activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

@@ -45,7 +45,7 @@ BINDINGS = {
     "zoom_in": ("Zoom in", "Ctrl+=", EDITOR),
     "zoom_out": ("Zoom out", "Ctrl+-", EDITOR),
     "close": ("Close the editor", "Ctrl+W", EDITOR),
-    "beautify": ("Background, padding and shadow", "Ctrl+B", EDITOR),
+    "beautify": ("Beautify: background, padding and shadow", "Ctrl+B", BOTH),
 }
 GROUPS = [
     ("Tools", [a for a in BINDINGS if a.startswith("tool.")]),

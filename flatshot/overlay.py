@@ -132,6 +132,7 @@ class Overlay(QWidget):
         # it (in its own coordinates) and also paints the others' that reach it.
         self._foreign: dict = {}  # id(another's shape) -> (it, offset, its copy moved here)
         self._state = None  # what this overlay's drawings were at the last paint
+        self._layer: tuple | None = None  # (what they were, the drawings that are done, painted)
         self._spilled = False  # some of them reached past this monitor then
         self._select_on: "Overlay | None" = None  # a select drag on a drawing another overlay owns
 
@@ -585,86 +586,145 @@ class Overlay(QWidget):
         return QPointF(other.target_screen.geometry().topLeft() - self.target_screen.geometry().topLeft())
 
     def _moved_here(self, shape: shapes.Shape, d: QPointF) -> shapes.Shape:
-        """Another overlay's drawing as it shows here (kept while it's the same)."""
+        """Another overlay's pixelate or blur as it shows here (it takes what's
+        under it from this monitor's pixels), kept while it's the same."""
         kept = self._foreign.get(id(shape))
-        if kept is None or kept[0] is not shape or kept[1] != d:
-            kept = (shape, QPointF(d), shape.moved(d))
+        if kept is None or kept[0] is not shape or kept[1] != d or kept[3] != shape.bounds():
+            kept = (shape, QPointF(d), shape.moved(d), shape.bounds())
             if len(self._foreign) > 512:
                 self._foreign.clear()
             self._foreign[id(shape)] = kept
         return kept[2]
 
-    def _paint_drawings(self, p: QPainter, live: bool = True):
-        """This overlay's drawings, then the parts of the other overlays'
-        that reach onto this monitor (each painted from this monitor's own
-        pixels, so pixelate and blur are right here too). ``live``: with
-        the shape being drawn, the text being typed and the selection."""
+    def _paint_moved(self, p: QPainter, shape: shapes.Shape, d: QPointF):
+        """Another overlay's drawing, ``d`` off from its own coordinates."""
+        if isinstance(shape, shapes.Pixelate):
+            self._moved_here(shape, d).paint(p, self.base)
+        else:  # (only pixelate and blur use what's under them: the rest are just moved)
+            p.save()
+            p.translate(d)
+            shape.paint(p, self.base)
+            p.restore()
+
+    def _others(self):
+        """The other overlays, with how far their coordinates are from these."""
+        return [(o, self.offset_from(o)) for o in self.ctl.overlays if o is not self]
+
+    def _paint_settled(self, p: QPainter):
+        """The drawings that are done: this overlay's, then the parts of the
+        other overlays' that reach onto this monitor (each painted from this
+        monitor's own pixels, so pixelate and blur are right here too)."""
         for shape in self.annotations:
             if not shape.hidden:
                 shape.paint(p, self.base)
-        editing = self.ctl.text_edit
-        if live:
-            if self.active is not None:
-                self.active.paint(p, self.base)
-            if editing and editing[0] is self:
-                editing[1].paint(p, self.base)
-            if self.ctl.tool == "select":
-                self.selection.paint(p, self.base)
         here = QRectF(self.rect()).adjusted(-60, -60, 60, 60)
-        for o in self.ctl.overlays:
-            if o is self:
-                continue
-            d = self.offset_from(o)
+        for o, d in self._others():
             view = here.translated(-d)  # (this monitor, in the other's coordinates)
             for shape in o.annotations:
                 if not shape.hidden and shape.bounds().intersects(view):
-                    self._moved_here(shape, d).paint(p, self.base)
-            if not live:
-                continue
-            if o.active is not None and o.active.bounds().intersects(view):
-                o.active.moved(d).paint(p, self.base)
-            if editing and editing[0] is o and editing[1].bounds().intersects(view):
+                    self._paint_moved(p, shape, d)
+
+    def _paint_live(self, p: QPainter):
+        """What's being drawn, typed or moved now, on any monitor."""
+        editing = self.ctl.text_edit
+        selecting = self.ctl.tool == "select"
+        if self.active is not None:
+            self.active.paint(p, self.base)
+        if editing and editing[0] is self:
+            editing[1].paint(p, self.base)
+        if selecting:
+            self.selection.paint(p, self.base)
+        for o, d in self._others():
+            if o.active is not None:
+                self._paint_moved(p, o.active, d)
+            if editing and editing[0] is o:
                 typing = editing[1].moved(d)
                 typing.editing = True
                 typing.paint(p, self.base)
-            if self.ctl.tool == "select":
+            if selecting:
                 moving = o.selection._moving()
                 if moving is not None:
-                    moving.moved(d).paint(p, self.base)
+                    self._paint_moved(p, moving, d)
                 p.save()
                 p.translate(d)
                 o.selection.paint_frame(p)
                 p.restore()
 
-    def _own_state(self):
-        """What this overlay's drawings are now, to tell when they change."""
+    def _paint_drawings(self, p: QPainter, live: bool = True):
+        self._paint_settled(p)
+        if live:
+            self._paint_live(p)
+
+    def _settled_key(self):
+        """What the drawings that are done are, on every monitor."""
+        return tuple((id(s), s.hidden) for o in self.ctl.overlays for s in o.annotations)
+
+    def _settled_layer(self) -> QPixmap | None:
+        """The drawings that are done, painted once into a picture the size
+        of the screen and kept until they change: each paint (a move of the
+        pointer) then costs one picture however much is drawn."""
+        key = (self._settled_key(), self.devicePixelRatioF(), self.width(), self.height())
+        if self._layer is None or self._layer[0] != key:
+            if not key[0]:
+                self._layer = (key, None)
+            else:
+                dpr = self.devicePixelRatioF()
+                pm = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+                pm.setDevicePixelRatio(dpr)
+                pm.fill(Qt.GlobalColor.transparent)
+                q = QPainter(pm)
+                q.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._paint_settled(q)
+                q.end()
+                self._layer = (key, pm)
+        return self._layer[1]
+
+    def _live_area(self) -> QRectF | None:
+        """Where what's being drawn, typed or moved here is (for the other
+        monitors to repaint just that), with room for strokes and handles."""
         editing = self.ctl.text_edit
-        typing = editing[1] if editing and editing[0] is self else None
-        moving = self.selection._moving()
-        return (len(self.annotations), id(self.annotations[-1]) if self.annotations else 0,
-                self.active.bounds().getRect() if self.active is not None else None,
-                (typing.text, typing.pos.x(), typing.pos.y(), typing.cursor, typing.anchor) if typing else None,
-                id(self.selection.shape), moving.bounds().getRect() if moving is not None else None)
+        boxes = [s.bounds() for s in (self.active, editing[1] if editing and editing[0] is self else None,
+                                      self.selection._moving(), self.selection.shape) if s is not None]
+        area = None
+        for b in boxes:
+            area = b if area is None else area.united(b)
+        return area.adjusted(-48, -48, 48, 48) if area is not None else None
 
     def _share_changes(self):
         """After a paint: if this overlay's drawings changed and reach (or
-        reached) past its monitor, the others repaint to show their part."""
+        reached) past its monitor, the others repaint their part: all of it
+        when something was done, else just where the live drawing was and is."""
         if len(self.ctl.overlays) < 2:
             return
-        state = self._own_state()
+        settled = tuple((id(s), s.hidden) for s in self.annotations)
+        live = self._live_area()
+        editing = self.ctl.text_edit
+        typing = editing[1] if editing and editing[0] is self else None
+        state = (settled, live.getRect() if live is not None else None,
+                 (typing.text, typing.cursor, typing.anchor) if typing else None)
         if state == self._state:
             return
+        before = self._state
         self._state = state
         mine = QRectF(self.rect())
-        editing = self.ctl.text_edit
-        live = [self.active, editing[1] if editing and editing[0] is self else None, self.selection._moving()]
-        spills = any(not mine.contains(s.bounds()) for s in self.annotations + [s for s in live if s is not None]
-                     if not s.hidden and not s.bounds().isNull())
-        if spills or self._spilled or self.selection.shape is not None:
-            for o in self.ctl.overlays:
-                if o is not self:
-                    o.update()
-        self._spilled = spills
+        if before is None or settled != before[0]:
+            spills = any(not mine.contains(s.bounds()) for s in self.annotations
+                         if not s.hidden and not s.bounds().isNull())
+            if spills or self._spilled:
+                for o in self.ctl.overlays:
+                    if o is not self:
+                        o.update()
+            self._spilled = spills
+        dirty = live
+        if before is not None and before[1] is not None:
+            old = QRectF(*before[1])
+            dirty = old if dirty is None else dirty.united(old)
+        if dirty is None or mine.contains(dirty):
+            return
+        for o, d in self._others():
+            part = dirty.translated(-d).intersected(QRectF(o.rect()))
+            if not part.isEmpty():
+                o.update(part.toAlignedRect())
 
     def render(self, rect: QRectF | None) -> QImage:
         """The capture plus annotations, cropped to ``rect`` (logical)."""
@@ -888,7 +948,10 @@ class Overlay(QWidget):
             p.fillRect(self.rect(), C.INK)
         p.drawPixmap(0, 0, self.base)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._paint_drawings(p)
+        layer = self._settled_layer()
+        if layer is not None:
+            p.drawPixmap(0, 0, layer)
+        self._paint_live(p)
         self._share_changes()
 
         region = self.ctl.tool in ("region", "record")
@@ -954,8 +1017,31 @@ class Overlay(QWidget):
         dpr = self.dpr()
         size = f"{round(r.width() * dpr)} × {round(r.height() * dpr)}"
         title = window.title if len(window.title) <= 40 else window.title[:39] + "…"
-        self._pill(p, f"{title}  ·  {size}" if title else size, QPointF(r.left() + 8, r.top() + 8),
-                   small=True)
+        text = f"{title}  ·  {size}" if title else size
+        box = self._label_box(r, QSizeF(QFontMetricsF(font(11)).horizontalAdvance(text) + 18, 22))
+        at = box.topLeft()
+        # Faded while the pointer is near, so what's under it shows (as the hint does).
+        near = self.cursor_pos is not None and box.adjusted(-HINT_NEAR / 2, -HINT_NEAR / 2, HINT_NEAR / 2,
+                                                             HINT_NEAR / 2).contains(self.cursor_pos)
+        self._pill(p, text, at, small=True, opacity=0.3 if near else 1.0)
+
+    def _label_box(self, r: QRectF, size: QSizeF) -> QRectF:
+        """Where a window's label goes: above its top left; else inside its
+        top left, if the window is big enough; else below it, or beside it;
+        always on the screen."""
+        screen = QRectF(self.rect())
+        w, h = size.width(), size.height()
+        fits_inside = r.width() >= w + 16 and r.height() >= h + 16
+        for at, inside in ((QPointF(r.left(), r.top() - h - 6), False), (QPointF(r.left() + 8, r.top() + 8), True),
+                           (QPointF(r.left(), r.bottom() + 6), False), (QPointF(r.right() + 6, r.top()), False),
+                           (QPointF(r.left() - w - 6, r.top()), False)):
+            box = QRectF(at, size)
+            if (fits_inside or not inside) and screen.contains(box):
+                return box
+        box = QRectF(QPointF(r.left() + 8, r.top() + 8), size)  # (no room anywhere: as near as can be)
+        box.moveLeft(max(screen.left() + 4, min(box.left(), screen.right() - w - 4)))
+        box.moveTop(max(screen.top() + 4, min(box.top(), screen.bottom() - h - 4)))
+        return box
 
     def _paint_codes(self, p: QPainter):
         """A padded rounded box around each detected code (under its card)."""
