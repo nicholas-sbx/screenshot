@@ -17,7 +17,7 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 
 - **Instant region capture**: drag and release to save to `~/Pictures/Screenshots` and copy to the clipboard.
 - **Window capture** (KDE): hover over where a window was when the screen freezes and it lights up; click to capture just that window. Clicking empty desktop captures the whole monitor.
-- **Instant captures, no selection needed**: the **active window**, the **current monitor** (the one under the pointer), **all screens**, or the **last region** you captured, each on its own shortcut. From scripts you can also capture an exact area with `--region WxH+X+Y`. Active-window capture works on KDE Plasma, Sway and Hyprland.
+- **Instant captures, no selection needed**: the **active window**, the **current monitor** (the one under the pointer), **all screens**, or the **last region** you captured, each on its own shortcut. From scripts you can also capture an exact area with `--region WxH+X+Y`. Active-window capture works on KDE Plasma, Sway and Hyprland. On KDE it's KWin's picture of the window itself: nothing covering it shows up, parts off screen are kept, and its rounded corners and shadow come out transparent. **Settings → Capture → Active window** turns the title bar and borders, and the shadow, on or off. (Clicking a window in the overlay still takes it from the frozen screen, as you see it.)
 - **Pin to screen**: keep a capture in view as a small always-on-top window. Turn on the toolbar's pin button (or press <kbd>K</kbd>) and your next drag or window click is pinned instead of saved. It still captures the moment you let go; nothing asks first. There's also a "Pin region" shortcut, `--pin`, and a **Pin** button on notifications. Drag a pin to move it, scroll to zoom, double-click or <kbd>Esc</kbd> to close, right-click to copy or save.
 - **Tray app with global shortcuts**: Flatshot registers with KDE's shortcut service. You set the keys in Flatshot's settings, or in System Settings → Shortcuts → Flatshot. Defaults are <kbd>Ctrl</kbd>+<kbd>Print</kbd> (region), <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Print</kbd> (active window) and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Print</kbd> (all screens). Current monitor, last region, pin and record screen have no default key; set one if you want it.
 - **Folder and file name templates**: build the path from the date, the window's app or title, the capture type, the size or a counter. For example, `~/Pictures/Screenshots/%Y-%m/{app}` sorts shots into a folder per month and app.
@@ -26,6 +26,10 @@ The app is native Qt, but every pixel is custom-painted. It ignores your Qt styl
 - **Mouse pointer** can be included in instant captures (off by default). When picking a region it's left out, unless **Settings → Capture → Mouse pointer when selecting** says **Always**, or **Your choice**: then the toolbar's pointer button (or <kbd>M</kbd>) shows or hides it in the frozen picture and the capture. Your choice takes two screenshots at once (KWin's helper or grim), so the overlay takes a little longer to open.
 - **Capture sound** (off by default): plays the desktop's screenshot sound, or a file you choose, after each capture. It uses an audio player you already have (`pw-play`, `paplay`, `ffplay` or `canberra-gtk-play`), runs in the background and never delays the capture.
 - **Notifications** show a thumbnail of the capture with **Open**, **Show in folder**, **Annotate** and **Pin** buttons. On KDE, **System Settings → Notifications → Flatshot** lists each kind (screenshot taken, recording saved, copied, something went wrong, notices), so you can choose per kind whether it pops up, plays a sound or runs a command. **Pin** opens the pin where the screenshot was taken (unless your monitors have changed since).
+- **Select, move and resize drawings** (<kbd>S</kbd>, on the toolbar and in the editor): click a drawing to select it (<kbd>Alt</kbd>+click for the one under it), drag it to move it (<kbd>Shift</kbd>: straight across or down), drag a handle to resize it (<kbd>Shift</kbd> keeps its shape, <kbd>Ctrl</kbd> from the middle; lines and arrows by their ends), nudge it with the arrow keys (<kbd>Shift</kbd>: 10 px), or press <kbd>Delete</kbd>. The colour and size buttons restyle it. Every change can be undone.
+- **Crop, cut out, rotate and resize** in the editor (<kbd>C</kbd>): drag the frame's edges in to crop, or out past the picture for a margin (clear, or your colour), then <kbd>Enter</kbd>. The crop can be free, 1:1, 4:3, 16:9 or the original's shape, and snaps to edges in the picture like the magnet. Under the toolbar: cut out rows or columns (drag across them and the rest is joined), rotate, flip, and resize to a size in pixels or a percentage. Your drawings move with the picture and stay drawings, and each step can be undone.
+- **Beautify** (<kbd>Ctrl</kbd>+<kbd>B</kbd> in the editor): put the picture on a background (a colour, its own edge colour, a gradient, a blurred copy of itself or an image), with padding, rounded corners, a soft shadow and a fixed shape (1:1, 4:3, 16:9) if you like, shown as you work and saved at full resolution. Save styles as presets; **Settings → After capture → Beautify** puts every capture on the style you used last.
+- **Tray icon styles**: the app's colours, your theme's, or a plain white or black outline for panels with symbolic icons, or **Auto** (white or black, following your desktop's light or dark scheme). Settings → General → Tray icon.
 - **Annotation editor**: **Annotate** (on a notification, in the tray menu, or `flatshot -i image.png`) opens the picture in a window of its own with the same drawing tools, colours and sizes as the toolbar, undo and redo, and **Copy**, **Save as** and **Save** (back to the file; it's highlighted while there are unsaved changes, and the title starts with ●). Scroll to move around, <kbd>Ctrl</kbd>+scroll to zoom (pinch on a touchpad), hold <kbd>Space</kbd> or the middle button and drag to pan, <kbd>Ctrl</kbd>+<kbd>0</kbd> fits the picture in the window. Drawings past the picture's edges aren't shown, since they wouldn't be saved. Undo and redo are greyed out when there's nothing to undo or redo, and **Copy** says **Copied** for a moment. **Save as** opens your desktop's own file dialog (KDE's on Plasma, through the XDG portal), falling back to Qt's where there's no portal. Open as many as you like; closing one with unsaved changes asks first, inside the window: **Don't save**, **Cancel** or **Save** (<kbd>Enter</kbd> saves, <kbd>Esc</kbd> cancels).
 - **No window animations on KDE**: like Spectacle, the overlay is a layer-shell surface, so it appears and disappears instantly. This works with the native packages; see the known limitations below.
 - **Screen recording**: pick the toolbar's record button (or press <kbd>V</kbd>), then drag an area, click a window, or press <kbd>Enter</kbd> for the whole screen. Drag the edges to adjust it. Under the area you can turn the **microphone**, the **computer's sound** and the **mouse pointer** on or off, and choose **MP4, WebM or GIF** and **24, 30 or 60 fps**; Flatshot remembers these. Press **Record** or <kbd>Enter</kbd>, and after a short countdown a small bar outside the area shows the time, with **pause**, **stop** and **discard**. The finished video goes to `~/Videos/Screencasts`, the file is copied to the clipboard, and a system notification offers **Open** and **Show in folder**. While recording, the tray icon turns into a stop button; clicking it, or pressing the "Record screen" shortcut again, stops and saves.
@@ -133,6 +137,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>V</kbd> | record tool: drag an area or click a window, then <kbd>Enter</kbd> to start (<kbd>Enter</kbd> before choosing picks the whole screen; <kbd>Esc</kbd> goes back) |
 | <kbd>Ctrl</kbd> while resizing the recording area | resize it about its centre |
 | <kbd>M</kbd> | show or hide the mouse pointer in the picture (and the capture) |
+| <kbd>S</kbd> | select tool: click a drawing to move, resize, restyle or delete it (<kbd>Delete</kbd>, arrow keys to nudge) |
 | <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>F</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>U</kbd> <kbd>N</kbd> | pen, line, arrow, box, filled box, ellipse, highlighter, text, pixelate, blur, counter |
 | <kbd>Shift</kbd> while drawing | snap lines to 45° and make boxes/ellipses square/round |
 | <kbd>Ctrl</kbd> while drawing | draw the shape out from its middle |
@@ -141,7 +146,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>[</kbd> <kbd>]</kbd> | stroke size |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | undo / redo |
 
-All of these keys (but <kbd>Esc</kbd>, <kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>C</kbd> to capture) can be changed under **Settings → Shortcuts → Keys in Flatshot**, separately from the global shortcuts. So can the annotation editor's: save <kbd>Ctrl</kbd>+<kbd>S</kbd>, save as <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, copy <kbd>Ctrl</kbd>+<kbd>C</kbd>, fit <kbd>Ctrl</kbd>+<kbd>0</kbd>, actual size <kbd>Ctrl</kbd>+<kbd>1</kbd>, zoom <kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>-</kbd>, close <kbd>Ctrl</kbd>+<kbd>W</kbd>.
+All of these keys (but <kbd>Esc</kbd>, <kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>C</kbd> to capture) can be changed under **Settings → Shortcuts → Keys in Flatshot**, separately from the global shortcuts. So can the annotation editor's: save <kbd>Ctrl</kbd>+<kbd>S</kbd>, save as <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, copy <kbd>Ctrl</kbd>+<kbd>C</kbd>, fit <kbd>Ctrl</kbd>+<kbd>0</kbd>, actual size <kbd>Ctrl</kbd>+<kbd>1</kbd>, zoom <kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>-</kbd>, close <kbd>Ctrl</kbd>+<kbd>W</kbd>, crop <kbd>C</kbd>, background <kbd>Ctrl</kbd>+<kbd>B</kbd>.
 
 Command line options:
 
@@ -203,6 +208,12 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
   "backend": "auto",
   "include_pointer": false,
   "theme": "ember",
+  "tray_icon": "color",
+  "window_frame": true,
+  "window_shadow": true,
+  "beautify": false,
+  "beautify_style": {},
+  "beautify_presets": {},
   "default_tool": "region",
   "default_color": 0,
   "custom_color": "#FF4FA3",
@@ -245,6 +256,9 @@ Everything is in the settings window. It's stored in `~/.config/flatshot/config.
 - `backend`: `auto`, `kwin`, `spectacle`, `grim`, `gnome-screenshot` or `qt`.
 - `record_dir` and `record_filename`: where recordings go, with the same codes as `save_dir` and `filename`. `record_format` is `mp4`, `webm` or `gif`; `record_fps` is `24`, `30` or `60`. `record_mic`, `record_system_audio` and `record_cursor` are the switches under the area (a GIF has no sound). `record_countdown` is in seconds (0–10, 0 for none). After a recording, `clipboard` (`image` copies the video file), `notify`, `open_after` and `run_command` apply as for screenshots.
 - `theme`: `ember`, `graphite`, `nord`, `dusk` or `paper`. It changes the app's own panels only; drawing colours and what's saved stay the same.
+- `tray_icon`: `color`, `theme`, `white`, `black` or `auto` (white or black to suit a dark or light desktop).
+- `window_frame` and `window_shadow`: on KDE, the active window (instant capture) with its title bar and borders, and with its shadow.
+- `beautify`: beautify every capture with `beautify_style`, the style last used in the editor's Background panel (`background`: `none`, `color`, `edge`, `gradient`, `blur` or `image`; `padding`, `radius`, `shadow`, `shadow_offset` in px, `shadow_opacity` in %, `ratio`: `auto`, `1:1`, `4:3` or `16:9`). `beautify_presets` keeps named styles, so a team can share one.
 - `keys`: the keys in Flatshot's own windows you changed, as `{"tool.pen": "J"}` (`""` for none); the names are in `flatshot/keys.py`. Settings → Shortcuts sets them.
 - `custom_color`: your own drawing colour (`#RRGGBB`), the toolbar's eighth; the picker sets it. `default_color` 7 starts with it.
 
@@ -272,7 +286,8 @@ The self-test builds a fake desktop with a QR code in it. It then exercises, wit
 
 - the overlay, scanner, window hit-testing and code show/hide/dismiss
 - the instant modes (window, monitor, all screens, last region, `--region`), file name templates, pinning and the colour picker
-- every drawing tool and the keyboard handling
+- every drawing tool and the keyboard handling, selecting, moving, resizing and deleting drawings
+- the editor's crop, margin, cut out, rotate, flip and resize, and beautify
 - the capture pipeline and the settings window
 - the record tool (choosing and adjusting an area, the options, the countdown) and a real recording of ffmpeg's test pattern with pause, stop and discard, when `ffmpeg` is installed
 
@@ -320,7 +335,7 @@ When the overlay falls back to a normal window, the tray app also logs the reaso
 - The AppImage can't use the fast KWin capture helper: KWin authorizes the helper by its fixed install path, and an AppImage runs from a random temporary location. It uses Spectacle instead.
 - Skipping KWin's animations needs KDE's LayerShellQt library, which is built against your system Qt. The native packages use it. The AppImage bundles its own Qt, so it uses normal fullscreen windows and KWin animates them.
 - Hover-and-click window detection uses a KWin script, so it needs KWin (KDE Plasma). Active-window capture also works on Sway and Hyprland. Elsewhere, "current monitor" uses the last pointer position Qt knows, which on Wayland may be stale.
-- Active-window capture is cut from a full-desktop grab, so anything covering the window (like an always-on-top window) shows up in it.
+- On Sway, Hyprland and X11, and with a `flatshot-kwin-grab` older than 0.9, active-window capture is cut from a full-desktop grab, so anything covering the window (like an always-on-top window) shows up in it.
 - Pins stay on top and open where the region was captured on KDE (through a KWin script) and on X11. On other Wayland desktops they are normal windows.
 
 - On Wayland, capture depends on one of the helper tools above. The xdg-desktop-portal screenshot API is not used yet.
