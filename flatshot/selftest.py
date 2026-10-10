@@ -253,6 +253,7 @@ def run() -> int:
     _pointer_and_snapping(app, tmp, desktop, out_dir)
     _editor(app, tmp, out_dir)
     _selecting(app, tmp, desktop, out_dir)
+    _picture_tools(app, tmp, out_dir)
     _drawing_and_text(app, tmp, desktop, out_dir)
     _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
@@ -786,6 +787,127 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
             os.environ["FLATSHOT_RECORDER"] = forced
         shutil.rmtree(rec_dir, ignore_errors=True)
     print("self-test: record tool, countdown, pause, stop and discard ok")
+
+
+def _picture_tools(app, tmp: Path, out_dir):
+    """The editor's crop tool: crop (snapping to edges in the picture), a
+    margin past the edges, cutting out a slice, rotating, flipping and
+    resizing, each undone and redone, with the drawings moving along."""
+    from flatshot import editor, picture, shapes
+    from flatshot.qt import QEvent, QGuiApplication, QKeyEvent, QMouseEvent
+
+    src = tmp / "crop-me.png"
+    pic = QImage(200, 100, QImage.Format.Format_RGB32)
+    pic.fill(QColor("#D03030"))
+    paint = QPainter(pic)
+    paint.fillRect(100, 0, 100, 100, QColor("#3050D0"))  # an edge down the middle, to snap to
+    paint.end()
+    pic.save(str(src))
+    ed = editor.open_file(src)
+    ed.resize(1000, 600)
+    app.processEvents()
+    canvas = ed.canvas
+    k = ed.dpr
+    P = QPointF
+
+    def mouse(kind, at, mods=Qt.KeyboardModifier.NoModifier):
+        pos = canvas.offset + at / k * canvas.zoom
+        types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
+                 "release": QEvent.Type.MouseButtonRelease}
+        b = Qt.MouseButton.LeftButton
+        canvas.event(QMouseEvent(types[kind], pos, canvas.mapToGlobal(pos), b,
+                                 b if kind != "release" else Qt.MouseButton.NoButton, mods))
+
+    def drag(a, b, mods=Qt.KeyboardModifier.NoModifier):
+        mouse("press", a, mods)
+        mouse("move", (a + b) / 2, mods)
+        mouse("move", b, mods)
+        mouse("release", b, mods)
+
+    def key(code, text="", mods=Qt.KeyboardModifier.NoModifier):
+        ed.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, code, mods, text))
+
+    def size():
+        return ed.base.width(), ed.base.height()
+
+    def drawn(kind):
+        return next(s for s in ed.annotations if isinstance(s, kind) and not s.hidden)
+
+    key(Qt.Key.Key_B, "b")
+    drag(P(10 * k, 10 * k), P(60 * k, 40 * k))
+    key(Qt.Key.Key_N, "n")
+    mouse("press", P(150 * k, 70 * k))
+    mouse("release", P(150 * k, 70 * k))
+    key(Qt.Key.Key_C, "c")
+    assert ed.tool == "crop" and ed.picture_bar.isVisible() and ed.cropper.rect == ed.cropper.whole()
+    # Crop: the left edge in; the drawings stay where they were on the picture.
+    drag(P(0, 50 * k), P(5 * k, 50 * k))
+    assert ed.cropper.changed() and abs(ed.cropper.rect.left() - 5) < 0.01, ed.cropper.rect
+    key(Qt.Key.Key_Return)
+    assert size() == (round(195 * k), round(100 * k)), size()
+    assert drawn(shapes.Box).rect() == QRectF(5, 10, 50, 30), drawn(shapes.Box).rect()
+    assert drawn(shapes.Counter).pos == P(145, 70)
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert size() == (round(200 * k), round(100 * k)) and drawn(shapes.Box).rect() == QRectF(10, 10, 50, 30)
+    assert not ed.dirty or len(ed.annotations) == 2, "undone back to the drawings alone"
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+    assert size() == (round(195 * k), round(100 * k)) and drawn(shapes.Box).rect() == QRectF(5, 10, 50, 30)
+    # Snapping: the right edge, dragged near the red/blue edge (now at x = 95), lands on it.
+    ed.cfg.snap_edges = True
+    drag(P(195 * k, 50 * k), P(98 * k, 50 * k))
+    assert abs(ed.cropper.rect.right() - 95) < 0.6, ed.cropper.rect
+    drag(P(95 * k, 50 * k), P(98 * k, 50 * k), Qt.KeyboardModifier.ControlModifier)  # (Ctrl: freely)
+    assert abs(ed.cropper.rect.right() - 98) < 0.6, ed.cropper.rect
+    ed.cfg.snap_edges = False
+    key(Qt.Key.Key_Escape)  # (the frame back round all of it)
+    assert not ed.cropper.changed() and ed.tool == "crop"
+    # A clear margin past the edges.
+    drag(P(0, 0), P(-10 * k, -10 * k))
+    key(Qt.Key.Key_Return)
+    assert size() == (round(205 * k), round(110 * k)), size()
+    out = ed.render()
+    assert out.hasAlphaChannel() and out.pixelColor(2, 2).alpha() == 0 and out.pixelColor(round(50 * k), 60).alpha() == 255
+    assert drawn(shapes.Counter).pos == P(155, 80)
+    # Cut out rows 40 to 60: what's below moves up.
+    ed.picture_bar.cut_rows.click()
+    assert ed.cropper.cut == "rows"
+    drag(P(100 * k, 40 * k), P(100 * k, 60 * k))
+    assert size() == (round(205 * k), round(90 * k)) and drawn(shapes.Counter).pos == P(155, 60), size()
+    # Rotate right, then flip left to right.
+    ed.cropper.set_cut(None)
+    w, h = 205, 90
+    ed.picture_bar.findChildren(type(ed.picture_bar.cut_rows))  # (the buttons are there)
+    ed.change_picture("Rotated", picture.rotate(ed.base, True))
+    assert size() == (round(90 * k), round(205 * k)) and drawn(shapes.Counter).pos == P(h - 60, 155)
+    ed.change_picture("Flipped", picture.flip(ed.base, True))
+    assert drawn(shapes.Counter).pos == P(60, 155), drawn(shapes.Counter).pos
+    # Resize to half, typed as a percentage.
+    ed.picture_bar.w_field.setText("50%")
+    ed.picture_bar._follow("50%", ed.picture_bar.h_field, True)
+    assert ed.picture_bar.h_field.text() == "50%"
+    ed.picture_bar._resize()
+    assert size() == (round(45 * k), round(102.5 * k)) or size() == (round(45 * k), round(103 * k)), size()
+    assert abs(drawn(shapes.Counter).pos.x() - 30) < 0.6, drawn(shapes.Counter).pos
+    # Saved at full resolution, with the drawings.
+    saved = tmp / "cropped.png"
+    assert ed._save_to(saved) and QImage(str(saved)).size() == ed.base.size()
+    # All the way back.
+    for _ in range(6):
+        key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert size() == (round(200 * k), round(100 * k)), size()
+    assert drawn(shapes.Box).rect() == QRectF(10, 10, 50, 30) and drawn(shapes.Counter).pos == P(150, 70)
+    if out_dir:
+        key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        drag(P(195 * k, 100 * k), P(150 * k, 80 * k))
+        ed.grab().save(str(Path(out_dir) / "editor-crop.png"))
+    screen = QGuiApplication.primaryScreen()
+    ed._closing = True
+    ed.close()
+    for _ in range(3):
+        app.processEvents()
+    qt.QCoreApplication.sendPostedEvents(None, 0)  # (the window is deleted now)
+    assert screen.name() is not None, "closing an editor broke the screen"  # (PySide: raises if so)
+    print("self-test: crop, margin, cut out, rotate, flip and resize ok")
 
 
 def _selecting(app, tmp: Path, desktop: QImage, out_dir):

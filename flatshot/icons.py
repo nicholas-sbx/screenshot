@@ -286,6 +286,79 @@ def _magnet(p, c):
     p.restore()
 
 
+def _crop(p, c):
+    p.drawPath(_path([(7, 3), (7, 17), (21, 17)], [(3, 7), (17, 7), (17, 21)]))
+
+
+def _turn(p, c, clockwise: bool):
+    """A quarter-turn arrow, round a square."""
+    p.save()
+    if not clockwise:
+        p.translate(24, 0)
+        p.scale(-1, 1)
+    p.drawRoundedRect(QRectF(4, 10, 10, 10), 2, 2)
+    arc = QPainterPath()
+    arc.moveTo(9, 6.5)
+    arc.cubicTo(13, 3.5, 18.5, 5, 19.5, 11)
+    p.drawPath(arc)
+    p.drawPath(_path([(17, 9.5), (19.5, 12), (22, 9.5)]))
+    p.restore()
+
+
+def _rotate_left(p, c):
+    _turn(p, c, False)
+
+
+def _rotate_right(p, c):
+    _turn(p, c, True)
+
+
+def _flip_h(p, c):
+    p.drawPath(_path([(10, 5), (3, 19), (10, 19)]))
+    p.drawPath(_path([(14, 5), (21, 19), (14, 19)]))
+    p.drawPath(_path([(10, 5), (10, 19)], [(14, 5), (14, 19)]))
+
+
+def _flip_v(p, c):
+    p.save()
+    p.translate(12, 12)
+    p.rotate(90)
+    p.translate(-12, -12)
+    _flip_h(p, c)
+    p.restore()
+
+
+def _cut_rows(p, c):
+    p.drawRoundedRect(QRectF(4, 3, 16, 5), 1.5, 1.5)
+    p.drawRoundedRect(QRectF(4, 16, 16, 5), 1.5, 1.5)
+    p.drawPath(_path([(12, 9.5), (12, 14.5)], [(9.5, 12), (14.5, 12)]))
+
+
+def _cut_cols(p, c):
+    p.save()
+    p.translate(12, 12)
+    p.rotate(90)
+    p.translate(-12, -12)
+    _cut_rows(p, c)
+    p.restore()
+
+
+def _resize(p, c):
+    p.drawRoundedRect(QRectF(4, 11, 9, 9), 1.5, 1.5)
+    p.drawPath(_path([(10, 14), (19, 5)], [(14, 5), (19, 5), (19, 10)]))
+
+
+def _ratio(p, c):
+    p.drawRoundedRect(QRectF(3, 6, 18, 12), 2, 2)
+    p.drawRoundedRect(QRectF(7, 9, 10, 6), 1, 1)
+
+
+def _margin(p, c):
+    p.drawRoundedRect(QRectF(3, 3, 18, 18), 2, 2)
+    p.setBrush(c)
+    p.drawRoundedRect(QRectF(8, 8, 8, 8), 1, 1)
+
+
 _ICONS = {
     "region": _region, "select": _select, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate, "blur": _blur,
@@ -295,7 +368,9 @@ _ICONS = {
     "speaker": _speaker, "cursor": _cursor, "cursor-off": _cursor_off, "solid": _solid, "pause": _pause,
     "resume": _resume, "stop": _stop, "trash": _trash,
     "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit, "save": _save,
-    "save-as": _save_as,
+    "save-as": _save_as, "crop": _crop, "rotate-left": _rotate_left, "rotate-right": _rotate_right,
+    "flip-h": _flip_h, "flip-v": _flip_v, "cut-rows": _cut_rows, "cut-cols": _cut_cols, "resize": _resize,
+    "ratio": _ratio, "margin": _margin,
 }
 
 

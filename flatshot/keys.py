@@ -24,6 +24,7 @@ BINDINGS = {
     "tool.pixelate": ("Pixelate", "X", BOTH),
     "tool.blur": ("Blur", "U", BOTH),
     "tool.counter": ("Counter", "N", BOTH),
+    "tool.crop": ("Crop, cut out, rotate and resize", "C", EDITOR),
     **{f"color.{i}": (f"Colour {i}: {name}", str(i), BOTH)
        for i, name in enumerate(("ember", "amber", "mint", "sky", "violet", "bone", "ink"), 1)},
     "color.8": ("Your own colour", "8", BOTH),
