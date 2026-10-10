@@ -6,7 +6,7 @@ and any number of editors can be open at once. Loaded only when one opens."""
 import sys
 from pathlib import Path
 
-from flatshot import config, icons, keys, output, picture, selection, shapes, theme, timing
+from flatshot import beautify, config, icons, keys, output, picture, selection, shapes, theme, timing
 from flatshot.qt import (
     QColor, QCursor, QEvent, QFont, QFontMetricsF, QGuiApplication, QHBoxLayout, QImage, QLabel, QLineEdit,
     QPainter, QPainterPath, QPen, QPixmap, QPoint, QPointF, QRectF, QRegularExpression, QRegularExpressionValidator,
@@ -100,6 +100,13 @@ class Editor(QWidget):
         self._status_timer.timeout.connect(self._unsay)
         self._closing = False  # closing for sure: the changes were saved or let go
         self.ask_save: AskSave | None = None
+        # Beautify (the Background panel): shown around the picture, and in what's saved and copied.
+        self.beauty_on = False
+        self.beauty = beautify.Style.from_dict(self.cfg.beautify_style)
+        self._saved_beauty = None  # (off) what was saved
+        self._beauty_timer = QTimer(self)  # remembers the style as the last used, once you stop changing it
+        self._beauty_timer.setSingleShot(True)
+        self._beauty_timer.timeout.connect(self._remember_beauty)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         column = QVBoxLayout(self)
@@ -113,7 +120,13 @@ class Editor(QWidget):
         column.addWidget(self.picture_bar)
         self.canvas = Canvas(self)
         self.selection = selection.Selection(self.canvas)  # the select tool's drawing
-        column.addWidget(self.canvas, 1)
+        middle = QHBoxLayout()
+        middle.setContentsMargins(0, 0, 0, 0)
+        middle.setSpacing(0)
+        middle.addWidget(self.canvas, 1)
+        self.beauty_panel = None  # _BeautyPanel, made when first opened
+        self._middle = middle
+        column.addLayout(middle, 1)
         self.status = _Status(self)
         column.addWidget(self.status)
         self._title()
@@ -297,6 +310,71 @@ class Editor(QWidget):
             self.annotations.append(shape)
             self._changed()
 
+    # -- beautify ------------------------------------------------------------
+
+    def toggle_beauty(self):
+        """Show or hide the Background panel; the background goes with it."""
+        self.beauty_on = not self.beauty_on
+        if self.beauty_panel is None:
+            from flatshot.qt import QScrollArea
+
+            self.beauty_panel = _BeautyPanel(self)
+            self._beauty_scroll = QScrollArea(self)  # (for short windows)
+            self._beauty_scroll.setWidget(self.beauty_panel)
+            self._beauty_scroll.setWidgetResizable(True)
+            self._beauty_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self._beauty_scroll.setFixedWidth(self.beauty_panel.width() + 10)
+            self._beauty_scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {C.BASE.name()}; }}")
+            self._middle.addWidget(self._beauty_scroll)
+        self._beauty_scroll.setVisible(self.beauty_on)
+        self.canvas.fit()
+        self._changed()
+
+    def set_beauty(self, **changes):
+        """Change the background's style (the panel's controls)."""
+        for key, value in changes.items():
+            setattr(self.beauty, key, value)
+        self.beauty.clean()
+        self._beauty_timer.start(400)
+        if self.beauty_panel is not None:
+            self.beauty_panel.refresh()
+        if self.canvas.fitted:
+            self.canvas.fit()
+        self._changed()
+
+    def _remember_beauty(self):
+        """The style becomes the last used: what Beautify after capture uses."""
+        saved = config.load()
+        saved.beautify_style = self.cfg.beautify_style = self.beauty.to_dict()
+        try:
+            saved.save()
+        except OSError as e:
+            print(f"flatshot: could not save the settings: {e}", file=sys.stderr)
+
+    def save_preset(self, name: str):
+        name = name.strip()
+        if not name:
+            return
+        saved = config.load()
+        saved.beautify_presets = {**saved.beautify_presets, name: self.beauty.to_dict()}
+        self.cfg.beautify_presets = saved.beautify_presets
+        try:
+            saved.save()
+        except OSError as e:
+            self._say(f"Couldn't save the preset: {e}")
+            return
+        self._say(f"Saved the preset {name}")
+        if self.beauty_panel is not None:
+            self.beauty_panel.refresh()
+
+    def use_preset(self, name: str):
+        style = self.cfg.beautify_presets.get(name)
+        if style is not None:
+            self.set_beauty(**beautify.Style.from_dict(style).to_dict())
+
+    def _beauty_state(self):
+        return self.beauty.to_dict() if self.beauty_on else None
+
     # -- the picture itself (crop, cut out, rotate, flip, resize) --------------
 
     def change_picture(self, what: str, changed: tuple):
@@ -324,7 +402,8 @@ class Editor(QWidget):
     def _changed(self):
         # Unsaved only while it differs from what was saved: undoing back
         # to that is saved again.
-        self.dirty = self.annotations != self._saved or self.base is not self._saved_base
+        self.dirty = (self.annotations != self._saved or self.base is not self._saved_base
+                      or self._beauty_state() != self._saved_beauty)
         self.bar.refresh()
         self._title()
         self.refresh()
@@ -354,7 +433,10 @@ class Editor(QWidget):
         p.end()
         image.setDevicePixelRatio(1.0)
         alpha = self.alpha or self.base.hasAlphaChannel()  # (a clear margin, say)
-        return image.convertToFormat(QImage.Format.Format_ARGB32 if alpha else QImage.Format.Format_RGB32)
+        image = image.convertToFormat(QImage.Format.Format_ARGB32 if alpha else QImage.Format.Format_RGB32)
+        if self.beauty_on:
+            image = beautify.render(image, self.beauty, self.dpr)
+        return image
 
     def save(self) -> bool:
         return self._save_to(self.path)
@@ -390,6 +472,7 @@ class Editor(QWidget):
         self.path, self.dirty = written, False
         self._saved = list(self.annotations)
         self._saved_base = self.base
+        self._saved_beauty = self._beauty_state()
         self._title()
         self.bar.refresh()
         self._say(f"Saved to {written}")
@@ -471,7 +554,8 @@ class Editor(QWidget):
                   "copy": self.copy, "fit": canvas.fit, "actual_size": lambda: canvas.zoom_to(1.0),
                   "zoom_in": lambda: canvas.zoom_to(canvas.zoom * 1.25),
                   "zoom_out": lambda: canvas.zoom_to(canvas.zoom / 1.25), "close": self.close,
-                  "size.down": lambda: self.set_size(self.size - 1), "size.up": lambda: self.set_size(self.size + 1)}
+                  "size.down": lambda: self.set_size(self.size - 1), "size.up": lambda: self.set_size(self.size + 1),
+                  "beautify": self.toggle_beauty}
         if action in simple:
             simple[action]()
         elif action.startswith("tool."):
@@ -647,6 +731,9 @@ class _Bar(QWidget):
             self.history.append(b)
             row.addWidget(b)
         self.history.pop()  # (fit is always there to use)
+        self.beauty_button = IconButton(ed, "beautify", km.hint("Background, padding and shadow", "beautify"), self)
+        self.beauty_button.clicked.connect(ed.toggle_beauty)
+        row.addWidget(self.beauty_button)
         row.addStretch(1)
         row.setSpacing(4)
         self.copy_button = copy = ActionButton(ed, "Copy", "copy", km.hint("Copy the picture", "copy"), self,
@@ -671,6 +758,7 @@ class _Bar(QWidget):
     def refresh(self):
         self.history[0].setEnabled(self.ed.can_undo())
         self.history[1].setEnabled(self.ed.can_redo())
+        self.beauty_button.set_active(self.ed.beauty_on)
         for name, b in self.tools.items():
             b.set_active(name == self.ed.tool)
         for s in self.swatches:
@@ -777,6 +865,7 @@ class Canvas(QWidget):
         self._pan_offset = QPointF(0, 0)
         self._space = False
         self._text_drag: tuple[QPointF, QPointF] | None = None  # a text being moved: (press, its position then)
+        self._backdrop: tuple | None = None  # (key, beautify's background, where the picture is on it)
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled)  # (accents, compose, CJK in text)
@@ -798,15 +887,35 @@ class Canvas(QWidget):
     def to_picture(self, pos: QPointF) -> QPointF:
         return (pos - self.offset) / self.zoom
 
+    def backdrop(self) -> tuple[QPixmap, QPointF]:
+        """Beautify's background and shadow for the picture (kept until the
+        picture or the style changes), and where the picture is on it (px)."""
+        key = (self.ed.base.cacheKey(), tuple(sorted(self.ed.beauty.to_dict().items())), self.ed.dpr)
+        if self._backdrop is None or self._backdrop[0] != key:
+            image, at = beautify.backdrop(self.ed.base.toImage(), self.ed.beauty, self.ed.dpr)
+            pm = QPixmap.fromImage(image)
+            pm.setDevicePixelRatio(self.ed.base.devicePixelRatio())
+            self._backdrop = (key, pm, at)
+        return self._backdrop[1], self._backdrop[2]
+
+    def view_box(self) -> QRectF:
+        """What's shown, in the picture's coordinates: the picture, and its
+        background around it while beautifying."""
+        if not self.ed.beauty_on:
+            return QRectF(QPointF(0, 0), self.picture_size())
+        pm, at = self.backdrop()
+        d = pm.devicePixelRatio()
+        return QRectF(-at.x() / d, -at.y() / d, pm.width() / d, pm.height() / d)
+
     def fit(self):
         """The whole picture in view, no bigger than it really is."""
-        size = self.picture_size()
-        if size.width() <= 0 or size.height() <= 0:
+        box = self.view_box()
+        if box.width() <= 0 or box.height() <= 0:
             return
-        self.zoom = min(1.0, (self.width() - 32) / size.width(), (self.height() - 32) / size.height())
+        self.zoom = min(1.0, (self.width() - 32) / box.width(), (self.height() - 32) / box.height())
         self.zoom = max(ZOOM[0], self.zoom)
-        self.offset = QPointF((self.width() - size.width() * self.zoom) / 2,
-                              (self.height() - size.height() * self.zoom) / 2)
+        self.offset = QPointF((self.width() - box.width() * self.zoom) / 2 - box.x() * self.zoom,
+                              (self.height() - box.height() * self.zoom) / 2 - box.y() * self.zoom)
         self.fitted = True
         self._changed()
 
@@ -829,7 +938,7 @@ class Canvas(QWidget):
 
     def _keep_in_view(self):
         """At least a bit of the picture stays in the window."""
-        size = self.picture_size() * self.zoom
+        size = self.picture_size() * self.zoom  # (the picture itself, not its background)
         keep = 48.0
         x = min(max(self.offset.x(), keep - size.width()), self.width() - keep)
         y = min(max(self.offset.y(), keep - size.height()), self.height() - keep)
@@ -1030,17 +1139,30 @@ class Canvas(QWidget):
         p.fillRect(self.rect(), C.INK)
         size = self.picture_size() * self.zoom
         frame = QRectF(self.offset, size)
-        p.setPen(QPen(C.LINE, 1))
-        p.drawRect(frame.adjusted(-0.5, -0.5, 0.5, 0.5))
+        beauty = self.ed.beauty_on
+        if not beauty:
+            p.setPen(QPen(C.LINE, 1))
+            p.drawRect(frame.adjusted(-0.5, -0.5, 0.5, 0.5))
         p.save()
         p.translate(self.offset)
         p.scale(self.zoom, self.zoom)
         # Close up, whole pixels (as a paint program shows them); further out, smooth.
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom < 1.0)
+        whole = QRectF(QPointF(0, 0), self.picture_size())
+        if beauty:
+            # The background and shadow round it, and its corners rounded, as it will be saved.
+            backdrop, at = self.backdrop()
+            d = backdrop.devicePixelRatio()
+            p.drawPixmap(QPointF(-at.x() / d, -at.y() / d), backdrop)
+            radius = beautify.corners(self.ed.beauty, self.ed.base.toImage(), self.ed.dpr) / d
+            rounded = QPainterPath()
+            rounded.addRoundedRect(whole, radius, radius)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setClipPath(rounded)
         p.drawPixmap(QPointF(0, 0), self.ed.base)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         # Only what's on the picture shows: nothing past its edges is saved.
-        p.setClipRect(QRectF(QPointF(0, 0), self.picture_size()))
+        p.setClipRect(whole, Qt.ClipOperation.IntersectClip if beauty else Qt.ClipOperation.ReplaceClip)
         for shape in self.ed.annotations:
             if not shape.hidden:
                 shape.paint(p, self.ed.base)
@@ -1458,3 +1580,137 @@ QLabel {{ color: {C.MUTED.name()}; background: transparent; }}""")
         p = QPainter(self)
         p.fillRect(self.rect(), C.BASE)
         p.fillRect(QRectF(0, self.height() - 1, self.width(), 1), C.LINE)
+
+
+class _BeautyPanel(QWidget):
+    """Beside the picture: its background, padding, corners, shadow and
+    shape, and presets. Each change shows at once, and is the style
+    Beautify after capture uses next."""
+
+    def __init__(self, ed: Editor):
+        from flatshot import settings as ui
+
+        super().__init__(ed)
+        self.ed = ed
+        self.ui = ui
+        self.setFixedWidth(272)
+        self.setStyleSheet(ui._style())
+        col = QVBoxLayout(self)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(6)
+        style = ed.beauty
+
+        def heading(text: str):
+            col.addSpacing(6)
+            col.addWidget(ui._label(text, "group"))
+
+        def combo(items, on_pick):
+            box = ui.Combo()
+            for key, label in items:
+                box.addItem(label, key)
+            box.currentIndexChanged.connect(lambda i: on_pick(box.itemData(i)) if i >= 0 else None)
+            col.addWidget(box)
+            return box
+
+        heading("Background")
+        self.kind = combo([(k, beautify.BACKGROUND_LABELS[k]) for k in beautify.BACKGROUNDS],
+                          lambda k: ed.set_beauty(background=k))
+        self.gradient = combo([(k, k.capitalize()) for k in beautify.GRADIENTS], lambda k: ed.set_beauty(gradient=k))
+        self.colour = ui.Button("Use the toolbar's colour")
+        self.colour.clicked.connect(lambda: ed.set_beauty(color=ed.color.name().upper()))
+        col.addWidget(self.colour)
+        self.picture = ui.Button("Choose a picture…")
+        self.picture.clicked.connect(self._choose_picture)
+        col.addWidget(self.picture)
+        self.picture_name = ui._label("", "hint", wrap=True)
+        col.addWidget(self.picture_name)
+
+        def slider(title: str, key: str, lo: int, hi: int, step: int, fmt):
+            heading(title)
+            s = ui.ValueSlider(getattr(style, key), lo, hi, step, fmt)
+            s.changed.connect(lambda v: ed.set_beauty(**{key: v}))
+            col.addWidget(s)
+            return s
+
+        self.padding = slider("Padding", "padding", 0, 200, 4,
+                              lambda v: f"{v}%" if self.ed.beauty.padding_percent else f"{v}px")
+        line = QHBoxLayout()
+        line.addWidget(ui._label("As a % of its longer side", "hint"))
+        self.percent = ui.Toggle(style.padding_percent)
+        self.percent.toggled.connect(lambda on: ed.set_beauty(padding_percent=on))
+        line.addStretch(1)
+        line.addWidget(self.percent)
+        col.addLayout(line)
+        self.radius = slider("Rounded corners", "radius", 0, 48, 2, lambda v: f"{v}px")
+        self.shadow = slider("Shadow", "shadow", 0, 64, 2, lambda v: f"{v}px" if v else "Off")
+        self.offset = slider("Shadow offset", "shadow_offset", 0, 40, 2, lambda v: f"{v}px")
+        self.opacity = slider("Shadow strength", "shadow_opacity", 0, 100, 5, lambda v: f"{v}%")
+        heading("Shape")
+        self.ratio = combo([("auto", "As the picture"), ("1:1", "Square, 1:1"), ("4:3", "4:3"), ("16:9", "16:9")],
+                           lambda k: ed.set_beauty(ratio=k))
+        heading("Presets")
+        self.presets = combo([], ed.use_preset)
+        save = QHBoxLayout()
+        self.preset_name = QLineEdit()
+        self.preset_name.setPlaceholderText("Name this style")
+        self.preset_name.returnPressed.connect(self._save_preset)
+        save_button = ui.Button("Save")
+        save_button.clicked.connect(self._save_preset)
+        save.addWidget(self.preset_name, 1)
+        save.addWidget(save_button)
+        col.addLayout(save)
+        col.addSpacing(8)
+        col.addWidget(ui._label("Save, Save as and Copy include it. Settings → After capture → Beautify puts every "
+                                "capture on the style you used last.", "hint", wrap=True))
+        col.addStretch(1)
+        self.refresh()
+
+    def _choose_picture(self):
+        from flatshot import filechooser
+
+        images = ("png", "jpg", "jpeg", "webp", "bmp", "avif", "jxl")
+        start = str(Path(self.ed.beauty.image).parent) if self.ed.beauty.image else str(Path.home())
+        filechooser.open_file(self.ed, "Background picture", start, [("Images", [f"*.{e}" for e in images])],
+                              lambda path: self.ed.set_beauty(image=path, background="image"))
+
+    def _save_preset(self):
+        self.ed.save_preset(self.preset_name.text())
+        self.preset_name.clear()
+
+    @staticmethod
+    def _pick(box, key):
+        box.blockSignals(True)
+        box.setCurrentIndex(max(0, box.findData(key)))
+        box.blockSignals(False)
+
+    def refresh(self):
+        style = self.ed.beauty
+        self._pick(self.kind, style.background)
+        self._pick(self.gradient, style.gradient)
+        self._pick(self.ratio, style.ratio)
+        self.gradient.setVisible(style.background == "gradient")
+        self.colour.setVisible(style.background == "color")
+        self.picture.setVisible(style.background == "image")
+        self.picture_name.setVisible(style.background == "image")
+        self.picture_name.setText(Path(style.image).name if style.image else "No picture chosen")
+        for s, key in ((self.padding, "padding"), (self.radius, "radius"), (self.shadow, "shadow"),
+                       (self.offset, "shadow_offset"), (self.opacity, "shadow_opacity")):
+            value = getattr(style, key)
+            s.slider.value = value
+            s.slider.update()
+            s.label.setText(s._fmt(value))
+        self.percent.blockSignals(True)
+        self.percent.setChecked(style.padding_percent)
+        self.percent.blockSignals(False)
+        self.presets.blockSignals(True)
+        self.presets.clear()
+        self.presets.addItem("Use a preset…", None)
+        for name in self.ed.cfg.beautify_presets:
+            self.presets.addItem(name, name)
+        self.presets.setCurrentIndex(0)
+        self.presets.blockSignals(False)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), C.BASE)
+        p.fillRect(QRectF(0, 0, 1, self.height()), C.LINE)

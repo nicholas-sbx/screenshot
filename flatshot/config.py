@@ -58,6 +58,10 @@ class Config:
     notify: bool = True
     open_after: str = "none"  # none | image | folder
     run_command: str = ""  # shell command, {path} is replaced by the quoted file path
+    # Beautify every capture with the style last used in the editor's Background panel.
+    beautify: bool = False
+    beautify_style: dict = field(default_factory=dict)  # beautify.Style, as a dict ({}: the defaults)
+    beautify_presets: dict = field(default_factory=dict)  # name -> a style, for a house style
     sound: bool = False  # play a sound after a capture
     sound_file: str = ""  # empty: the desktop's screenshot sound
     theme: str = "ember"  # see theme.THEMES
@@ -120,6 +124,11 @@ class Config:
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(self.custom_color)):
             self.custom_color = "#FF4FA3"
         self.custom_color = self.custom_color.upper()
+        if not isinstance(self.beautify_style, dict):
+            self.beautify_style = {}
+        if not isinstance(self.beautify_presets, dict):
+            self.beautify_presets = {}
+        self.beautify_presets = {str(k): v for k, v in self.beautify_presets.items() if isinstance(v, dict)}
         if not isinstance(self.keys, dict):
             self.keys = {}
         self.keys = {str(k): v for k, v in self.keys.items() if isinstance(v, str)}

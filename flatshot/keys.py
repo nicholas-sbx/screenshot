@@ -45,12 +45,14 @@ BINDINGS = {
     "zoom_in": ("Zoom in", "Ctrl+=", EDITOR),
     "zoom_out": ("Zoom out", "Ctrl+-", EDITOR),
     "close": ("Close the editor", "Ctrl+W", EDITOR),
+    "beautify": ("Background, padding and shadow", "Ctrl+B", EDITOR),
 }
 GROUPS = [
     ("Tools", [a for a in BINDINGS if a.startswith("tool.")]),
     ("Colours, sizes and undo", [a for a in BINDINGS if a.startswith(("color.", "size.")) or a in ("undo", "redo")]),
     ("While capturing", ["codes", "pin", "snap", "pointer", "copy_color"]),
-    ("Annotation editor", ["save", "save_as", "copy", "fit", "actual_size", "zoom_in", "zoom_out", "close"]),
+    ("Annotation editor", ["save", "save_as", "copy", "fit", "actual_size", "zoom_in", "zoom_out", "close",
+                           "beautify"]),
 ]
 
 _MODS = (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier

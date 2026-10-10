@@ -1007,6 +1007,14 @@ class Session:
             self._play_sound()
             self._finish(0, False)
             return
+        if self.cfg.beautify:
+            from flatshot import beautify
+
+            # Its sizes as they look on the screen it came from.
+            scale = image.width() / at.width() if at is not None and at.width() > 0 else \
+                QGuiApplication.primaryScreen().devicePixelRatio()
+            image = beautify.render(image, beautify.Style.from_dict(self.cfg.beautify_style), scale)
+            self.clock.step("beautified", f"{image.width()} × {image.height()}")
         try:
             result = output.deliver(image, self.cfg, self.request.output, shot, clock=self.clock)
         except OSError as e:

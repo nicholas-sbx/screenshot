@@ -359,6 +359,15 @@ def _margin(p, c):
     p.drawRoundedRect(QRectF(8, 8, 8, 8), 1, 1)
 
 
+def _beautify(p, c):
+    """A picture on a backdrop, with a sparkle."""
+    p.drawRoundedRect(QRectF(3, 5, 18, 15), 3, 3)
+    p.setBrush(c)
+    p.drawRoundedRect(QRectF(7, 9, 10, 7), 1.5, 1.5)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(_path([(19, 1.5), (19, 5.5)], [(17, 3.5), (21, 3.5)]))
+
+
 _ICONS = {
     "region": _region, "select": _select, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate, "blur": _blur,
@@ -370,7 +379,7 @@ _ICONS = {
     "magnet": _magnet, "eyedropper": _eyedropper, "fit": _fit, "save": _save,
     "save-as": _save_as, "crop": _crop, "rotate-left": _rotate_left, "rotate-right": _rotate_right,
     "flip-h": _flip_h, "flip-v": _flip_v, "cut-rows": _cut_rows, "cut-cols": _cut_cols, "resize": _resize,
-    "ratio": _ratio, "margin": _margin,
+    "ratio": _ratio, "margin": _margin, "beautify": _beautify,
 }
 
 
