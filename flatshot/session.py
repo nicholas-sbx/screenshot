@@ -112,6 +112,7 @@ class Session:
         self.redo_stack: list[Overlay] = []
         self.text_edit: tuple[Overlay, shapes.Text] | None = None
         self.hint: str | None = None
+        self._scan_source: QImage | None = None  # the capture still waiting to be scanned
         self.scanner = scanner.Scanner()
         self.scanner.finished.connect(self._codes_found)
         self.window_finder: windows.WindowFinder | None = None
@@ -197,10 +198,16 @@ class Session:
         if self._may_span():
             self._desktop_image = image
         if self.cfg.scan_codes and self.request.scan:
-            # Let the overlay reach the screen before scanning competes for CPU.
-            QTimer.singleShot(60, lambda: None if self.done else self._scan(image))
+            self._scan_source = image  # kept so hidden codes can be scanned on demand
+            if self.codes_visible:
+                # Let the overlay reach the screen before scanning competes for CPU.
+                QTimer.singleShot(60, lambda: None if self.done else self._scan())
 
-    def _scan(self, image: QImage):
+    def _scan(self):
+        """Scan the capture once; later calls do nothing."""
+        image, self._scan_source = self._scan_source, None
+        if image is None:
+            return
         self._scan_clock = timing.Clock("code scan")
         self.scanner.start(image)
 
@@ -579,6 +586,8 @@ class Session:
     def toggle_codes(self):
         """Show or hide the codes found; remembered for next time, like snapping."""
         self.codes_visible = not self.codes_visible
+        if self.codes_visible and not self.done:
+            self._scan()  # hidden at the start, so not scanned yet
         saved = config.load()
         saved.show_codes = self.cfg.show_codes = self.codes_visible
         try:
