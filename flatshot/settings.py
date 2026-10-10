@@ -46,8 +46,8 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none
 """
 
 
-CODES_HINT = ("Codes for the folder and the name: %Y %m %d %H %M %S for the date and time, {app} {title} "
-              "{mode} {monitor}, {w} {h} for the size, {n} for a counter. A / makes subfolders.")
+CODES_HINT = ("Available codes: %Y %m %d %H %M %S (date and time), {app}, {title}, {mode}, {monitor}, "
+              "{w} and {h} (image size), {n} (counter). A / creates a subfolder.")
 
 
 def _label(text: str, role: str | None = None, wrap=False) -> QLabel:
@@ -554,9 +554,9 @@ class SettingsWindow(QWidget):
             shot = output.Shot(mode="region", app="firefox", title="Example page", monitor="DP-1")
             try:
                 path = output.target_path(cfg, shot, (1920, 1080), ext(), preview=True)
-                label.setText(f"For example: {path}")
+                label.setText(f"Example: {path}")
             except (ValueError, OSError) as e:
-                label.setText(f"Not a usable name: {e}")
+                label.setText(f"Invalid name: {e}")
 
         folder.textChanged.connect(update)
         name.textChanged.connect(update)
@@ -587,7 +587,7 @@ class SettingsWindow(QWidget):
         line.setContentsMargins(0, 2, 0, 0)
         line.addWidget(look)
         line.addStretch(1)
-        card.add(Row("Theme", None, "For Flatshot's own panels. Drawing colours stay the same.", below=picker))
+        card.add(Row("Theme", None, "Colours of the toolbar, panels and windows. Drawing colours are not affected.", below=picker))
         icon = Segmented([("color", "Colour"), ("theme", "Theme"), ("white", "White"), ("black", "Black"),
                           ("auto", "Auto")], self.cfg.tray_icon)
 
@@ -601,11 +601,11 @@ class SettingsWindow(QWidget):
         line.setContentsMargins(0, 2, 0, 0)
         line.addWidget(icon)
         line.addStretch(1)
-        card.add(Row("Tray icon", None, "Auto is white or black, following your desktop's light or dark look.",
+        card.add(Row("Tray icon", None, "Auto uses white or black to match the desktop's light or dark colour scheme.",
                      below=icon_box))
         start = Toggle(autostart.enabled())
         start.toggled.connect(autostart.set_enabled)
-        card.add(Row("Start at login", start, "In the system tray, so shortcuts work."))
+        card.add(Row("Start at login", start, "Starts Flatshot in the system tray, so global shortcuts work."))
         open_config = Button("Open")
 
         def open_folder():
@@ -622,36 +622,41 @@ class SettingsWindow(QWidget):
         shade.changed.connect(lambda v: self._save(dim_opacity=v))
         card.add(Row("Screen shading", shade))
         card.add(Row("Toolbar follows the mouse", self._toggle("toolbar_follows_mouse"),
-                     "On the monitor the pointer is on."))
+                     "Shows the toolbar on the monitor under the pointer."))
         card.add(Row("Select across monitors", self._toggle("span_monitors"),
-                     "A drag, or a clicked window, may cross onto another monitor."))
+                     "Selections, clicked windows and drawings can span several monitors."))
 
-        card = self._card("Windows")
-        card.add(Row("Click a window to capture it", self._toggle("detect_windows"), "KDE Plasma."))
-        card.add(Row("Panels, notifications and popups too", self._toggle("detect_all_windows"),
-                     "Not just app windows."))
-        card.add(Row("Active window: title bar and borders", self._toggle("window_frame"),
-                     "The window on its own, even where something covers it. KDE Plasma."))
-        card.add(Row("Active window: shadow", self._toggle("window_shadow"),
-                     "With its rounded corners, on a clear background."))
+        card = self._card("Window capture")
+        card.add(Row("Window selection", self._toggle("detect_windows"),
+                     "Highlights the window under the pointer; clicking captures it. KDE Plasma only."))
+        card.add(Row("Include panels and popups", self._toggle("detect_all_windows"),
+                     "Panels, docks, notifications, menus and tooltips can also be selected."))
+        card.add(Row("Title bar and borders", self._toggle("window_frame"),
+                     "Included in active window captures. KDE Plasma only."))
+        card.add(Row("Window shadow", self._toggle("window_shadow"),
+                     "Included in active window captures, with a transparent background. JPEG files use white "
+                     "instead."))
 
         card = self._card("Mouse pointer")
-        card.add(Row("In instant captures", self._toggle("include_pointer"),
-                     "Active window, monitor, all screens and last region."))
-        pointer = Segmented([("hidden", "Never"), ("shown", "Always"), ("toggle", "Your choice")],
+        card.add(Row("Show in instant captures", self._toggle("include_pointer"),
+                     "Applies to active window, monitor, all screens and last region captures."))
+        pointer = Segmented([("hidden", "Never"), ("shown", "Always"), ("toggle", "Toggle")],
                             self.cfg.region_pointer)
         pointer.changed.connect(lambda v: self._save(region_pointer=v))
-        card.add(Row("When selecting", pointer, "Your choice adds a toolbar button (M)."))
+        card.add(Row("Show when selecting", pointer,
+                     "Toggle adds a toolbar button (M) and takes slightly longer to open."))
 
         card = self._card("Snap to edges")
         snap = self._toggle("snap_edges")
-        card.add(Row("Snap selections to edges", snap, "Also the toolbar's magnet, or G. Hold Ctrl to place freely."))
+        card.add(Row("Snap selections to edges", snap,
+                     "Moves selection corners onto nearby edges in the image. Also toggled with G or the magnet "
+                     "button. Hold Ctrl to place freely."))
         distance = ValueSlider(self.cfg.snap_distance, 2, 40, 1, lambda v: f"{v}px")
         distance.changed.connect(lambda v: self._save(snap_distance=v))
-        distance_row = card.add(Row("Distance", distance, "How close to an edge."))
+        distance_row = card.add(Row("Distance", distance, "Maximum distance between the pointer and an edge."))
         sensitivity = ValueSlider(self.cfg.snap_sensitivity, 1, 10, 1, str)
         sensitivity.changed.connect(lambda v: self._save(snap_sensitivity=v))
-        sensitivity_row = card.add(Row("Sensitivity", sensitivity, "Higher snaps to fainter edges too."))
+        sensitivity_row = card.add(Row("Sensitivity", sensitivity, "Higher values also snap to faint and short edges."))
 
         def snapping(on):
             distance_row.setVisible(on)
@@ -663,25 +668,27 @@ class SettingsWindow(QWidget):
 
         card = self._card("Magnifier and crosshair")
         loupe = self._toggle("show_loupe")
-        card.add(Row("Magnifier", loupe, "Zoomed pixels, coordinates and colour beside the pointer."))
+        card.add(Row("Magnifier", loupe, "Shows enlarged pixels, coordinates and the colour next to the pointer."))
         lo, hi = config.LOUPE_SIZES
         size = ValueSlider(self.cfg.loupe_size, lo, hi, 20, lambda v: f"{v}px")
         size.changed.connect(lambda v: self._save(loupe_size=v))
         size_row = card.add(Row("Magnifier size", size))
         loupe.toggled.connect(lambda on: (size_row.setVisible(on), card.update()))
         size_row.setVisible(self.cfg.show_loupe)
-        card.add(Row("Crosshair lines", self._toggle("show_crosshair")))
-        card.add(Row("Rainbow", self._toggle("rainbow"), "The crosshair and the magnifier cycle through colours."))
-        card.add(Row("Hints", self._toggle("show_hint"), "What to do next, in the middle of the screen."))
+        card.add(Row("Crosshair lines", self._toggle("show_crosshair"), "Lines across the screen through the pointer."))
+        card.add(Row("Rainbow", self._toggle("rainbow"), "The crosshair and magnifier cycle through colours."))
+        card.add(Row("Hints", self._toggle("show_hint"), "Usage tips in the middle of the screen."))
 
         card = self._card("QR codes and barcodes")
-        card.add(Row("Show them", self._toggle("show_codes"), "Also Q, or the toolbar's code button."))
+        card.add(Row("Detect and show", self._toggle("show_codes"),
+                     "Also toggled with Q or the code button on the toolbar."))
 
         card = self._card("Advanced")
         method = Segmented([("desktop", "Whole desktop"), ("screens", "Each screen")], self.cfg.screenshot_method)
         method.changed.connect(lambda v: self._save(screenshot_method=v))
-        card.add(Row("Take the screenshot", method,
-                     "Each screen keeps every monitor's own sharpness when their scales differ."))
+        card.add(Row("Screenshot", method,
+                     "Each screen keeps every monitor at its own resolution when scales differ. KDE Plasma or "
+                     "grim only."))
         combo = Combo()
         labels = {"auto": "Automatic", "kwin": "KWin", "spectacle": "Spectacle", "grim": "grim",
                   "gnome-screenshot": "GNOME Screenshot", "qt": "Qt (X11)"}
@@ -690,7 +697,7 @@ class SettingsWindow(QWidget):
         combo.setCurrentIndex(config.BACKENDS.index(self.cfg.backend))
         combo.setFixedWidth(180)
         combo.currentIndexChanged.connect(lambda i: self._save(backend=config.BACKENDS[i]))
-        card.add(Row("Capture method", combo))
+        card.add(Row("Capture backend", combo))
 
     def _after(self):
         card = self._card("Save")
@@ -725,7 +732,7 @@ class SettingsWindow(QWidget):
         card.add(Row("Format", fmt))
         quality = ValueSlider(self.cfg.quality, 10, 100, 5, str)
         quality.changed.connect(lambda v: self._save(quality=v))
-        quality_row = card.add(Row("Quality", quality, "Higher is sharper and larger."))
+        quality_row = card.add(Row("Quality", quality, "Higher values give sharper images and larger files."))
         lossy = {f[0] for f in formats if f[3]}
 
         def format_changed(value):
@@ -744,17 +751,19 @@ class SettingsWindow(QWidget):
         sync(self.cfg.save_to_disk)
 
         card = self._card("Beautify")
-        card.add(Row("Put captures on a background", self._toggle("beautify"),
-                     "As last set in the editor (Ctrl+B there). Also the toolbar's button."))
+        card.add(Row("Add a background", self._toggle("beautify"),
+                     "Uses the background, padding, corners and shadow last set in the annotation editor. Also "
+                     "toggled with Ctrl+B or the toolbar button."))
 
         card = self._card("Then")
         clip = Segmented([("image", "Image"), ("path", "File path"), ("none", "Nothing")], self.cfg.clipboard)
         clip.changed.connect(lambda v: self._save(clipboard=v))
         card.add(Row("Copy to clipboard", clip))
-        card.add(Row("Show a notification", self._toggle("notify"), "With Open, Show in folder, Annotate and Pin."))
+        card.add(Row("Show a notification", self._toggle("notify"),
+                     "Includes Open, Show in folder, Annotate and Pin buttons."))
         then = Segmented([("none", "Nothing"), ("image", "Image"), ("folder", "Folder")], self.cfg.open_after)
         then.changed.connect(lambda v: self._save(open_after=v))
-        card.add(Row("Open", then))
+        card.add(Row("Open afterwards", then))
 
         sound_on = self._toggle("sound")
         card.add(Row("Play a sound", sound_on))
@@ -767,7 +776,7 @@ class SettingsWindow(QWidget):
         line.setSpacing(8)
         for w, stretch in ((sound_file, 1), (choose, 0), (test, 0)):
             line.addWidget(w, stretch)
-        sound_row = card.add(Row("Sound file", None, "Leave empty for the desktop's own. OGG, WAV, FLAC or MP3.",
+        sound_row = card.add(Row("Sound file", None, "Empty uses the desktop's screenshot sound. OGG, WAV, FLAC and MP3 are supported.",
                                  below=box))
 
         def pick_sound():
@@ -784,14 +793,14 @@ class SettingsWindow(QWidget):
 
             self._save(sound_file=sound_file.text().strip())
             sound_row.error.setVisible(not sound.play(self.cfg.sound_file))
-            sound_row.error.setText("Couldn't play it: no such file, or no player (pw-play, paplay, "
+            sound_row.error.setText("Cannot play the sound: the file does not exist, or no player (pw-play, paplay, "
                                     "ffplay or canberra-gtk-play) installed.")
 
         choose.clicked.connect(pick_sound)
         test.clicked.connect(try_sound)
         sound_on.toggled.connect(lambda on: (sound_row.setVisible(on), card.update()))
         sound_row.setVisible(self.cfg.sound)
-        card.add(Row("Run a command", None, "{path} is replaced with the image file.",
+        card.add(Row("Run a command", None, "{path} is replaced with the path of the image.",
                      below=self._line("run_command", "curl -F file=@{path} https://example.com/upload")))
 
     def _recording(self):
@@ -827,7 +836,7 @@ class SettingsWindow(QWidget):
                                                                                    lambda: self.cfg.record_format))))
         countdown = ValueSlider(self.cfg.record_countdown, 0, 10, 1, lambda v: f"{v} s" if v else "Off")
         countdown.changed.connect(lambda v: self._save(record_countdown=v))
-        card.add(Row("Countdown", countdown, "Before recording starts."))
+        card.add(Row("Countdown", countdown, "Delay before recording starts."))
 
         card = self._card("Defaults")
         formats = screencast.formats_available() or screencast.FORMATS[:1]
@@ -835,16 +844,16 @@ class SettingsWindow(QWidget):
             self.cfg.record_format = formats[0][0]
         fmt = Segmented(formats, self.cfg.record_format)
         fmt.changed.connect(lambda v: self._save(record_format=v))
-        card.add(Row("Format", fmt, "GIFs have no sound."))
+        card.add(Row("Format", fmt, "GIF files have no audio."))
         fps = Segmented([(str(n), f"{n} fps") for n in config.RECORD_FPS], str(self.cfg.record_fps))
         fps.changed.connect(lambda v: self._save(record_fps=int(v)))
         card.add(Row("Frame rate", fps))
         card.add(Row("Microphone", self._toggle("record_mic")))
         card.add(Row("Computer sound", self._toggle("record_system_audio")))
         card.add(Row("Mouse pointer", self._toggle("record_cursor")))
-        self._col.addWidget(_label("You can also change these under the area before you start. After a recording, "
-                                   "the clipboard, notification, open and command settings from After capture "
-                                   "apply.", "hint", wrap=True))
+        self._col.addWidget(_label("These defaults can also be changed before each recording. The clipboard, "
+                                   "notification, open and command settings under After capture also apply to "
+                                   "recordings.", "hint", wrap=True))
 
     def _shortcuts(self):
         supported = self.shortcuts.active or self.shortcuts.start()
@@ -858,10 +867,10 @@ class SettingsWindow(QWidget):
             self.shortcut_fields[action] = field
             self.shortcut_rows[action] = card.add(Row(label, field))
         if supported:
-            note = "These are KDE global shortcuts; they also appear in System Settings → Shortcuts → Flatshot."
+            note = "Global shortcuts are managed by KDE and also appear in System Settings → Shortcuts → Flatshot."
         else:
-            note = ("Global shortcuts need KDE Plasma (" + (self.shortcuts.error or "unavailable") + "). "
-                    "Elsewhere, bind the command  flatshot  in your desktop's keyboard settings.")
+            note = ("Global shortcuts require KDE Plasma (" + (self.shortcuts.error or "unavailable") + "). "
+                    "On other desktops, bind the command flatshot in the desktop's keyboard settings.")
         self._col.addWidget(_label(note, "hint", wrap=True))
         self._window_keys()
 
@@ -870,8 +879,8 @@ class SettingsWindow(QWidget):
         annotation editor): separate from the global shortcuts above."""
         self._col.addSpacing(16)
         self._col.addWidget(_label("Keys in Flatshot", "title"))
-        self._col.addWidget(_label("While capturing and in the editor. Click one and press a key; Backspace "
-                                   "clears it.", "hint", wrap=True))
+        self._col.addWidget(_label("Keys used in the capture screen and the annotation editor. Click a field and "
+                                   "press a key; Backspace clears it.", "hint", wrap=True))
         self.key_fields, self.key_rows = {}, {}
         keymap = keys.Keymap(self.cfg.keys)
         for heading, actions in keys.GROUPS:
@@ -888,14 +897,14 @@ class SettingsWindow(QWidget):
     def _assign_key(self, action: str, sequence: str):
         error = self.key_rows[action].error
         if keys.label(sequence) in ("Esc", "Return", "Enter") or sequence in ("Esc", "Return", "Enter"):
-            error.setText(f"{sequence} is kept for cancelling and capturing.")
+            error.setText(f"{sequence} is reserved for cancelling and capturing.")
             error.show()
             return
         current = keys.Keymap(self.cfg.keys).keys
         clash = next((a for a, k in current.items() if a != action and k and sequence
                       and keys.label(k) == keys.label(sequence) and keys.overlaps(a, action)), None)
         if clash:
-            error.setText(f"{keys.label(sequence)} is already {keys.BINDINGS[clash][0]}.")
+            error.setText(f"{keys.label(sequence)} is already assigned to {keys.BINDINGS[clash][0]}.")
             error.show()
             return
         error.hide()
@@ -924,7 +933,7 @@ class SettingsWindow(QWidget):
         self.shortcut_fields[action].set_sequence(now if ok else self.shortcuts.get(action))
         error.setVisible(not ok)
         if not ok:
-            error.setText(f"KDE didn't accept {sequence or 'clearing the shortcut'}.")
+            error.setText(f"KDE rejected {sequence or 'clearing the shortcut'}.")
 
     def _reload_shortcuts(self):
         for action, field in self.shortcut_fields.items():
