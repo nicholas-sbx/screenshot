@@ -252,6 +252,7 @@ def run() -> int:
     _instant_and_extras(app, tmp, desktop, out_dir)
     _pointer_and_snapping(app, tmp, desktop, out_dir)
     _editor(app, tmp, out_dir)
+    _selecting(app, tmp, desktop, out_dir)
     _drawing_and_text(app, tmp, desktop, out_dir)
     _recording(app, tmp, desktop, out_dir)
     print(f"self-test ok ({app.platformName()}, Qt {qt.QT_VERSION}, {qt.BINDING})")
@@ -785,6 +786,201 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
             os.environ["FLATSHOT_RECORDER"] = forced
         shutil.rmtree(rec_dir, ignore_errors=True)
     print("self-test: record tool, countdown, pause, stop and discard ok")
+
+
+def _selecting(app, tmp: Path, desktop: QImage, out_dir):
+    """The select tool: hit-testing each kind of drawing, then select, move,
+    resize, restyle, nudge and delete, with undo and redo, in the editor
+    and on the capture overlay."""
+    from flatshot import editor, shapes
+    from flatshot.qt import QEvent, QKeyEvent, QMouseEvent
+    from flatshot.theme import SWATCHES
+
+    red, blue = SWATCHES[0], SWATCHES[3]
+    P = QPointF
+    # Hit-testing: lines and outlines near their stroke, filled shapes anywhere inside.
+    line = shapes.Line(P(10, 10), red, 1)
+    line.extend(P(110, 10))
+    assert line.contains(P(60, 12)) and not line.contains(P(60, 30)) and not line.contains(P(130, 10))
+    arrow = shapes.Arrow(P(10, 10), red, 1)
+    arrow.extend(P(110, 60))
+    assert arrow.contains(P(60, 35)) and arrow.contains(P(108, 52)) and not arrow.contains(P(20, 60))
+    box = shapes.Box(P(10, 10), red, 1)
+    box.extend(P(110, 80))
+    assert box.contains(P(10, 40)) and box.contains(P(60, 81)) and not box.contains(P(60, 45))
+    solid = shapes.SolidBox(P(10, 10), red, 1)
+    solid.extend(P(110, 80))
+    assert solid.contains(P(60, 45)) and not solid.contains(P(130, 45))
+    ellipse = shapes.Ellipse(P(0, 0), red, 1)
+    ellipse.extend(P(100, 60))
+    assert ellipse.contains(P(100, 30)) and ellipse.contains(P(50, 1)) and not ellipse.contains(P(50, 30))
+    assert not ellipse.contains(P(97, 3)), "the ellipse's box corner isn't on it"
+    blur = shapes.Blur(P(10, 10), red, 1)
+    blur.extend(P(60, 60))
+    assert blur.contains(P(30, 30)) and not blur.contains(P(80, 80))
+    pen = shapes.Stroke(P(10, 10), red, 1)
+    for x in range(12, 80, 3):
+        pen.extend(P(x, 10 + x // 4))
+    assert pen.contains(P(40, 20)) and not pen.contains(P(40, 40))
+    text = shapes.Text(P(10, 10), red, 1)
+    text.text = "Hello"
+    assert text.contains(P(20, 20)) and not text.contains(P(200, 20))
+    counter = shapes.Counter(P(50, 50), red, 1, 1)
+    assert counter.contains(P(55, 55)) and not counter.contains(P(80, 80))
+    assert not shapes.Removed(counter).contains(P(50, 50))
+    # Copies are their own: moving one leaves the original where it was.
+    moved = pen.moved(P(5, 0))
+    assert moved.points[0] == P(15, 10) and pen.points[0] == P(10, 10) and moved.replaces is pen
+    assert box.fitted(box.rect(), QRectF(0, 0, 50, 35)).rect() == QRectF(0, 0, 50, 35)
+    # Counters: a new one is numbered after the highest shown, whatever was moved or removed.
+    two = shapes.Counter(P(80, 80), red, 1, 2)
+    assert shapes.next_number([counter, two, two.moved(P(1, 1))]) == 3
+    two.hidden = True
+    assert shapes.next_number([counter, two]) == 2
+
+    # In the editor.
+    src = tmp / "select-me.png"
+    pic = QImage(300, 200, QImage.Format.Format_RGB32)
+    pic.fill(QColor("#808080"))
+    pic.save(str(src))
+    ed = editor.open_file(src)
+    ed.resize(900, 600)
+    app.processEvents()
+    canvas = ed.canvas
+    k = ed.dpr
+
+    def mouse(kind, at, mods=Qt.KeyboardModifier.NoModifier):
+        pos = canvas.offset + at / k * canvas.zoom  # (picture pixels -> canvas)
+        types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
+                 "release": QEvent.Type.MouseButtonRelease}
+        b = Qt.MouseButton.LeftButton
+        canvas.event(QMouseEvent(types[kind], pos, canvas.mapToGlobal(pos), b,
+                                 b if kind != "release" else Qt.MouseButton.NoButton, mods))
+
+    def drag(a, b, mods=Qt.KeyboardModifier.NoModifier):
+        mouse("press", a, mods)
+        mouse("move", (a + b) / 2, mods)
+        mouse("move", b, mods)
+        mouse("release", b, mods)
+
+    def key(code, text="", mods=Qt.KeyboardModifier.NoModifier):
+        ed.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, code, mods, text))
+
+    def shown():
+        return [s for s in ed.annotations if not s.hidden and not isinstance(s, shapes.Removed)]
+
+    key(Qt.Key.Key_B, "b")
+    drag(P(40, 40), P(140, 100))
+    key(Qt.Key.Key_L, "l")
+    drag(P(40, 150), P(200, 150))
+    key(Qt.Key.Key_S, "s")
+    assert ed.tool == "select" and "select" in ed.bar.tools
+    # Click the box's edge: selected. Drag it: moved, one undo step.
+    mouse("press", P(40, 70))
+    mouse("release", P(40, 70))
+    first = ed.selection.shape
+    assert isinstance(first, shapes.Box), first
+    assert len(ed.annotations) == 2, "a click alone changes nothing"
+    drag(P(40, 55), P(60, 65))  # (on its edge, away from the handles)
+    assert shown()[-1].rect() == QRectF(60, 50, 100, 60), shown()[-1].rect()
+    assert first.hidden and ed.selection.shape is shown()[-1]
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert not first.hidden and first.rect() == QRectF(40, 40, 100, 60) and ed.selection.shape is None
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+    moved_box = shown()[-1]
+    assert moved_box.rect() == QRectF(60, 50, 100, 60) and first.hidden
+    # Resize by its bottom-right handle (just outside the box, past its stroke).
+    mouse("press", P(85, 50))  # (its top edge: an outline is picked by its line)
+    mouse("release", P(85, 50))
+    assert ed.selection.shape is moved_box
+    corner = ed.selection._frame(moved_box, canvas.zoom).bottomRight()
+    drag(corner, corner + P(40, 20))
+    resized = ed.selection.shape
+    assert resized.rect().topLeft() == P(60, 50) and abs(resized.rect().width() - 140) < 1.5, resized.rect()
+    # Shift keeps its shape; Ctrl from the middle.
+    corner = ed.selection._frame(resized, canvas.zoom).bottomRight()
+    drag(corner, corner + P(30, 0), Qt.KeyboardModifier.ShiftModifier)
+    r = ed.selection.shape.rect()
+    assert abs(r.width() / r.height() - resized.rect().width() / resized.rect().height()) < 0.02, r
+    # Colour and size change it (and keep the select tool).
+    key(Qt.Key.Key_4, "4")
+    assert ed.tool == "select" and ed.selection.shape.color == blue
+    key(Qt.Key.Key_BracketRight, "]")
+    assert ed.selection.shape.size == 2
+    # Arrows nudge it; Delete removes it; undo brings it back.
+    before = ed.selection.shape.rect()
+    key(Qt.Key.Key_Right)
+    key(Qt.Key.Key_Down, "", Qt.KeyboardModifier.ShiftModifier)
+    assert ed.selection.shape.rect() == before.translated(1, 10), ed.selection.shape.rect()
+    count = len(shown())
+    key(Qt.Key.Key_Delete)
+    assert len(shown()) == count - 1 and ed.selection.shape is None
+    key(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert len(shown()) == count
+    # The line, by its end.
+    mouse("press", P(45, 151))  # (clear of the box, which grew over the line)
+    mouse("release", P(45, 151))
+    assert isinstance(ed.selection.shape, shapes.Line), [(type(x).__name__, x.bounds()) for x in shown()]
+    drag(P(200, 150), P(220, 180))
+    assert ed.selection.shape.end == P(220, 180) and ed.selection.shape.start == P(40, 150)
+    # Alt+click goes to the drawing under the selected one.
+    key(Qt.Key.Key_F, "f")
+    drag(P(20, 140), P(250, 190))
+    key(Qt.Key.Key_S, "s")
+    mouse("press", P(100, 160))
+    mouse("release", P(100, 160))
+    assert isinstance(ed.selection.shape, shapes.SolidBox)
+    mouse("press", P(100, 160), Qt.KeyboardModifier.AltModifier)
+    mouse("release", P(100, 160), Qt.KeyboardModifier.AltModifier)
+    # (the line was moved: its new copy runs from (40, 150) to (220, 180))
+    assert isinstance(ed.selection.shape, shapes.Line), ed.selection.shape
+    if out_dir:
+        ed.grab().save(str(Path(out_dir) / "editor-select.png"))
+    # Esc deselects first.
+    key(Qt.Key.Key_Escape)
+    assert ed.selection.shape is None and ed.isVisible()
+    image = ed.render()
+    assert image.pixelColor(round(61 * k), round(90 * k)) != QColor("#808080"), "the moved box is drawn"
+    ed._closing = True
+    ed.close()
+
+    # On the capture overlay: the same, with the session's undo.
+    from flatshot import config
+    from flatshot.notify import Notifier
+    from flatshot.session import Request, Session
+
+    s = Session(config.Config(save_dir=str(tmp / "x"), notify=False, clipboard="none"),
+                Request(image=str(src), scan=False), Notifier(interactive=False), lambda *a: None)
+    s.start()
+    ov = s.overlays[0]
+    app.processEvents()
+
+    def omouse(kind, at, mods=Qt.KeyboardModifier.NoModifier):
+        types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
+                 "release": QEvent.Type.MouseButtonRelease}
+        b = Qt.MouseButton.LeftButton
+        event = QMouseEvent(types[kind], at, ov.mapToGlobal(at), Qt.MouseButton.NoButton if kind == "move" else b,
+                            Qt.MouseButton.NoButton if kind == "release" else b, mods)
+        {"press": ov.mousePressEvent, "move": ov.mouseMoveEvent, "release": ov.mouseReleaseEvent}[kind](event)
+
+    def okey(code, text="", mods=Qt.KeyboardModifier.NoModifier):
+        s.key(ov, QKeyEvent(QEvent.Type.KeyPress, code, mods, text))
+
+    s.set_tool("ellipse")
+    for kind, at in (("press", P(30, 30)), ("move", P(90, 70)), ("move", P(130, 90)), ("release", P(130, 90))):
+        omouse(kind, at)
+    okey(Qt.Key.Key_S, "s")
+    assert s.tool == "select"
+    for kind, at in (("press", P(130, 60)), ("move", P(140, 70)), ("move", P(150, 80)), ("release", P(150, 80))):
+        omouse(kind, at)
+    assert ov.annotations[-1].rect() == QRectF(50, 50, 100, 60) and ov.annotations[0].hidden
+    okey(Qt.Key.Key_Delete)
+    assert isinstance(ov.annotations[-1], shapes.Removed) and ov.annotations[-1].replaces.hidden
+    okey(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    okey(Qt.Key.Key_Z, "", Qt.KeyboardModifier.ControlModifier)
+    assert len(ov.annotations) == 1 and not ov.annotations[0].hidden, ov.annotations
+    s.cancel()
+    print("self-test: select, move, resize, restyle and delete drawings ok")
 
 
 def _editor(app, tmp: Path, out_dir):

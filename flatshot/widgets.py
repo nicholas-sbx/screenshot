@@ -12,6 +12,7 @@ from flatshot.theme import C, REC, SWATCHES, font, is_light
 TOOLS = [
     ("region", "Capture region", "R"),
     ("record", "Record screen", "V"),
+    ("select", "Select, move and resize drawings", "S"),
     ("pen", "Pen", "P"),
     ("line", "Line", "L"),
     ("arrow", "Arrow", "A"),

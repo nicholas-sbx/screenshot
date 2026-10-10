@@ -23,6 +23,12 @@ def _region(p, c):
     ))
 
 
+def _select(p, c):
+    arrow = _path([(6, 3.5), (6, 18), (10, 14.5), (12.7, 20), (15.2, 18.9), (12.5, 13.4), (17.5, 13.2)])
+    arrow.closeSubpath()
+    p.drawPath(arrow)
+
+
 def _pen(p, c):
     body = _path([(4, 20), (5, 15.5), (15.5, 5), (19, 8.5), (8.5, 19)])
     body.closeSubpath()
@@ -281,7 +287,7 @@ def _magnet(p, c):
 
 
 _ICONS = {
-    "region": _region, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
+    "region": _region, "select": _select, "pen": _pen, "line": _line, "arrow": _arrow, "rect": _rect,
     "ellipse": _ellipse, "marker": _marker, "text": _text, "pixelate": _pixelate, "blur": _blur,
     "counter": _counter, "undo": _undo, "redo": _redo, "screen": _screen,
     "copy": _copy, "open": _open, "close": _close, "check": _check,

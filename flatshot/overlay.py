@@ -11,7 +11,7 @@ from flatshot.qt import (
     QPoint, QPointF, QPolygonF, QRect, QRectF, QSizeF, Qt, QTimer, QWidget,
 )
 
-from flatshot import layershell, shapes, timing
+from flatshot import layershell, selection, shapes, timing
 from flatshot.qt import keyval
 from flatshot.theme import C, font
 from flatshot.widgets import CodeChip, Toolbar
@@ -22,6 +22,9 @@ HINTS = {
     "windows": "Drag to capture  ·  Click a window to capture it  ·  Esc to cancel",
     "text": "Click to place text, or on text to change it  ·  Drag text to move it  ·  Enter to finish",
     "shape": "Shift: square  ·  Ctrl: from the middle  ·  Alt: move it",
+    "select": "Click a drawing to select it  ·  Drag to move  ·  Handles resize  ·  Delete removes it",
+    "selected": "Drag to move (Shift: straight)  ·  Handles: Shift keeps its shape, Ctrl from the middle  ·  "
+                "Arrows nudge  ·  Delete",
 }
 PIN_HINT = "Drag to pin a region  ·  Click a window to pin it  ·  {pin} to save instead"
 EYEDROPPER_HINT = "Click a pixel to make it your colour  ·  Esc to stop"
@@ -124,6 +127,7 @@ class Overlay(QWidget):
         self._loupe_box = QRect()
         # The text tool: a text being dragged to a new place (press position, its position then).
         self._text_drag: tuple[QPointF, QPointF] | None = None
+        self.selection = selection.Selection(self)  # the select tool's drawing, on this monitor
         self._rainbow: QTimer | None = None
         if ctl.cfg.rainbow:
             self._rainbow = QTimer(self)
@@ -409,7 +413,10 @@ class Overlay(QWidget):
 
     def update_cursor(self):
         text = self.ctl.tool == "text" and not self.ctl.eyedropper
-        shape = Qt.CursorShape.IBeamCursor if text else Qt.CursorShape.CrossCursor
+        if self.ctl.tool == "select" and not self.ctl.eyedropper:
+            shape = self.selection.cursor(self.cursor_pos) if self.cursor_pos is not None else Qt.CursorShape.ArrowCursor
+        else:
+            shape = Qt.CursorShape.IBeamCursor if text else Qt.CursorShape.CrossCursor
         self.setCursor(shape)
 
     def commit(self, shape: shapes.Shape):
@@ -444,6 +451,8 @@ class Overlay(QWidget):
                      if isinstance(s, shapes.Text) and not s.hidden and s.contains(pos)), None)
 
     def cancel_gesture(self) -> bool:
+        if self.selection.clear():
+            return True
         if self.sel_rect is not None or self.active is not None or self._rec_drag is not None:
             spanned = self.sel_rect is not None and self.ctl.spans()
             self.sel_origin = self.sel_rect = self.active = self._rec_drag = self._text_drag = None
@@ -681,6 +690,10 @@ class Overlay(QWidget):
             self.ctl.begin_text(self, shape)
         elif tool == "counter":
             self.commit(shapes.Counter(pos, self.ctl.color, self.ctl.size, self.ctl.next_number()))
+        elif tool == "select":
+            self.ctl.select_on(self)
+            self.selection.press(pos, event.modifiers())
+            self.ctl.refresh()
         else:
             self.active = shapes.create(tool, pos, self.ctl.color, self.ctl.size)
         self.update()
@@ -707,8 +720,12 @@ class Overlay(QWidget):
                 self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif self.active is not None:
             self.active.extend(pos, **shapes.modifiers(event.modifiers()))
+        elif self.selection.move(pos, event.modifiers()):
+            pass
         else:
             self._update_hover()
+            if self.ctl.tool == "select":
+                self.update_cursor()
             if self.ctl.tool == "record":
                 self.setCursor(_HANDLE_CURSORS.get(self._handle_at(pos), Qt.CursorShape.CrossCursor))
         self.update()
@@ -750,6 +767,8 @@ class Overlay(QWidget):
             if shape.is_valid():
                 self.commit(shape)
             self.update()
+        elif self.selection.release():
+            self.ctl.refresh()
 
     def wheelEvent(self, event):
         """Scrolling zooms the magnifier in (up) and out (down)."""
@@ -828,6 +847,8 @@ class Overlay(QWidget):
             self.active.paint(p, self.base)
         if self.ctl.text_edit and self.ctl.text_edit[0] is self:
             self.ctl.text_edit[1].paint(p, self.base)
+        if self.ctl.tool == "select":
+            self.selection.paint(p, self.base)
 
         region = self.ctl.tool in ("region", "record")
         picking = region and self.rec_rect is None  # still choosing an area
@@ -1103,6 +1124,8 @@ class Overlay(QWidget):
             tool = "pin"
         if self.active is not None and hasattr(self.active, "pointer"):
             tool = "shape"  # (while dragging one out)
+        if tool == "select" and self.selection.shape is not None:
+            tool = "selected"
         if self.ctl.tool == "record":
             if self.ctl.countdown is not None:
                 text = RECORD_HINTS["countdown"].format(n=self.ctl.countdown)
