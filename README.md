@@ -131,6 +131,7 @@ On other desktops, the tray, settings and notifications work the same. For a key
 | <kbd>Esc</kbd> / right-click | cancel the current drag, or quit (Esc acts when released, so the window underneath never gets it) |
 | <kbd>R</kbd> | region tool (back to capture mode) |
 | <kbd>V</kbd> | record tool: drag an area or click a window, then <kbd>Enter</kbd> to start (<kbd>Enter</kbd> before choosing picks the whole screen; <kbd>Esc</kbd> goes back) |
+| <kbd>Ctrl</kbd> while resizing the recording area | resize it about its centre |
 | <kbd>M</kbd> | show or hide the mouse pointer in the picture (and the capture) |
 | <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd> <kbd>B</kbd> <kbd>F</kbd> <kbd>E</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>X</kbd> <kbd>U</kbd> <kbd>N</kbd> | pen, line, arrow, box, filled box, ellipse, highlighter, text, pixelate, blur, counter |
 | <kbd>Shift</kbd> while drawing | snap lines to 45° and make boxes/ellipses square/round |

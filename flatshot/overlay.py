@@ -585,13 +585,16 @@ class Overlay(QWidget):
             sx = snapped.x() if snapped is not None and snapped.x() != pos.x() else None
             sy = snapped.y() if snapped is not None and snapped.y() != pos.y() else None
             if center:
+                # The dragged edge follows the pointer as without Ctrl; the other mirrors it.
                 c = r0.center()
                 if "l" in handle or "r" in handle:
-                    half = min(abs(pos.x() - c.x()), c.x() - bounds.left(), bounds.right() - c.x())
+                    edge = (r0.left() if "l" in handle else r0.right()) + d.x()
+                    half = min(abs(edge - c.x()), c.x() - bounds.left(), bounds.right() - c.x())
                     r.setLeft(c.x() - half)
                     r.setRight(c.x() + half)
                 if "t" in handle or "b" in handle:
-                    half = min(abs(pos.y() - c.y()), c.y() - bounds.top(), bounds.bottom() - c.y())
+                    edge = (r0.top() if "t" in handle else r0.bottom()) + d.y()
+                    half = min(abs(edge - c.y()), c.y() - bounds.top(), bounds.bottom() - c.y())
                     r.setTop(c.y() - half)
                     r.setBottom(c.y() + half)
             else:
