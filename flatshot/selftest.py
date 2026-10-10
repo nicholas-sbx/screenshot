@@ -534,13 +534,13 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
         session.key_release(ov, qt.QKeyEvent(qt.QEvent.Type.KeyRelease, qt.keyval(k),
                                              Qt.KeyboardModifier.NoModifier, text))
 
-    def mouse(ov, kind, x, y):
+    def mouse(ov, kind, x, y, mods=Qt.KeyboardModifier.NoModifier):
         types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
                  "release": QEvent.Type.MouseButtonRelease}
         pos = QPointF(x, y)
         left = Qt.MouseButton.LeftButton
         event = QMouseEvent(types[kind], pos, ov.mapToGlobal(pos), Qt.MouseButton.NoButton if kind == "move" else left,
-                            Qt.MouseButton.NoButton if kind == "release" else left, Qt.KeyboardModifier.NoModifier)
+                            Qt.MouseButton.NoButton if kind == "release" else left, mods)
         {"press": ov.mousePressEvent, "move": ov.mouseMoveEvent, "release": ov.mouseReleaseEvent}[kind](event)
 
     _recording_crop(tmp)
@@ -593,6 +593,17 @@ def _recording(app, tmp: Path, desktop: QImage, out_dir):
         mouse(ov, "move", 110, 90)
         mouse(ov, "release", 110, 90)
         assert ov.rec_rect == QRectF(70, 40, 280, 180), ov.rec_rect
+        # Ctrl resizes about the centre (210, 130): grabbed 2 px inside the right
+        # edge, the edge keeps that offset and the left one mirrors it.
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        mouse(ov, "press", 348, 130, ctrl)
+        mouse(ov, "move", 368, 130, ctrl)
+        mouse(ov, "release", 368, 130, ctrl)
+        assert ov.rec_rect == QRectF(50, 40, 320, 180), ov.rec_rect
+        mouse(ov, "press", 210, 220, ctrl)
+        mouse(ov, "move", 210, 200, ctrl)
+        mouse(ov, "release", 210, 200, ctrl)
+        assert ov.rec_rect == QRectF(50, 60, 320, 140), ov.rec_rect
 
         # Options: remembered in the settings for next time.
         ov.panel.cursor.click()
